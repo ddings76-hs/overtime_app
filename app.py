@@ -15,7 +15,7 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 직원 테이블 (생년월일, 보험 가입 여부 추가)
+    # 직원 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS employees (
             emp_id TEXT PRIMARY KEY,
@@ -38,7 +38,15 @@ def init_db():
         )
     ''')
     
-    # 초과근무 테이블
+    # 초과근무 테이블 컬럼 안전 체크
+    c.execute("PRAGMA table_info(overtime_records)")
+    columns = [column[1] for column in c.fetchall()]
+    
+    # 실제 근무시간 및 승인 상태 컬럼이 없으면 구 테이블 삭제 후 재생성
+    if 'actual_duration_hours' not in columns and len(columns) > 0:
+        c.execute("DROP TABLE IF EXISTS overtime_records")
+
+    # 초과근무 테이블 (실제 내역 및 승인 상태 추가)
     c.execute('''
         CREATE TABLE IF NOT EXISTS overtime_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +61,11 @@ def init_db():
             end_time TEXT,
             duration_hours REAL,
             estimated_pay INTEGER,
-            reason TEXT
+            actual_duration_hours REAL DEFAULT 0.0,
+            actual_pay INTEGER DEFAULT 0,
+            status TEXT DEFAULT '신청',
+            reason TEXT,
+            act_reason TEXT
         )
     ''')
 
@@ -97,7 +109,7 @@ with st.sidebar:
     if uploaded_logo is not None:
         bytes_data = uploaded_logo.getvalue()
         st.session_state.logo_b64 = base64.b64encode(bytes_data).decode()
-        st.image(uploaded_logo, caption="등록된 회사 로고", use_column_width=True)
+        st.image(uploaded_logo, caption="등록된 회사 로고", use_container_width=True)
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
@@ -105,7 +117,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "👥 직원 등록 및 정보 관리", 
     "📝 초과/휴일근무 신청", 
-    "🖨️ 초과근무 신청서", 
+    "✅ 실제 초과근무 입력 및 승인", 
     "🌴 개인별 연차 관리",
     "📊 통합 급여대장 (엑셀)", 
     "📄 개별 급여명세서 인쇄"
@@ -186,10 +198,10 @@ with tab1:
             st.rerun()
 
 # -------------------------------------------------------------------
-# TAB 2: 초과근무 신청
+# TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
 with tab2:
-    st.header("초과근무 / 휴일근무 신청")
+    st.header("1. 초과근무 / 휴일근무 사전 신청")
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
     conn.close()
@@ -202,16 +214,16 @@ with tab2:
         selected_emp_id = selected_emp_str.split("/")[-1].replace(")", "").strip()
         emp_info = df_emp[df_emp['emp_id'] == selected_emp_id].iloc[0]
 
-        work_date = st.date_input("근무 일자", datetime.now())
+        work_date = st.date_input("근무 예정 일자", datetime.now())
         work_type = st.radio("근무 구분", ["평일 초과근무 (18:00 이후)", "휴일근무"])
         
         col1, col2 = st.columns(2)
         with col1:
-            start_time = st.time_input("시작 시간", time(18, 0) if work_type == "평일 초과근무 (18:00 이후)" else time(9, 0))
+            start_time = st.time_input("예정 시작 시간", time(18, 0) if work_type == "평일 초과근무 (18:00 이후)" else time(9, 0))
         with col2:
-            end_time = st.time_input("종료 시간", time(20, 0))
+            end_time = st.time_input("예정 종료 시간", time(20, 0))
 
-        reason = st.text_area("근무 사유")
+        reason = st.text_area("신청 사유")
 
         start_dt = datetime.combine(work_date, start_time)
         end_dt = datetime.combine(work_date, end_time)
@@ -224,38 +236,87 @@ with tab2:
             raw_pay = duration_hours * emp_info['hourly_wage'] * multiplier
             estimated_pay = truncate_ten(raw_pay)
 
-            st.info(f"💡 인정 근무시간: **{duration_hours:.1f}시간** / 예상 수당: **{estimated_pay:,}원**")
+            st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간** / 예상 수당: **{estimated_pay:,}원**")
 
-            if st.button("신청서 제출 및 DB 저장"):
+            if st.button("사전 신청서 제출"):
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute('''
-                    INSERT INTO overtime_records (apply_dt, emp_id, emp_name, dept, position, work_date, work_type, start_time, end_time, duration_hours, estimated_pay, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO overtime_records 
+                    (apply_dt, emp_id, emp_name, dept, position, work_date, work_type, start_time, end_time, duration_hours, estimated_pay, actual_duration_hours, actual_pay, status, reason, act_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
                     emp_info['emp_id'], emp_info['emp_name'], emp_info['dept'], emp_info['position'],
-                    str(work_date), work_type, str(start_time), str(end_time), duration_hours, estimated_pay, reason
+                    str(work_date), work_type, str(start_time), str(end_time), duration_hours, estimated_pay,
+                    duration_hours, estimated_pay, '신청', reason, ''
                 ))
                 conn.commit()
                 conn.close()
-                st.success("초과근무 신청 내역이 저장되었다.")
+                st.success("초과근무 신청 내역이 등록되었다. (실제 실적 입력 후 확정된다)")
 
 # -------------------------------------------------------------------
-# TAB 3: 초과근무 신청서 출력
+# TAB 3: 실제 초과근무 입력 및 승인 (급여 반영 핵심)
 # -------------------------------------------------------------------
 with tab3:
-    st.header("🖨️ 초과근무 신청서 인쇄")
+    st.header("✅ 실제 초과근무 내역 입력 및 최종 승인")
+    st.info("💡 실제 수행한 근무시간을 입력하고 '승인' 처리해야만 통합 급여대장에 최종 반영된다.")
+
     conn = get_db_connection()
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records ORDER BY id DESC", conn)
     conn.close()
 
     if df_ot.empty:
-        st.info("제출된 초과근무 신청 내역이 없다.")
+        st.info("등록된 초과근무 내역이 없다.")
     else:
-        record_options = [f"[{r['work_date']}] {r['emp_name']} {r['position']} - {r['work_type']}" for _, r in df_ot.iterrows()]
-        selected_index = st.selectbox("출력할 내역 선택", range(len(record_options)), format_func=lambda x: record_options[x])
-        target = df_ot.iloc[selected_index]
+        # 내역 선택
+        ot_options = [f"[{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 신청: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
+        selected_ot_idx = st.selectbox("처리할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
+        target_ot = df_ot.iloc[selected_ot_idx]
+
+        # 직원 정보 조회 (통상시급 확인용)
+        conn = get_db_connection()
+        df_emp_single = pd.read_sql_query("SELECT * FROM employees WHERE emp_id = ?", conn, params=(target_ot['emp_id'],))
+        conn.close()
+
+        hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
+
+        st.subheader(f"📄 내역 상세: {target_ot['emp_name']} ({target_ot['work_date']})")
+        
+        with st.form("actual_ot_form"):
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                st.write(f"**사전 신청 내용**")
+                st.write(f"- 근무 구분: {target_ot['work_type']}")
+                st.write(f"- 신청 시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({target_ot['duration_hours']}시간)")
+                st.write(f"- 신청 사유: {target_ot['reason']}")
+            
+            with col_a2:
+                st.write(f"**실제 수행 내역 입력**")
+                act_hours = st.number_input("실제 인정 근무시간 (시간)", min_value=0.0, value=float(target_ot['actual_duration_hours']), step=0.5)
+                act_pay = truncate_ten(act_hours * hourly_w * 1.5)
+                st.write(f"**최종 확정 수당: {act_pay:,} 원**")
+                
+                status_choice = st.selectbox("승인 상태 변경", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
+                act_reason = st.text_input("실제 수행 업무 / 관리자 메모", value=target_ot['act_reason'] if target_ot['act_reason'] else '')
+
+            submit_act = st.form_submit_button("실제 내역 저장 및 상태 변경")
+
+            if submit_act:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute('''
+                    UPDATE overtime_records
+                    SET actual_duration_hours = ?, actual_pay = ?, status = ?, act_reason = ?
+                    WHERE id = ?
+                ''', (act_hours, act_pay, status_choice, act_reason, target_ot['id']))
+                conn.commit()
+                conn.close()
+                st.success(f"[{target_ot['emp_name']}] 직원의 실제 초과근무 내역이 '{status_choice}' 상태로 반영되었다.")
+                st.rerun()
+
+        st.divider()
+        st.subheader("🖨️ 초과근무 신청 및 확인서 출력")
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
 
@@ -280,40 +341,43 @@ with tab3:
             <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;" border="1">
                 <tr style="height: 40px;">
                     <th style="padding: 8px; background: #f9f9f9; width: 20%;">성 명</th>
-                    <td style="padding: 8px; width: 30%;">{target['emp_name']} ({target['position']})</td>
+                    <td style="padding: 8px; width: 30%;">{target_ot['emp_name']} ({target_ot['position']})</td>
                     <th style="padding: 8px; background: #f9f9f9; width: 20%;">소 속</th>
-                    <td style="padding: 8px; width: 30%;">{target['dept']}</td>
+                    <td style="padding: 8px; width: 30%;">{target_ot['dept']}</td>
                 </tr>
                 <tr style="height: 40px;">
                     <th style="padding: 8px; background: #f9f9f9;">근무구분</th>
-                    <td style="padding: 8px;" colspan="3">{target['work_type']}</td>
+                    <td style="padding: 8px;" colspan="3">{target_ot['work_type']} (상태: {target_ot['status']})</td>
                 </tr>
                 <tr style="height: 40px;">
-                    <th style="padding: 8px; background: #f9f9f9;">근무일시</th>
-                    <td style="padding: 8px;" colspan="3">{target['work_date']} ({target['start_time']} ~ {target['end_time']}) / {target['duration_hours']}시간</td>
+                    <th style="padding: 8px; background: #f9f9f9;">신청일시</th>
+                    <td style="padding: 8px;" colspan="3">{target_ot['work_date']} ({target_ot['start_time']} ~ {target_ot['end_time']}) / 신청: {target_ot['duration_hours']}시간</td>
+                </tr>
+                <tr style="height: 40px; background-color: #fffae6;">
+                    <th style="padding: 8px; background: #f0e68c;">실제 인정내역</th>
+                    <td style="padding: 8px;" colspan="3"><b>실제 인정시간: {target_ot['actual_duration_hours']}시간 / 확정 수당: {target_ot['actual_pay']:,}원</b></td>
                 </tr>
                 <tr>
-                    <th style="padding: 8px; background: #f9f9f9;">근무사유</th>
-                    <td style="padding: 12px; height: 80px; vertical-align: top;" colspan="3">{target['reason']}</td>
-                </tr>
-                <tr style="height: 40px;">
-                    <th style="padding: 8px; background: #f9f9f9;">예상수당</th>
-                    <td style="padding: 8px; font-weight: bold;" colspan="3">{target['estimated_pay']:,}원</td>
+                    <th style="padding: 8px; background: #f9f9f9;">근무사유 및 내용</th>
+                    <td style="padding: 12px; height: 70px; vertical-align: top;" colspan="3">
+                        [신청사유] {target_ot['reason']}<br>
+                        [실제내용] {target_ot['act_reason']}
+                    </td>
                 </tr>
             </table>
 
-            <p style="text-align: center; margin-top: 50px; font-size: 15px;">위와 같이 초과근무를 신청합니다.</p>
-            <p style="text-align: center; margin-top: 15px; font-size: 13px;">{target['work_date'][:4]}년 {target['work_date'][5:7]}월 {target['work_date'][8:10]}일</p>
+            <p style="text-align: center; margin-top: 40px; font-size: 15px;">위와 같이 초과근무 실적을 제출합니다.</p>
+            <p style="text-align: center; margin-top: 15px; font-size: 13px;">{target_ot['work_date'][:4]}년 {target_ot['work_date'][5:7]}월 {target_ot['work_date'][8:10]}일</p>
             
-            <p style="text-align: right; margin-top: 40px; font-size: 15px; font-weight: bold; padding-right: 10px;">
-                신청인: {target['emp_name']} (인)
+            <p style="text-align: right; margin-top: 30px; font-size: 15px; font-weight: bold; padding-right: 10px;">
+                신청인: {target_ot['emp_name']} (인)
             </p>
         </div>
         """
-        st.components.v1.html(ot_template, height=550, scrolling=True)
+        st.components.v1.html(ot_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 4: 개인별 연차 관리 (신청서 제출 및 바로 출력 기능 포함)
+# TAB 4: 개인별 연차 관리
 # -------------------------------------------------------------------
 with tab4:
     st.header("🌴 개인별 연차 관리 및 신청서 출력")
@@ -443,7 +507,7 @@ with tab4:
             st.components.v1.html(leave_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 5: 통합 급여대장 (자동계산, 항목수정, 합계행, 엑셀 출력)
+# TAB 5: 통합 급여대장 (승인 완료된 실제 초과수당만 연동)
 # -------------------------------------------------------------------
 with tab5:
     st.header("📊 통합 급여대장")
@@ -453,19 +517,20 @@ with tab5:
 
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records", conn)
+    # status가 '승인'인 내역만 불러오기
+    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     conn.close()
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
     else:
-        # 자동 산출 기본 데이터 생성
         calculated_rows = []
         no = 1
         
         for idx, emp in df_emp.iterrows():
+            # 실제 승인된 초과수당(actual_pay) 합산
             emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
-            ot_pay = emp_ot['estimated_pay'].sum() if not emp_ot.empty else 0
+            ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
 
             base = emp['base_salary']
             family = emp['family_allowance']
@@ -476,7 +541,6 @@ with tab5:
             total_gross = truncate_ten(base + ot_pay + family + non_tax + other_allow)
             taxable_gross = total_gross - non_tax
 
-            # 4대보험 가입여부에 따른 자동 계산
             emp_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
             emp_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
             emp_longterm = truncate_ten(emp_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
@@ -493,7 +557,7 @@ with tab5:
 
             calculated_rows.append({
                 "No": no, "사번": emp['emp_id'], "이름": emp['emp_name'], "생년월일": emp['birth_date'], "부서": emp['dept'], "직위": emp['position'], "호봉": emp['hobong'],
-                "기본급": base, "초과수당": ot_pay, "가족수당": family, "비과세": non_tax, "기타수당": other_allow,
+                "기본급": base, "초과수당(승인)": ot_pay, "가족수당": family, "비과세": non_tax, "기타수당": other_allow,
                 "국민연금(본인)": emp_national, "건강보험(본인)": emp_health, "장기요양(본인)": emp_longterm, "고용보험(본인)": emp_employment,
                 "소득세": emp_income_tax, "지방소득세": emp_local_tax, "기타공제": other_deduct,
                 "국민연금(사업자)": biz_national, "건강보험(사업자)": biz_health, "장기요양(사업자)": biz_longterm, "고용보험(사업자)": biz_employment, "산재보험(사업자)": biz_industrial,
@@ -504,12 +568,10 @@ with tab5:
         df_calc = pd.DataFrame(calculated_rows)
 
         st.subheader("✏️ 급여대장 항목별 수정 편집기")
-        st.info("💡 필요시 아래 표에서 국민·건강·장기요양·고용·세금 등의 금액을 직접 수정할 수 있다.")
+        st.info("💡 필요시 아래 표에서 수당 및 공제 금액을 직접 수정할 수 있다.")
         
         edited_payroll = st.data_editor(df_calc, use_container_width=True)
 
-        # 재계산 및 합계 생성
-        final_rows = []
         payroll_html_rows = ""
 
         sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
@@ -517,14 +579,13 @@ with tab5:
         sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
 
         for idx, row in edited_payroll.iterrows():
-            total_gross = row['기본급'] + row['초과수당'] + row['가족수당'] + row['비과세'] + row['기타수당']
+            total_gross = row['기본급'] + row['초과수당(승인)'] + row['가족수당'] + row['비과세'] + row['기타수당']
             emp_deduction_total = row['국민연금(본인)'] + row['건강보험(본인)'] + row['장기요양(본인)'] + row['고용보험(본인)'] + row['소득세'] + row['지방소득세'] + row['기타공제']
             net_pay = total_gross - emp_deduction_total
 
             biz_deduction_total = row['국민연금(사업자)'] + row['건강보험(사업자)'] + row['장기요양(사업자)'] + row['고용보험(사업자)'] + row['산재보험(사업자)']
 
-            # 누적 합계
-            sum_base += row['기본급']; sum_ot += row['초과수당']; sum_family += row['가족수당']; sum_nontax += row['비과세']; sum_gross += total_gross
+            sum_base += row['기본급']; sum_ot += row['초과수당(승인)']; sum_family += row['가족수당']; sum_nontax += row['비과세']; sum_gross += total_gross
             sum_nat += row['국민연금(본인)']; sum_hea += row['건강보험(본인)']; sum_long += row['장기요양(본인)']; sum_emp += row['고용보험(본인)']
             sum_inc += row['소득세']; sum_loc += row['지방소득세']; sum_other_d += row['기타공제']; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
             sum_b_nat += row['국민연금(사업자)']; sum_b_hea += row['건강보험(사업자)']; sum_b_long += row['장기요양(사업자)']; sum_b_emp += row['고용보험(사업자)']; sum_b_ind += row['산재보험(사업자)']; sum_b_tot += biz_deduction_total; sum_retire += row['퇴직적립금']
@@ -533,7 +594,7 @@ with tab5:
             <tr>
                 <td>{row['No']}</td><td>{row['이름']}</td><td>{row['생년월일']}</td><td>{row['호봉']}</td>
                 <td style="text-align:right;">{row['기본급']:,}</td>
-                <td style="text-align:right;">{row['초과수당']:,}</td>
+                <td style="text-align:right;">{row['초과수당(승인)']:,}</td>
                 <td style="text-align:right;">{row['가족수당']:,}</td>
                 <td style="text-align:right;">{row['비과세']:,}</td>
                 <td style="text-align:right; font-weight:bold;">{total_gross:,}</td>
@@ -555,7 +616,6 @@ with tab5:
             </tr>
             """
 
-        # 합계행 HTML
         summary_html_row = f"""
         <tr style="background-color: #e6f2ff; font-weight: bold;">
             <td colspan="4">합 계</td>
@@ -582,7 +642,6 @@ with tab5:
         </tr>
         """
 
-        # 엑셀 다운로드 파일 구성
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_급여대장")
@@ -665,14 +724,15 @@ with tab5:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 개별 급여명세서 인쇄
+# TAB 6: 개별 급여명세서 인쇄 (실제 승인된 초과수당 연동)
 # -------------------------------------------------------------------
 with tab6:
     st.header("📄 개별 급여명세서 인쇄")
     
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records", conn)
+    # 승인된 내역만 조회
+    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     conn.close()
 
     if df_emp.empty:
@@ -688,9 +748,10 @@ with tab6:
 
         emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))]
         
-        weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['duration_hours'].sum() if not emp_ot.empty else 0.0
-        holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['duration_hours'].sum() if not emp_ot.empty else 0.0
-        ot_pay = emp_ot['estimated_pay'].sum() if not emp_ot.empty else 0
+        # 실제 승인된 시간(actual_duration_hours) 및 수당(actual_pay) 합산
+        weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
+        holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
+        ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
 
         total_ot_hours = weekday_ot_hours + holiday_ot_hours
 
