@@ -138,15 +138,15 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
-# 탭 구성
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+# 탭 구성 (tab1 ~ tab8 정의)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "👥 직원 등록 및 정보 관리", 
     "📝 초과/휴일근무 신청", 
     "✅ 초과근무 수행 입력 & 요약표", 
     "🌴 연차 관리 & 전 직원 요약표",
     "🖨️ 연차 신청서 출력",
     "📊 통합 급여대장 (수정 및 엑셀)", 
-    "📄 개별 급여명세서 인쇄"
+    "📄 개별 급여명세서 인쇄",
     "🖨️ 통합 급여대장 인쇄"
 ])
 
@@ -295,14 +295,12 @@ with tab3:
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
-        # 1. 처리 및 출력 대상 선택
         col_ot1, col_ot2 = st.columns([3, 1])
         with col_ot1:
             ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
             selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
             target_ot = df_ot.iloc[selected_ot_idx]
         
-        # 초과근무 내역 삭제 기능
         with col_ot2:
             st.write("**🗑️ 선택 내역 삭제**")
             if st.button("해당 초과근무 내역 삭제", type="primary", key="del_ot_btn"):
@@ -384,6 +382,7 @@ with tab3:
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
 
+        # 로고 크기 축소 적용 (35px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
@@ -402,7 +401,7 @@ with tab3:
                         <th style="width: 60px;">대 리</th>
                         <th style="width: 65px;">센터장</th>
                     </tr>
-                    <tr style="height: 35px;">
+                    <tr style="height: 50px;">
                         <td></td><td></td><td></td>
                     </tr>
                 </table>
@@ -449,7 +448,6 @@ with tab3:
         st.divider()
         st.subheader("📊 월별 승인 초과근무 집계 요약표")
         
-        # 연도-월만 선택할 수 있도록 개선
         current_year = datetime.now().year
         c_y, c_m = st.columns(2)
         with c_y:
@@ -459,7 +457,6 @@ with tab3:
         
         filter_month = f"{sel_year}-{sel_month:02d}"
 
-        # 최종 '승인' 상태인 건만 요약표에 집계
         conn = get_db_connection()
         df_ot_month = pd.read_sql_query(
             "SELECT * FROM overtime_records WHERE work_date LIKE ? AND status = '승인'", 
@@ -656,6 +653,7 @@ with tab5:
         selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
         target_l = df_leave_records.iloc[selected_l_index]
 
+        # 로고 크기 축소 적용 (35px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
         leave_template = f"""
@@ -711,17 +709,16 @@ with tab5:
         st.components.v1.html(leave_template, height=560, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 통합 급여대장 (승인 완료 건 기준 자동 연동)
+# TAB 6: 통합 급여대장 (수정 및 엑셀 다운로드)
 # -------------------------------------------------------------------
 with tab6:
-    st.header("📊 통합 급여대장")
+    st.header("📊 통합 급여대장 (수정 및 엑셀)")
     
     pay_date = st.date_input("지급일 선택", datetime.now(), key="payroll_date")
     pay_month = pay_date.strftime("%Y-%m")
 
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    # 승인 상태인 내역만 조회
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     df_adjust = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ?", conn, params=(pay_month,))
     conn.close()
@@ -735,7 +732,6 @@ with tab6:
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
-            # 해당 월의 '승인'된 초과근무 수당 집계
             emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
             calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
@@ -895,6 +891,7 @@ with tab6:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
+        # 로고 크기 축소 적용 (28px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
 
         payroll_template = f"""
@@ -965,14 +962,13 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (승인 금액 기준 완벽 연동)
+# TAB 7: 개별 급여명세서 인쇄
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
     
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    # 승인 상태 초과근무 내역만 조회
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     conn.close()
 
@@ -993,7 +989,6 @@ with tab7:
         df_adj_single = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ? AND emp_id = ?", conn, params=(pay_month_slip, emp['emp_id']))
         conn.close()
 
-        # '승인'된 초과근무만 시간 및 수당 계산
         emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))]
         weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
@@ -1036,6 +1031,7 @@ with tab7:
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
+        # 로고 크기 축소 적용 (32px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 32px; float: left;">' if st.session_state.logo_b64 else ''
 
         payslip_template = f"""
@@ -1166,7 +1162,7 @@ with tab7:
         st.components.v1.html(payslip_template, height=890, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 8: 통합 급여대장 인쇄 (신규 추가)
+# TAB 8: 통합 급여대장 인쇄 (독립 인쇄 서식)
 # -------------------------------------------------------------------
 with tab8:
     st.header("🖨️ 통합 급여대장 인쇄")
@@ -1298,6 +1294,7 @@ with tab8:
         </tr>
         """
 
+        # 로고 크기 축소 적용 (28px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
 
         payroll_print_template = f"""
