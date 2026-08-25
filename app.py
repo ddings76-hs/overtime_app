@@ -42,7 +42,6 @@ def init_db():
     c.execute("PRAGMA table_info(overtime_records)")
     columns = [column[1] for column in c.fetchall()]
     
-    # 신규 컬럼(act_start_time 등)이 없으면 구 테이블 안전 재구축
     if len(columns) > 0 and 'act_start_time' not in columns:
         c.execute("DROP TABLE IF EXISTS overtime_records")
 
@@ -281,7 +280,7 @@ with tab2:
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 초과근무 실제 수행 입력 및 확인서 (KeyError 안전 보완)
+# TAB 3: 초과근무 실제 수행 입력 및 확인서 (인쇄 기능 포함)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 및 확인서")
@@ -303,7 +302,6 @@ with tab3:
 
         hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
 
-        # 데이터 안전 추출 (KeyError 예방)
         act_s_val = target_ot.get('act_start_time', target_ot['start_time'])
         act_e_val = target_ot.get('act_end_time', target_ot['end_time'])
         if pd.isna(act_s_val) or not act_s_val: act_s_val = target_ot['start_time']
@@ -363,10 +361,12 @@ with tab3:
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
-
         act_reason_disp = target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else ''
 
         ot_confirm_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
+        </div>
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
             {logo_html}
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
@@ -420,10 +420,10 @@ with tab3:
             </p>
         </div>
         """
-        st.components.v1.html(ot_confirm_template, height=520, scrolling=True)
+        st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 4: 개인별 연차 관리
+# TAB 4: 개인별 연차 관리 (내역 삭제 기능 추가)
 # -------------------------------------------------------------------
 with tab4:
     st.header("🌴 개인별 연차 관리")
@@ -470,11 +470,12 @@ with tab4:
                 conn.commit()
                 conn.close()
                 st.success("연차 신청 내역이 저장되었다.")
+                st.rerun()
 
         with col_l2:
-            st.subheader("2. 개인별 연차 현황 요약")
+            st.subheader("2. 개인별 연차 현황 요약 및 내역 삭제")
             conn = get_db_connection()
-            df_leave_all = pd.read_sql_query("SELECT * FROM leave_records WHERE emp_id = ?", conn, params=(l_emp_info['emp_id'],))
+            df_leave_all = pd.read_sql_query("SELECT * FROM leave_records WHERE emp_id = ? ORDER BY id DESC", conn, params=(l_emp_info['emp_id'],))
             conn.close()
 
             used_annual = df_leave_all[df_leave_all['leave_type'].str.contains("연차|반차", na=False)]['used_days'].sum()
@@ -487,10 +488,27 @@ with tab4:
             m3.metric("잔여 연차", f"{remaining_annual} 일")
 
             st.write(f"**[{l_emp_info['emp_name']}] 연차 신청 이력**")
-            st.dataframe(df_leave_all[['apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
+            st.dataframe(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
+
+            # 연차 내역 삭제 기능
+            if not df_leave_all.empty:
+                st.divider()
+                st.write("**🗑️ 연차 신청 내역 삭제**")
+                del_leave_options = [f"ID {r['id']} | [{r['start_date']}] {r['leave_type']} ({r['used_days']}일)" for _, r in df_leave_all.iterrows()]
+                selected_del_str = st.selectbox("삭제할 내역 선택", del_leave_options, key="del_leave_sel")
+                selected_del_id = int(selected_del_str.split("|")[0].replace("ID", "").strip())
+
+                if st.button("선택한 연차 내역 삭제", type="primary"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM leave_records WHERE id = ?", (selected_del_id,))
+                    conn.commit()
+                    conn.close()
+                    st.success("해당 연차 내역이 정상적으로 삭제되었다.")
+                    st.rerun()
 
 # -------------------------------------------------------------------
-# TAB 5: 연차 신청서 독립 출력 탭
+# TAB 5: 연차 신청서 독립 출력 탭 (인쇄 기능 포함)
 # -------------------------------------------------------------------
 with tab5:
     st.header("🖨️ 휴가 (연차) 신청서 인쇄")
@@ -509,6 +527,9 @@ with tab5:
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
 
         leave_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
+        </div>
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
             {logo_html}
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
@@ -555,7 +576,7 @@ with tab5:
             </p>
         </div>
         """
-        st.components.v1.html(leave_template, height=520, scrolling=True)
+        st.components.v1.html(leave_template, height=560, scrolling=True)
 
 # -------------------------------------------------------------------
 # TAB 6: 통합 급여대장
@@ -809,7 +830,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄
+# TAB 7: 개별 급여명세서 인쇄 (인쇄 기능 포함)
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -878,6 +899,9 @@ with tab7:
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 45px; float: left;">' if st.session_state.logo_b64 else ''
 
         payslip_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 급여명세서 인쇄하기</button>
+        </div>
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
             {logo_html}
             <h2 style="text-align: center; margin-top: 0; margin-bottom: 25px; font-size: 24px; text-decoration: underline; clear: both;">
@@ -999,4 +1023,4 @@ with tab7:
             <p style="text-align: center; margin-top: 20px; font-size: 12px; color: #444;">귀하의 노고에 진심으로 감사드립니다.</p>
         </div>
         """
-        st.components.v1.html(payslip_template, height=850, scrolling=True)
+        st.components.v1.html(payslip_template, height=890, scrolling=True)
