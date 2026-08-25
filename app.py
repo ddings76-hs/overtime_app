@@ -1035,7 +1035,7 @@ with tab7:
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
-        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 45px; float: left;">' if st.session_state.logo_b64 else ''
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 32px; float: left;">' if st.session_state.logo_b64 else ''
 
         payslip_template = f"""
         <div style="text-align: right; margin-bottom: 10px;">
