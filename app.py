@@ -38,6 +38,14 @@ def init_db():
         )
     ''')
     
+    # 초과근무 테이블 컬럼 안전 체크
+    c.execute("PRAGMA table_info(overtime_records)")
+    columns = [column[1] for column in c.fetchall()]
+    
+    # 신규 컬럼(act_start_time 등)이 없으면 구 테이블 안전 재구축
+    if len(columns) > 0 and 'act_start_time' not in columns:
+        c.execute("DROP TABLE IF EXISTS overtime_records")
+
     # 초과근무 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS overtime_records (
@@ -53,8 +61,8 @@ def init_db():
             end_time TEXT,
             duration_hours REAL,
             estimated_pay INTEGER,
-            act_start_time TEXT DEFAULT '18:00',
-            act_end_time TEXT DEFAULT '20:00',
+            act_start_time TEXT DEFAULT '18:00:00',
+            act_end_time TEXT DEFAULT '20:00:00',
             actual_duration_hours REAL DEFAULT 0.0,
             actual_pay INTEGER DEFAULT 0,
             status TEXT DEFAULT '신청',
@@ -273,7 +281,7 @@ with tab2:
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 초과근무 실제 수행 입력 (시작/종료 시간 직접 선택 가능)
+# TAB 3: 초과근무 실제 수행 입력 및 확인서 (KeyError 안전 보완)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 및 확인서")
@@ -295,6 +303,12 @@ with tab3:
 
         hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
 
+        # 데이터 안전 추출 (KeyError 예방)
+        act_s_val = target_ot.get('act_start_time', target_ot['start_time'])
+        act_e_val = target_ot.get('act_end_time', target_ot['end_time'])
+        if pd.isna(act_s_val) or not act_s_val: act_s_val = target_ot['start_time']
+        if pd.isna(act_e_val) or not act_e_val: act_e_val = target_ot['end_time']
+
         st.subheader(f"✏️ 실제 수행 시간 입력 및 수정: {target_ot['emp_name']} ({target_ot['work_date']})")
         
         with st.form("actual_ot_form"):
@@ -308,10 +322,9 @@ with tab3:
             with col_a2:
                 st.write(f"**실제 수행 근무시간 입력**")
                 
-                # 기존 시간 변환
                 try:
-                    init_s_time = datetime.strptime(target_ot['act_start_time'] if target_ot['act_start_time'] else target_ot['start_time'], "%H:%M:%S").time()
-                    init_e_time = datetime.strptime(target_ot['act_end_time'] if target_ot['act_end_time'] else target_ot['end_time'], "%H:%M:%S").time()
+                    init_s_time = datetime.strptime(str(act_s_val)[:8], "%H:%M:%S").time()
+                    init_e_time = datetime.strptime(str(act_e_val)[:8], "%H:%M:%S").time()
                 except:
                     init_s_time = time(18, 0)
                     init_e_time = time(20, 0)
@@ -319,7 +332,6 @@ with tab3:
                 act_s_time = st.time_input("실제 시작 시간", init_s_time)
                 act_e_time = st.time_input("실제 종료 시간", init_e_time)
 
-                # 시간차 자동 계산
                 dummy_date = datetime.now().date()
                 s_dt = datetime.combine(dummy_date, act_s_time)
                 e_dt = datetime.combine(dummy_date, act_e_time)
@@ -330,7 +342,7 @@ with tab3:
                 st.metric(label="최종 확정 수당 (1.5배 적용)", value=f"{act_pay:,} 원")
                 
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
-                act_reason = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if target_ot['act_reason'] else '')
+                act_reason = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else '')
 
             submit_act = st.form_submit_button("실제 수행 내역 저장 및 반영")
 
@@ -351,6 +363,8 @@ with tab3:
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
+
+        act_reason_disp = target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else ''
 
         ot_confirm_template = f"""
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
@@ -387,13 +401,13 @@ with tab3:
                 </tr>
                 <tr style="height: 40px; background-color: #ffffcc;">
                     <th style="padding: 6px; background: #fff2cc;">실제 수행 인정</th>
-                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot['act_start_time']} ~ {target_ot['act_end_time']} ({target_ot['actual_duration_hours']} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot['actual_pay']:,} 원</b></td>
+                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {act_s_val} ~ {act_e_val} ({target_ot['actual_duration_hours']} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot['actual_pay']:,} 원</b></td>
                 </tr>
                 <tr>
                     <th style="padding: 6px; background: #f9f9f9;">사유 및 업무내용</th>
                     <td style="padding: 10px; height: 70px; vertical-align: top;" colspan="3">
                         <b>[신청 사유]</b> {target_ot['reason']}<br>
-                        <b>[실제 수행 내용]</b> {target_ot['act_reason']}
+                        <b>[실제 수행 내용]</b> {act_reason_disp}
                     </td>
                 </tr>
             </table>
@@ -544,7 +558,7 @@ with tab5:
         st.components.v1.html(leave_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 통합 급여대장 (오류 수정 완비)
+# TAB 6: 통합 급여대장
 # -------------------------------------------------------------------
 with tab6:
     st.header("📊 통합 급여대장")
@@ -601,7 +615,6 @@ with tab6:
                 emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
                 emp_local_tax = truncate_ten(emp_income_tax * 0.10)
 
-            # 사업자 부담금 산출용 과세금액 정의 (NameError 방지)
             tot_g = base + ot_pay + family + non_tax + other_allow
             taxable_gross = tot_g - non_tax
 
@@ -796,7 +809,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (급여대장 수정 수치 연동 완비)
+# TAB 7: 개별 급여명세서 인쇄
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -817,7 +830,6 @@ with tab7:
             selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
             emp = df_emp[df_emp['emp_id'] == selected_slip_id].iloc[0]
 
-        # 급여대장에서 수정된 수치가 있는지 DB 확인
         conn = get_db_connection()
         df_adj_single = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ? AND emp_id = ?", conn, params=(pay_month_slip, emp['emp_id']))
         conn.close()
