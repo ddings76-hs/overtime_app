@@ -138,8 +138,8 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
-# 탭 구성 (tab1 ~ tab8 정의)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+# 탭 구성 (tab1 ~ tab9 정의)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "👥 직원 등록 및 정보 관리", 
     "📝 초과/휴일근무 신청", 
     "✅ 초과근무 수행 입력 & 요약표", 
@@ -147,7 +147,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🖨️ 연차 신청서 출력",
     "📊 통합 급여대장 (수정 및 엑셀)", 
     "📄 개별 급여명세서 인쇄",
-    "🖨️ 통합 급여대장 인쇄"
+    "🖨️ 통합 급여대장 인쇄",
+    "📑 월별 급여대장 총괄표"
 ])
 
 # -------------------------------------------------------------------
@@ -382,7 +383,6 @@ with tab3:
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
 
-        # 로고 크기 축소 적용 (35px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
@@ -420,11 +420,11 @@ with tab3:
                 </tr>
                 <tr style="height: 38px;">
                     <th style="padding: 6px; background: #f9f9f9;">사전 신청일시</th>
-                    <td style="padding: 6px;" colspan="3">{target_ot_latest['work_date']} ({target_ot_latest['start_time']} ~ {target_ot_latest['end_time']}) / {target_ot_latest['duration_hours']}시간</td>
+                    <td style="padding: 6px;" colspan="3">{target_ot_latest['work_date']} ({target_ot_latest['start_time']} ~ {target_ot_latest['end_time']}) / {float(target_ot_latest['duration_hours']):.1f}시간</td>
                 </tr>
                 <tr style="height: 40px; background-color: #ffffcc;">
                     <th style="padding: 6px; background: #fff2cc;">실제 수행 인정</th>
-                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot_latest['act_start_time']} ~ {target_ot_latest['act_end_time']} ({target_ot_latest['actual_duration_hours']} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot_latest['actual_pay']:,} 원</b></td>
+                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot_latest['act_start_time']} ~ {target_ot_latest['act_end_time']} ({float(target_ot_latest['actual_duration_hours']):.1f} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot_latest['actual_pay']:,} 원</b></td>
                 </tr>
                 <tr>
                     <th style="padding: 6px; background: #f9f9f9;">사유 및 업무내용</th>
@@ -653,7 +653,6 @@ with tab5:
         selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
         target_l = df_leave_records.iloc[selected_l_index]
 
-        # 로고 크기 축소 적용 (35px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
         leave_template = f"""
@@ -709,7 +708,7 @@ with tab5:
         st.components.v1.html(leave_template, height=560, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 통합 급여대장 (수정 및 엑셀 다운로드)
+# TAB 6: 통합 급여대장 (수정 및 엑셀)
 # -------------------------------------------------------------------
 with tab6:
     st.header("📊 통합 급여대장 (수정 및 엑셀)")
@@ -891,7 +890,6 @@ with tab6:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # 로고 크기 축소 적용 (28px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
 
         payroll_template = f"""
@@ -1031,7 +1029,6 @@ with tab7:
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
-        # 로고 크기 축소 적용 (32px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 32px; float: left;">' if st.session_state.logo_b64 else ''
 
         payslip_template = f"""
@@ -1162,7 +1159,7 @@ with tab7:
         st.components.v1.html(payslip_template, height=890, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 8: 통합 급여대장 인쇄 (독립 인쇄 서식)
+# TAB 8: 통합 급여대장 인쇄
 # -------------------------------------------------------------------
 with tab8:
     st.header("🖨️ 통합 급여대장 인쇄")
@@ -1294,7 +1291,6 @@ with tab8:
         </tr>
         """
 
-        # 로고 크기 축소 적용 (28px)
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
 
         payroll_print_template = f"""
@@ -1381,3 +1377,182 @@ with tab8:
         </div>
         """
         st.components.v1.html(payroll_print_template, height=600, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 9: 월별 급여대장 총괄표 (신규 구현)
+# -------------------------------------------------------------------
+with tab9:
+    st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
+    
+    c_y9 = st.selectbox("조회 연도 선택", range(datetime.now().year - 2, datetime.now().year + 3), index=2, key="annual_summary_year")
+    
+    conn = get_db_connection()
+    df_emp_all = pd.read_sql_query("SELECT * FROM employees", conn)
+    df_ot_all = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
+    df_adj_all = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust", conn)
+    conn.close()
+
+    if df_emp_all.empty:
+        st.warning("등록된 직원 정보가 없다.")
+    else:
+        monthly_summary_rows = []
+
+        tot_ann_count = tot_ann_base = tot_ann_ot = tot_ann_fam = tot_ann_nontax = tot_ann_other_a = 0
+        tot_ann_gross = tot_ann_nat = tot_ann_hea = tot_ann_long = tot_ann_emp = tot_ann_inc = tot_ann_loc = 0
+        tot_ann_other_d = tot_ann_deduct = tot_ann_net = tot_ann_retire = 0
+
+        for m in range(1, 13):
+            m_str = f"{c_y9}-{m:02d}"
+            
+            m_emp_count = len(df_emp_all)
+            m_base = m_ot = m_fam = m_nontax = m_other_a = 0
+            m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
+
+            for _, emp in df_emp_all.iterrows():
+                adj_m = df_adj_all[(df_adj_all['pay_month'] == m_str) & (df_adj_all['emp_id'] == emp['emp_id'])] if not df_adj_all.empty else pd.DataFrame()
+                
+                emp_ot = df_ot_all[(df_ot_all['emp_id'] == emp['emp_id']) & (df_ot_all['work_date'].str.startswith(m_str))]
+                calc_ot = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+                if not adj_m.empty:
+                    adj = adj_m.iloc[0]
+                    base = adj['base_salary']
+                    ot = adj['ot_pay'] if adj['ot_pay'] > 0 else calc_ot
+                    fam = adj['family_allowance']
+                    nontax = adj['non_taxable']
+                    other_a = adj['other_allowance']
+                    nat = adj['national_pension']
+                    hea = adj['health_insurance']
+                    lng = adj['longterm_care']
+                    e_emp = adj['employment_insurance']
+                    inc = adj['income_tax']
+                    loc = adj['local_tax']
+                    other_d = adj['other_deduction']
+                else:
+                    ot = calc_ot
+                    base = emp['base_salary']
+                    fam = emp['family_allowance']
+                    nontax = emp['non_taxable']
+                    other_a = emp['other_allowance']
+                    other_d = emp['other_deduction']
+
+                    tot_g_tmp = truncate_ten(base + ot + fam + nontax + other_a)
+                    taxable_tmp = tot_g_tmp - nontax
+
+                    nat = truncate_ten(taxable_tmp * 0.0475) if emp.get('is_national', 1) == 1 else 0
+                    hea = truncate_ten(taxable_tmp * 0.03595) if emp.get('is_health', 1) == 1 else 0
+                    lng = truncate_ten(hea * 0.1295) if emp.get('is_health', 1) == 1 else 0
+                    e_emp = truncate_ten(taxable_tmp * 0.0090) if emp.get('is_employment', 1) == 1 else 0
+                    inc = truncate_ten(taxable_tmp * 0.03)
+                    loc = truncate_ten(inc * 0.10)
+
+                m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
+                m_nat += nat; m_hea += hea; m_long += lng; m_emp += e_emp
+                m_inc += inc; m_loc += loc; m_other_d += other_d
+
+            m_gross = m_base + m_ot + m_fam + m_nontax + m_other_a
+            m_deduct = m_nat + m_hea + m_long + m_emp + m_inc + m_loc + m_other_d
+            m_net = m_gross - m_deduct
+            m_retire = truncate_ten(m_gross / 12)
+
+            tot_ann_base += m_base; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
+            tot_ann_gross += m_gross; tot_ann_nat += m_nat; tot_ann_hea += m_hea; tot_ann_long += m_long; tot_ann_emp += m_emp
+            tot_ann_inc += m_inc; tot_ann_loc += m_loc; tot_ann_other_d += m_other_d; tot_ann_deduct += m_deduct; tot_ann_net += m_net
+            tot_ann_retire += m_retire
+
+            monthly_summary_rows.append(f"""
+            <tr style="height: 26px;">
+                <td><b>{m}월</b> ({m_str})</td>
+                <td>{m_emp_count} 명</td>
+                <td style="text-align:right;">{m_base:,}</td>
+                <td style="text-align:right;">{m_ot:,}</td>
+                <td style="text-align:right;">{m_fam:,}</td>
+                <td style="text-align:right;">{m_nontax:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#f9f9f9;">{m_gross:,}</td>
+                <td style="text-align:right;">{m_nat:,}</td>
+                <td style="text-align:right;">{m_hea:,}</td>
+                <td style="text-align:right;">{m_long:,}</td>
+                <td style="text-align:right;">{m_emp:,}</td>
+                <td style="text-align:right;">{m_inc:,}</td>
+                <td style="text-align:right;">{m_loc:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#f9f9f9;">{m_deduct:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#fffae6;">{m_net:,}</td>
+                <td style="text-align:right;">{m_retire:,}</td>
+            </tr>
+            """)
+
+        ann_sum_html_row = f"""
+        <tr style="background-color: #e6f2ff; font-weight: bold; height: 30px;">
+            <td colspan="2">연간 누적 합계</td>
+            <td style="text-align:right;">{tot_ann_base:,}</td>
+            <td style="text-align:right;">{tot_ann_ot:,}</td>
+            <td style="text-align:right;">{tot_ann_fam:,}</td>
+            <td style="text-align:right;">{tot_ann_nontax:,}</td>
+            <td style="text-align:right;">{tot_ann_gross:,}</td>
+            <td style="text-align:right;">{tot_ann_nat:,}</td>
+            <td style="text-align:right;">{tot_ann_hea:,}</td>
+            <td style="text-align:right;">{tot_ann_long:,}</td>
+            <td style="text-align:right;">{tot_ann_emp:,}</td>
+            <td style="text-align:right;">{tot_ann_inc:,}</td>
+            <td style="text-align:right;">{tot_ann_loc:,}</td>
+            <td style="text-align:right;">{tot_ann_deduct:,}</td>
+            <td style="text-align:right; background-color:#ffe680;">{tot_ann_net:,}</td>
+            <td style="text-align:right;">{tot_ann_retire:,}</td>
+        </tr>
+        """
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
+
+        annual_summary_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 총괄표 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 25px; font-family: 'Malgun Gothic', sans-serif; background: #fff; width: 100%; box-sizing: border-box;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
+                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{c_y9}년도 월별 급여대장 총괄표</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 11px; width: 210px;" border="1">
+                    <tr style="height: 18px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 40px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div style="text-align: right; margin-bottom: 8px; font-size: 11px;">(단위: 원 / 원단위 절사)</div>
+
+            <table border="1" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 11px;" cellpadding="3">
+                <thead>
+                    <tr style="background-color: #ffffcc; height: 32px;">
+                        <th style="width: 90px;">지급월</th>
+                        <th style="width: 50px;">인원</th>
+                        <th>기본급</th>
+                        <th>초과수당</th>
+                        <th>가족수당</th>
+                        <th>비과세</th>
+                        <th style="background-color: #fff2cc;">급여총액</th>
+                        <th>국민연금</th>
+                        <th>건강보험</th>
+                        <th>장기요양</th>
+                        <th>고용보험</th>
+                        <th>소득세</th>
+                        <th>지방세</th>
+                        <th style="background-color: #fff2cc;">공제합계</th>
+                        <th style="background-color: #ffe680;">실지급액</th>
+                        <th>퇴직적립금</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {ann_sum_html_row}
+                    {''.join(monthly_summary_rows)}
+                    {ann_sum_html_row}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.components.v1.html(annual_summary_template, height=650, scrolling=True)
