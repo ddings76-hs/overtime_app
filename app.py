@@ -280,7 +280,7 @@ with tab2:
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 요약표
+# TAB 3: 실제 수행 입력 & 요약표 (IndexError 안전보완 완료)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 집계 요약표")
@@ -351,15 +351,21 @@ with tab3:
                     UPDATE overtime_records
                     SET act_start_time = ?, act_end_time = ?, actual_duration_hours = ?, actual_pay = ?, status = ?, act_reason = ?
                     WHERE id = ?
-                ''', (str(act_s_time), str(act_e_time), calculated_act_hours, act_pay, status_choice, act_reason_input, target_ot['id']))
+                ''', (str(act_s_time), str(act_e_time), calculated_act_hours, act_pay, status_choice, act_reason_input, int(target_ot['id'])))
                 conn.commit()
                 conn.close()
                 st.success(f"[{target_ot['emp_name']}] 직원의 실제 수행 내역이 DB에 성공적으로 연동 저장되었다.")
                 st.rerun()
 
+        # 안전 조회를 통해 최신 데이터 가져오기 (IndexError 예방)
         conn = get_db_connection()
-        target_ot_latest = pd.read_sql_query("SELECT * FROM overtime_records WHERE id = ?", conn, params=(target_ot['id'],)).iloc[0]
+        df_latest = pd.read_sql_query("SELECT * FROM overtime_records WHERE id = ?", conn, params=(int(target_ot['id']),))
         conn.close()
+
+        if not df_latest.empty:
+            target_ot_latest = df_latest.iloc[0]
+        else:
+            target_ot_latest = target_ot
 
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
@@ -902,7 +908,6 @@ with tab7:
             selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
             emp = df_emp[df_emp['emp_id'] == selected_slip_id].iloc[0]
 
-        # 실시간 통상시급 가져오기
         current_hourly_wage = int(emp['hourly_wage'])
 
         conn = get_db_connection()
