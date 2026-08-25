@@ -53,6 +53,8 @@ def init_db():
             end_time TEXT,
             duration_hours REAL,
             estimated_pay INTEGER,
+            act_start_time TEXT DEFAULT '18:00',
+            act_end_time TEXT DEFAULT '20:00',
             actual_duration_hours REAL DEFAULT 0.0,
             actual_pay INTEGER DEFAULT 0,
             status TEXT DEFAULT '신청',
@@ -78,7 +80,7 @@ def init_db():
         )
     ''')
 
-    # 월별 확정 급여 수치 저장 테이블 (급여대장 수정 사항 명세서 반영용)
+    # 월별 확정 급여 수치 저장 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS monthly_payroll_adjust (
             pay_month TEXT,
@@ -258,20 +260,20 @@ with tab2:
                 c = conn.cursor()
                 c.execute('''
                     INSERT INTO overtime_records 
-                    (apply_dt, emp_id, emp_name, dept, position, work_date, work_type, start_time, end_time, duration_hours, estimated_pay, actual_duration_hours, actual_pay, status, reason, act_reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (apply_dt, emp_id, emp_name, dept, position, work_date, work_type, start_time, end_time, duration_hours, estimated_pay, act_start_time, act_end_time, actual_duration_hours, actual_pay, status, reason, act_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     datetime.now().strftime("%Y-%m-%d %H:%M"),
                     emp_info['emp_id'], emp_info['emp_name'], emp_info['dept'], emp_info['position'],
                     str(work_date), work_type, str(start_time), str(end_time), duration_hours, estimated_pay,
-                    duration_hours, estimated_pay, '신청', reason, ''
+                    str(start_time), str(end_time), duration_hours, estimated_pay, '신청', reason, ''
                 ))
                 conn.commit()
                 conn.close()
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 초과근무 실제 수행 입력 및 확인서 출력
+# TAB 3: 초과근무 실제 수행 입력 (시작/종료 시간 직접 선택 가능)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 및 확인서")
@@ -283,7 +285,7 @@ with tab3:
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
-        ot_options = [f"[{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전신청: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
+        ot_options = [f"[{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 신청: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
         selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
         target_ot = df_ot.iloc[selected_ot_idx]
 
@@ -299,13 +301,32 @@ with tab3:
             col_a1, col_a2 = st.columns(2)
             with col_a1:
                 st.write(f"**사전 신청 정보**")
-                st.write(f"- 신청시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({target_ot['duration_hours']}시간)")
-                st.write(f"- 신청사유: {target_ot['reason']}")
+                st.write(f"- 근무 구분: {target_ot['work_type']}")
+                st.write(f"- 신청 시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({target_ot['duration_hours']}시간)")
+                st.write(f"- 신청 사유: {target_ot['reason']}")
             
             with col_a2:
-                st.write(f"**실제 수행 내역 입력/수정**")
-                act_hours = st.number_input("실제 수행 인정시간 (시간 단위)", min_value=0.0, value=float(target_ot['actual_duration_hours']), step=0.5)
-                act_pay = truncate_ten(act_hours * hourly_w * 1.5)
+                st.write(f"**실제 수행 근무시간 입력**")
+                
+                # 기존 시간 변환
+                try:
+                    init_s_time = datetime.strptime(target_ot['act_start_time'] if target_ot['act_start_time'] else target_ot['start_time'], "%H:%M:%S").time()
+                    init_e_time = datetime.strptime(target_ot['act_end_time'] if target_ot['act_end_time'] else target_ot['end_time'], "%H:%M:%S").time()
+                except:
+                    init_s_time = time(18, 0)
+                    init_e_time = time(20, 0)
+
+                act_s_time = st.time_input("실제 시작 시간", init_s_time)
+                act_e_time = st.time_input("실제 종료 시간", init_e_time)
+
+                # 시간차 자동 계산
+                dummy_date = datetime.now().date()
+                s_dt = datetime.combine(dummy_date, act_s_time)
+                e_dt = datetime.combine(dummy_date, act_e_time)
+                calculated_act_hours = max(0.0, (e_dt - s_dt).total_seconds() / 3600)
+
+                st.write(f"- 실제 인정시간: **{calculated_act_hours:.1f} 시간**")
+                act_pay = truncate_ten(calculated_act_hours * hourly_w * 1.5)
                 st.metric(label="최종 확정 수당 (1.5배 적용)", value=f"{act_pay:,} 원")
                 
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
@@ -318,12 +339,12 @@ with tab3:
                 c = conn.cursor()
                 c.execute('''
                     UPDATE overtime_records
-                    SET actual_duration_hours = ?, actual_pay = ?, status = ?, act_reason = ?
+                    SET act_start_time = ?, act_end_time = ?, actual_duration_hours = ?, actual_pay = ?, status = ?, act_reason = ?
                     WHERE id = ?
-                ''', (act_hours, act_pay, status_choice, act_reason, target_ot['id']))
+                ''', (str(act_s_time), str(act_e_time), calculated_act_hours, act_pay, status_choice, act_reason, target_ot['id']))
                 conn.commit()
                 conn.close()
-                st.success(f"[{target_ot['emp_name']}] 직원의 실제 수행 인정시간({act_hours}시간) 및 수당이 반영되었다.")
+                st.success(f"[{target_ot['emp_name']}] 직원의 실제 수행시간({act_s_time} ~ {act_e_time} / {calculated_act_hours}시간) 및 수당이 저장되었다.")
                 st.rerun()
 
         st.divider()
@@ -366,7 +387,7 @@ with tab3:
                 </tr>
                 <tr style="height: 40px; background-color: #ffffcc;">
                     <th style="padding: 6px; background: #fff2cc;">실제 수행 인정</th>
-                    <td style="padding: 6px;" colspan="3"><b>실제 인정시간: {target_ot['actual_duration_hours']} 시간 &nbsp;|&nbsp; 확정 수당: {target_ot['actual_pay']:,} 원</b></td>
+                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot['act_start_time']} ~ {target_ot['act_end_time']} ({target_ot['actual_duration_hours']} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot['actual_pay']:,} 원</b></td>
                 </tr>
                 <tr>
                     <th style="padding: 6px; background: #f9f9f9;">사유 및 업무내용</th>
@@ -523,7 +544,7 @@ with tab5:
         st.components.v1.html(leave_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 통합 급여대장 (수정 사항 명세서 연동 저장)
+# TAB 6: 통합 급여대장 (오류 수정 완비)
 # -------------------------------------------------------------------
 with tab6:
     st.header("📊 통합 급여대장")
@@ -547,7 +568,6 @@ with tab6:
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
             if not adj_match.empty:
-                # DB에 수정 저장된 수치가 있을 경우 불러오기
                 adj = adj_match.iloc[0]
                 base = adj['base_salary']
                 ot_pay = adj['ot_pay']
@@ -562,7 +582,6 @@ with tab6:
                 emp_local_tax = adj['local_tax']
                 other_deduct = adj['other_deduction']
             else:
-                # 자동 계산 수치
                 emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
                 ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
 
@@ -572,22 +591,26 @@ with tab6:
                 other_allow = emp['other_allowance']
                 other_deduct = emp['other_deduction']
 
-                total_gross = truncate_ten(base + ot_pay + family + non_tax + other_allow)
-                taxable_gross = total_gross - non_tax
+                total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
+                taxable_gross_calc = total_gross_calc - non_tax
 
-                emp_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
-                emp_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
+                emp_national = truncate_ten(taxable_gross_calc * 0.0475) if emp.get('is_national', 1) == 1 else 0
+                emp_health = truncate_ten(taxable_gross_calc * 0.03595) if emp.get('is_health', 1) == 1 else 0
                 emp_longterm = truncate_ten(emp_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
-                emp_employment = truncate_ten(taxable_gross * 0.0090) if emp.get('is_employment', 1) == 1 else 0
-                emp_income_tax = truncate_ten(taxable_gross * 0.03)
+                emp_employment = truncate_ten(taxable_gross_calc * 0.0090) if emp.get('is_employment', 1) == 1 else 0
+                emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
                 emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+
+            # 사업자 부담금 산출용 과세금액 정의 (NameError 방지)
+            tot_g = base + ot_pay + family + non_tax + other_allow
+            taxable_gross = tot_g - non_tax
 
             biz_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
             biz_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
             biz_longterm = truncate_ten(biz_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
             biz_employment = truncate_ten(taxable_gross * 0.0115) if emp.get('is_employment', 1) == 1 else 0
             biz_industrial = truncate_ten(taxable_gross * 0.0726) if emp.get('is_industrial', 1) == 1 else 0
-            retirement_accrual = truncate_ten((base + ot_pay + family + non_tax + other_allow) / 12)
+            retirement_accrual = truncate_ten(tot_g / 12)
 
             calculated_rows.append({
                 "No": no, "사번": emp['emp_id'], "이름": emp['emp_name'], "생년월일": emp['birth_date'], "부서": emp['dept'], "직위": emp['position'], "호봉": emp['hobong'],
@@ -602,7 +625,7 @@ with tab6:
         df_calc = pd.DataFrame(calculated_rows)
 
         st.subheader(f"✏️ {pay_month} 급여대장 항목별 수정 편집기")
-        st.info("💡 공제·수당 수치를 수정한 후 아래 [수정사항 명세서 반영 저장] 버튼을 누르면 개별 급여명세서에 저장된 금액이 적용된다.")
+        st.info("💡 공제·수당 수치를 수정한 후 아래 [수정사항 명세서 반영 저장] 버튼을 누르면 개별 급여명세서에 적용된다.")
         
         edited_payroll = st.data_editor(df_calc, use_container_width=True)
 
@@ -773,7 +796,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (수정 수치 반영)
+# TAB 7: 개별 급여명세서 인쇄 (급여대장 수정 수치 연동 완비)
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -805,7 +828,6 @@ with tab7:
         total_ot_hours = weekday_ot_hours + holiday_ot_hours
 
         if not df_adj_single.empty:
-            # 급여대장에서 수정 저장한 값 우선 적용
             adj = df_adj_single.iloc[0]
             base = adj['base_salary']
             ot_pay = adj['ot_pay']
@@ -820,7 +842,6 @@ with tab7:
             emp_local_tax = adj['local_tax']
             other_deduct = adj['other_deduction']
         else:
-            # 자동 산출 수치 적용
             ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
             base = emp['base_salary']
             family = emp['family_allowance']
