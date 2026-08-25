@@ -4,6 +4,8 @@ from datetime import datetime, time
 import sqlite3
 import io
 import base64
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템", layout="wide")
@@ -280,10 +282,10 @@ with tab2:
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 요약표 (IndexError 안전보완 완료)
+# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표
 # -------------------------------------------------------------------
 with tab3:
-    st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 집계 요약표")
+    st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 승인 요약표")
     
     conn = get_db_connection()
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records ORDER BY id DESC", conn)
@@ -292,9 +294,24 @@ with tab3:
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
-        ot_options = [f"[{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전신청: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
-        selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
-        target_ot = df_ot.iloc[selected_ot_idx]
+        # 1. 처리 및 출력 대상 선택
+        col_ot1, col_ot2 = st.columns([3, 1])
+        with col_ot1:
+            ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
+            selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
+            target_ot = df_ot.iloc[selected_ot_idx]
+        
+        # 초과근무 내역 삭제 기능
+        with col_ot2:
+            st.write("**🗑️ 선택 내역 삭제**")
+            if st.button("해당 초과근무 내역 삭제", type="primary", key="del_ot_btn"):
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("DELETE FROM overtime_records WHERE id = ?", (int(target_ot['id']),))
+                conn.commit()
+                conn.close()
+                st.success(f"ID {target_ot['id']} 초과근무 내역이 정상적으로 삭제되었다.")
+                st.rerun()
 
         conn = get_db_connection()
         df_emp_single = pd.read_sql_query("SELECT * FROM employees WHERE emp_id = ?", conn, params=(target_ot['emp_id'],))
@@ -307,7 +324,7 @@ with tab3:
         if pd.isna(act_s_val) or not act_s_val: act_s_val = target_ot['start_time']
         if pd.isna(act_e_val) or not act_e_val: act_e_val = target_ot['end_time']
 
-        st.subheader(f"✏️ 실제 수행 시간 및 업무내용 입력: {target_ot['emp_name']} ({target_ot['work_date']})")
+        st.subheader(f"✏️ 실제 수행 시간 및 승인 상태 변경: {target_ot['emp_name']} ({target_ot['work_date']})")
         
         with st.form("actual_ot_form"):
             col_a1, col_a2 = st.columns(2)
@@ -342,7 +359,7 @@ with tab3:
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
                 act_reason_input = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else '')
 
-            submit_act = st.form_submit_button("실제 수행 내역 저장 및 반영")
+            submit_act = st.form_submit_button("실제 수행 내역 저장 및 승인 반영")
 
             if submit_act:
                 conn = get_db_connection()
@@ -354,18 +371,14 @@ with tab3:
                 ''', (str(act_s_time), str(act_e_time), calculated_act_hours, act_pay, status_choice, act_reason_input, int(target_ot['id'])))
                 conn.commit()
                 conn.close()
-                st.success(f"[{target_ot['emp_name']}] 직원의 실제 수행 내역이 DB에 성공적으로 연동 저장되었다.")
+                st.success(f"[{target_ot['emp_name']}] 직원의 수행 내역 및 승인 상태({status_choice})가 성공적으로 연동 저장되었다.")
                 st.rerun()
 
-        # 안전 조회를 통해 최신 데이터 가져오기 (IndexError 예방)
         conn = get_db_connection()
         df_latest = pd.read_sql_query("SELECT * FROM overtime_records WHERE id = ?", conn, params=(int(target_ot['id']),))
         conn.close()
 
-        if not df_latest.empty:
-            target_ot_latest = df_latest.iloc[0]
-        else:
-            target_ot_latest = target_ot
+        target_ot_latest = df_latest.iloc[0] if not df_latest.empty else target_ot
 
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
@@ -433,23 +446,37 @@ with tab3:
         st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
 
         st.divider()
-        st.subheader("📊 월별 초과근무 집계 요약표")
+        st.subheader("📊 월별 승인 초과근무 집계 요약표")
         
-        filter_month = st.date_input("조회 월 선택", datetime.now(), key="ot_summary_month").strftime("%Y-%m")
+        # 연도-월만 선택할 수 있도록 개선
+        current_year = datetime.now().year
+        c_y, c_m = st.columns(2)
+        with c_y:
+            sel_year = st.selectbox("조회 연도 선택", range(current_year - 2, current_year + 3), index=2, key="ot_year_sel")
+        with c_m:
+            sel_month = st.selectbox("조회 월 선택", range(1, 13), index=datetime.now().month - 1, key="ot_month_sel")
+        
+        filter_month = f"{sel_year}-{sel_month:02d}"
+
+        # 최종 '승인' 상태인 건만 요약표에 집계
         conn = get_db_connection()
-        df_ot_month = pd.read_sql_query("SELECT * FROM overtime_records WHERE work_date LIKE ?", conn, params=(f"{filter_month}%",))
+        df_ot_month = pd.read_sql_query(
+            "SELECT * FROM overtime_records WHERE work_date LIKE ? AND status = '승인'", 
+            conn, 
+            params=(f"{filter_month}%",)
+        )
         conn.close()
 
         if df_ot_month.empty:
-            st.info(f"{filter_month}월에 등록된 초과근무 내역이 없다.")
+            st.info(f"💡 [{filter_month}] 승인 완료된 초과근무 내역이 없다.")
         else:
             summary_ot = df_ot_month.groupby(['emp_id', 'emp_name', 'dept', 'position', 'status']).agg(
-                총_신청건수=('id', 'count'),
+                승인_건수=('id', 'count'),
                 총_인정시간=('actual_duration_hours', 'sum'),
                 총_확정수당=('actual_pay', 'sum')
             ).reset_index()
             
-            st.write(f"**[{filter_month}] 직원별 초과근무 요약**")
+            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과근무 집계 현황** (급여명세서 연동 기준)")
             st.dataframe(summary_ot, use_container_width=True)
 
 # -------------------------------------------------------------------
@@ -562,6 +589,53 @@ with tab4:
             })
 
         df_summary_all = pd.DataFrame(summary_rows)
+
+        output_leave = io.BytesIO()
+        with pd.ExcelWriter(output_leave, engine='openpyxl') as writer:
+            df_summary_all.to_excel(writer, index=False, sheet_name="전직원_연차_요약")
+            worksheet = writer.sheets["전직원_연차_요약"]
+
+            header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+            header_font = Font(name="맑은 고딕", size=11, bold=True)
+            body_font = Font(name="맑은 고딕", size=10)
+
+            thin_border = Border(
+                left=Side(style='thin', color='000000'),
+                right=Side(style='thin', color='000000'),
+                top=Side(style='thin', color='000000'),
+                bottom=Side(style='thin', color='000000')
+            )
+            align_center = Alignment(horizontal='center', vertical='center')
+            align_right = Alignment(horizontal='right', vertical='center')
+
+            for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
+                for cell in row:
+                    cell.border = thin_border
+                    if cell.row == 1:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = align_center
+                    else:
+                        cell.font = body_font
+                        if cell.column in [5, 6, 7, 8]:
+                            cell.alignment = align_right
+                        else:
+                            cell.alignment = align_center
+
+            for col in worksheet.columns:
+                max_len = max(sum(2 if ord(c) > 127 else 1 for c in str(cell.value or '')) for cell in col)
+                col_letter = get_column_letter(col[0].column)
+                worksheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+        excel_leave_data = output_leave.getvalue()
+
+        st.download_button(
+            label="📥 전 직원 연차 내역 요약표 엑셀 다운로드 (.xlsx)",
+            data=excel_leave_data,
+            file_name=f"전직원_연차요약_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
         st.dataframe(df_summary_all, use_container_width=True)
 
 # -------------------------------------------------------------------
@@ -636,7 +710,7 @@ with tab5:
         st.components.v1.html(leave_template, height=560, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 6: 통합 급여대장
+# TAB 6: 통합 급여대장 (승인 완료 건 기준 자동 연동)
 # -------------------------------------------------------------------
 with tab6:
     st.header("📊 통합 급여대장")
@@ -646,6 +720,7 @@ with tab6:
 
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
+    # 승인 상태인 내역만 조회
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     df_adjust = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ?", conn, params=(pay_month,))
     conn.close()
@@ -659,10 +734,14 @@ with tab6:
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
+            # 해당 월의 '승인'된 초과근무 수당 집계
+            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
+            calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
             if not adj_match.empty:
                 adj = adj_match.iloc[0]
                 base = adj['base_salary']
-                ot_pay = adj['ot_pay']
+                ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
                 family = adj['family_allowance']
                 non_tax = adj['non_taxable']
                 other_allow = adj['other_allowance']
@@ -674,9 +753,7 @@ with tab6:
                 emp_local_tax = adj['local_tax']
                 other_deduct = adj['other_deduction']
             else:
-                emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
-                ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
-
+                ot_pay = calculated_ot_pay
                 base = emp['base_salary']
                 family = emp['family_allowance']
                 non_tax = emp['non_taxable']
@@ -887,13 +964,14 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (통상시급 실시간 연동 완비)
+# TAB 7: 개별 급여명세서 인쇄 (승인 금액 기준 완벽 연동)
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
     
     conn = get_db_connection()
     df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
+    # 승인 상태 초과근무 내역만 조회
     df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
     conn.close()
 
@@ -914,15 +992,17 @@ with tab7:
         df_adj_single = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ? AND emp_id = ?", conn, params=(pay_month_slip, emp['emp_id']))
         conn.close()
 
+        # '승인'된 초과근무만 시간 및 수당 계산
         emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))]
         weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         total_ot_hours = weekday_ot_hours + holiday_ot_hours
+        calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
         if not df_adj_single.empty:
             adj = df_adj_single.iloc[0]
             base = adj['base_salary']
-            ot_pay = adj['ot_pay']
+            ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
             family = adj['family_allowance']
             non_tax = adj['non_taxable']
             other_allow = adj['other_allowance']
@@ -934,7 +1014,7 @@ with tab7:
             emp_local_tax = adj['local_tax']
             other_deduct = adj['other_deduction']
         else:
-            ot_pay = emp_ot['actual_pay'].sum() if not emp_ot.empty else 0
+            ot_pay = calculated_ot_pay
             base = emp['base_salary']
             family = emp['family_allowance']
             non_tax = emp['non_taxable']
