@@ -147,6 +147,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🖨️ 연차 신청서 출력",
     "📊 통합 급여대장 (수정 및 엑셀)", 
     "📄 개별 급여명세서 인쇄"
+    "🖨️ 통합 급여대장 인쇄"
 ])
 
 # -------------------------------------------------------------------
@@ -1163,3 +1164,223 @@ with tab7:
         </div>
         """
         st.components.v1.html(payslip_template, height=890, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 8: 통합 급여대장 인쇄 (신규 추가)
+# -------------------------------------------------------------------
+with tab8:
+    st.header("🖨️ 통합 급여대장 인쇄")
+    
+    pay_date_print = st.date_input("출력할 급여 지급일 선택", datetime.now(), key="payroll_print_date")
+    pay_month_print = pay_date_print.strftime("%Y-%m")
+
+    conn = get_db_connection()
+    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
+    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
+    df_adjust = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ?", conn, params=(pay_month_print,))
+    conn.close()
+
+    if df_emp.empty:
+        st.warning("등록된 직원이 없다.")
+    else:
+        payroll_print_rows = ""
+        no = 1
+
+        sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
+        sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
+        sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
+
+        for idx, emp in df_emp.iterrows():
+            adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
+            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_print))]
+            calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+            if not adj_match.empty:
+                adj = adj_match.iloc[0]
+                base = adj['base_salary']
+                ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
+                family = adj['family_allowance']
+                non_tax = adj['non_taxable']
+                other_allow = adj['other_allowance']
+                emp_national = adj['national_pension']
+                emp_health = adj['health_insurance']
+                emp_longterm = adj['longterm_care']
+                emp_employment = adj['employment_insurance']
+                emp_income_tax = adj['income_tax']
+                emp_local_tax = adj['local_tax']
+                other_deduct = adj['other_deduction']
+            else:
+                ot_pay = calculated_ot_pay
+                base = emp['base_salary']
+                family = emp['family_allowance']
+                non_tax = emp['non_taxable']
+                other_allow = emp['other_allowance']
+                other_deduct = emp['other_deduction']
+
+                total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
+                taxable_gross_calc = total_gross_calc - non_tax
+
+                emp_national = truncate_ten(taxable_gross_calc * 0.0475) if emp.get('is_national', 1) == 1 else 0
+                emp_health = truncate_ten(taxable_gross_calc * 0.03595) if emp.get('is_health', 1) == 1 else 0
+                emp_longterm = truncate_ten(emp_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
+                emp_employment = truncate_ten(taxable_gross_calc * 0.0090) if emp.get('is_employment', 1) == 1 else 0
+                emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
+                emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+
+            tot_g = base + ot_pay + family + non_tax + other_allow
+            taxable_gross = tot_g - non_tax
+            emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
+            net_pay = tot_g - emp_deduction_total
+
+            biz_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
+            biz_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
+            biz_longterm = truncate_ten(biz_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
+            biz_employment = truncate_ten(taxable_gross * 0.0115) if emp.get('is_employment', 1) == 1 else 0
+            biz_industrial = truncate_ten(taxable_gross * 0.0726) if emp.get('is_industrial', 1) == 1 else 0
+            biz_deduction_total = biz_national + biz_health + biz_longterm + biz_employment + biz_industrial
+            retirement_accrual = truncate_ten(tot_g / 12)
+
+            sum_base += base; sum_ot += ot_pay; sum_family += family; sum_nontax += non_tax; sum_gross += tot_g
+            sum_nat += emp_national; sum_hea += emp_health; sum_long += emp_longterm; sum_emp += emp_employment
+            sum_inc += emp_income_tax; sum_loc += emp_local_tax; sum_other_d += other_deduct; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
+            sum_b_nat += biz_national; sum_b_hea += biz_health; sum_b_long += biz_longterm; sum_b_emp += biz_employment; sum_b_ind += biz_industrial; sum_b_tot += biz_deduction_total; sum_retire += retirement_accrual
+
+            payroll_print_rows += f"""
+            <tr style="height: 26px;">
+                <td>{no}</td><td>{emp['emp_name']}</td><td>{emp['birth_date']}</td><td>{emp['hobong']}</td>
+                <td style="text-align:right;">{base:,}</td>
+                <td style="text-align:right;">{ot_pay:,}</td>
+                <td style="text-align:right;">{family:,}</td>
+                <td style="text-align:right;">{non_tax:,}</td>
+                <td style="text-align:right; font-weight:bold;">{tot_g:,}</td>
+                <td style="text-align:right;">{emp_national:,}</td>
+                <td style="text-align:right;">{emp_health:,}</td>
+                <td style="text-align:right;">{emp_longterm:,}</td>
+                <td style="text-align:right;">{emp_employment:,}</td>
+                <td style="text-align:right;">{emp_income_tax:,}</td>
+                <td style="text-align:right;">{emp_local_tax:,}</td>
+                <td style="text-align:right; font-weight:bold;">{emp_deduction_total:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#fffae6;">{net_pay:,}</td>
+                <td style="text-align:right;">{biz_national:,}</td>
+                <td style="text-align:right;">{biz_health:,}</td>
+                <td style="text-align:right;">{biz_longterm:,}</td>
+                <td style="text-align:right;">{biz_employment:,}</td>
+                <td style="text-align:right;">{biz_industrial:,}</td>
+                <td style="text-align:right; font-weight:bold;">{biz_deduction_total:,}</td>
+                <td style="text-align:right;">{retirement_accrual:,}</td>
+            </tr>
+            """
+            no += 1
+
+        summary_print_row = f"""
+        <tr style="background-color: #e6f2ff; font-weight: bold; height: 28px;">
+            <td colspan="4">합 계</td>
+            <td style="text-align:right;">{sum_base:,}</td>
+            <td style="text-align:right;">{sum_ot:,}</td>
+            <td style="text-align:right;">{sum_family:,}</td>
+            <td style="text-align:right;">{sum_nontax:,}</td>
+            <td style="text-align:right;">{sum_gross:,}</td>
+            <td style="text-align:right;">{sum_nat:,}</td>
+            <td style="text-align:right;">{sum_hea:,}</td>
+            <td style="text-align:right;">{sum_long:,}</td>
+            <td style="text-align:right;">{sum_emp:,}</td>
+            <td style="text-align:right;">{sum_inc:,}</td>
+            <td style="text-align:right;">{sum_loc:,}</td>
+            <td style="text-align:right;">{sum_deduct_tot:,}</td>
+            <td style="text-align:right; background-color:#ffe680;">{sum_net:,}</td>
+            <td style="text-align:right;">{sum_b_nat:,}</td>
+            <td style="text-align:right;">{sum_b_hea:,}</td>
+            <td style="text-align:right;">{sum_b_long:,}</td>
+            <td style="text-align:right;">{sum_b_emp:,}</td>
+            <td style="text-align:right;">{sum_b_ind:,}</td>
+            <td style="text-align:right;">{sum_b_tot:,}</td>
+            <td style="text-align:right;">{sum_retire:,}</td>
+        </tr>
+        """
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
+
+        payroll_print_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 급여대장 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 20px; font-family: 'Malgun Gothic', sans-serif; background: #fff; width: 100%; box-sizing: border-box;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; clear: both;">
+                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{pay_month_print}월 통합 급여대장</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 11px; width: 210px;" border="1">
+                    <tr style="height: 18px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 40px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px;">
+                <div style="font-size: 12px; font-weight: bold;">지급일자: {pay_date_print}</div>
+                <div>(단위: 원 / 원단위 절사)</div>
+            </div>
+
+            <table border="1" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 10px;" cellpadding="2">
+                <thead>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="3" style="width: 25px;">No</th>
+                        <th rowspan="3" style="width: 50px;">이름</th>
+                        <th rowspan="3" style="width: 65px;">생년월일</th>
+                        <th rowspan="3" style="width: 40px;">호봉</th>
+                        <th colspan="4">지급 내역</th>
+                        <th rowspan="3">급여총액</th>
+                        <th colspan="7">근로자 본인 부담금</th>
+                        <th rowspan="3" style="background-color: #fff2cc;">실지급액</th>
+                        <th colspan="6">사업자 부담 사회보험금</th>
+                        <th rowspan="3">사업주부담<br>퇴직적립금</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="2">기본급</th>
+                        <th rowspan="2">초과수당</th>
+                        <th rowspan="2">가족수당</th>
+                        <th rowspan="2">비과세</th>
+                        
+                        <th>국민</th>
+                        <th>건강</th>
+                        <th>장기요양</th>
+                        <th>고용</th>
+                        <th>소득세</th>
+                        <th>지방세</th>
+                        <th rowspan="2">공제합계</th>
+                        
+                        <th>국민</th>
+                        <th>건강</th>
+                        <th>장기요양</th>
+                        <th>고용</th>
+                        <th>산재</th>
+                        <th rowspan="2">사업자합계</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th>4.75%</th>
+                        <th>3.595%</th>
+                        <th>12.95%</th>
+                        <th>0.90%</th>
+                        <th>간이세액</th>
+                        <th>10%</th>
+                        
+                        <th>4.75%</th>
+                        <th>3.595%</th>
+                        <th>12.95%</th>
+                        <th>1.15%</th>
+                        <th>7.26%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {summary_print_row}
+                    {payroll_print_rows}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.components.v1.html(payroll_print_template, height=600, scrolling=True)
