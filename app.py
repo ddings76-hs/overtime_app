@@ -383,7 +383,7 @@ with tab3:
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
 
-        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
         ot_confirm_template = f"""
@@ -401,7 +401,7 @@ with tab3:
                         <th style="width: 60px;">대 리</th>
                         <th style="width: 65px;">센터장</th>
                     </tr>
-                    <tr style="height: 50px;">
+                    <tr style="height: 35px;">
                         <td></td><td></td><td></td>
                     </tr>
                 </table>
@@ -655,7 +655,7 @@ with tab5:
         selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
         target_l = df_leave_records.iloc[selected_l_index]
 
-        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 50px; float: left;">' if st.session_state.logo_b64 else ''
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
         leave_template = f"""
         <div style="text-align: right; margin-bottom: 10px;">
@@ -894,7 +894,7 @@ with tab6:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 40px; float: left;">' if st.session_state.logo_b64 else ''
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
 
         payroll_template = f"""
         <div style="font-family: 'Malgun Gothic', sans-serif; font-size: 11px; width: 100%; overflow-x: auto;">
