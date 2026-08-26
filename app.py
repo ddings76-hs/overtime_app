@@ -138,7 +138,7 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
-# 탭 구성 (tab1 ~ tab9 정의)
+# 탭 구성 (tab1 ~ tab9)
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "👥 직원 등록 및 정보 관리", 
     "📝 초과/휴일근무 신청", 
@@ -264,7 +264,7 @@ with tab2:
             raw_pay = duration_hours * emp_info['hourly_wage'] * multiplier
             estimated_pay = truncate_ten(raw_pay)
 
-            st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간** / 예상 수당: **{estimated_pay:,}원**")
+            st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간**")
 
             if st.button("사전 신청서 제출"):
                 conn = get_db_connection()
@@ -284,7 +284,7 @@ with tab2:
                 st.success("초과근무 신청 내역이 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표
+# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표 (수당 금액 표기 제거)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 승인 요약표")
@@ -298,7 +298,7 @@ with tab3:
     else:
         col_ot1, col_ot2 = st.columns([3, 1])
         with col_ot1:
-            ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {r['duration_hours']}h" for _, r in df_ot.iterrows()]
+            ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {float(r['duration_hours']):.1f}h" for _, r in df_ot.iterrows()]
             selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
             target_ot = df_ot.iloc[selected_ot_idx]
         
@@ -331,7 +331,7 @@ with tab3:
             with col_a1:
                 st.write(f"**사전 신청 정보**")
                 st.write(f"- 근무 구분: {target_ot['work_type']}")
-                st.write(f"- 신청 시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({target_ot['duration_hours']}시간)")
+                st.write(f"- 신청 시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({float(target_ot['duration_hours']):.1f}시간)")
                 st.write(f"- 신청 사유: {target_ot['reason']}")
             
             with col_a2:
@@ -352,9 +352,8 @@ with tab3:
                 e_dt = datetime.combine(dummy_date, act_e_time)
                 calculated_act_hours = max(0.0, (e_dt - s_dt).total_seconds() / 3600)
 
-                st.write(f"- 실제 인정시간: **{calculated_act_hours:.1f} 시간**")
+                st.metric(label="실제 인정 시간", value=f"{calculated_act_hours:.1f} 시간")
                 act_pay = truncate_ten(calculated_act_hours * hourly_w * 1.5)
-                st.metric(label="최종 확정 수당 (1.5배 적용)", value=f"{act_pay:,} 원")
                 
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
                 act_reason_input = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else '')
@@ -386,6 +385,7 @@ with tab3:
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
+        # 수당 금액을 제거한 확인서 양식
         ot_confirm_template = f"""
         <div style="text-align: right; margin-bottom: 10px;">
             <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
@@ -424,7 +424,7 @@ with tab3:
                 </tr>
                 <tr style="height: 40px; background-color: #ffffcc;">
                     <th style="padding: 6px; background: #fff2cc;">실제 수행 인정</th>
-                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot_latest['act_start_time']} ~ {target_ot_latest['act_end_time']} ({float(target_ot_latest['actual_duration_hours']):.1f} 시간) &nbsp;|&nbsp; 확정 수당: {target_ot_latest['actual_pay']:,} 원</b></td>
+                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot_latest['act_start_time']} ~ {target_ot_latest['act_end_time']} ({float(target_ot_latest['actual_duration_hours']):.1f} 시간)</b></td>
                 </tr>
                 <tr>
                     <th style="padding: 6px; background: #f9f9f9;">사유 및 업무내용</th>
@@ -470,11 +470,11 @@ with tab3:
         else:
             summary_ot = df_ot_month.groupby(['emp_id', 'emp_name', 'dept', 'position', 'status']).agg(
                 승인_건수=('id', 'count'),
-                총_인정시간=('actual_duration_hours', 'sum'),
-                총_확정수당=('actual_pay', 'sum')
+                총_인정시간_h=('actual_duration_hours', 'sum')
             ).reset_index()
+            summary_ot['총_인정시간_h'] = summary_ot['총_인정시간_h'].round(1)
             
-            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과근무 집계 현황** (급여명세서 연동 기준)")
+            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과근무 인정 시간 현황**")
             st.dataframe(summary_ot, use_container_width=True)
 
 # -------------------------------------------------------------------
@@ -1379,7 +1379,7 @@ with tab8:
         st.components.v1.html(payroll_print_template, height=600, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 9: 월별 급여대장 총괄표 (신규 구현)
+# TAB 9: 월별 급여대장 총괄표 (승인 초과근무 총시간 컬럼 포함)
 # -------------------------------------------------------------------
 with tab9:
     st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
@@ -1397,7 +1397,7 @@ with tab9:
     else:
         monthly_summary_rows = []
 
-        tot_ann_count = tot_ann_base = tot_ann_ot = tot_ann_fam = tot_ann_nontax = tot_ann_other_a = 0
+        tot_ann_count = tot_ann_base = tot_ann_ot_hours = tot_ann_ot = tot_ann_fam = tot_ann_nontax = tot_ann_other_a = 0
         tot_ann_gross = tot_ann_nat = tot_ann_hea = tot_ann_long = tot_ann_emp = tot_ann_inc = tot_ann_loc = 0
         tot_ann_other_d = tot_ann_deduct = tot_ann_net = tot_ann_retire = 0
 
@@ -1407,6 +1407,12 @@ with tab9:
             m_emp_count = len(df_emp_all)
             m_base = m_ot = m_fam = m_nontax = m_other_a = 0
             m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
+            m_ot_hours = 0.0
+
+            # 월별 승인 초과근무 시간 합계 계산
+            m_ot_records = df_ot_all[df_ot_all['work_date'].str.startswith(m_str)] if not df_ot_all.empty else pd.DataFrame()
+            if not m_ot_records.empty:
+                m_ot_hours = m_ot_records['actual_duration_hours'].sum()
 
             for _, emp in df_emp_all.iterrows():
                 adj_m = df_adj_all[(df_adj_all['pay_month'] == m_str) & (df_adj_all['emp_id'] == emp['emp_id'])] if not df_adj_all.empty else pd.DataFrame()
@@ -1455,7 +1461,7 @@ with tab9:
             m_net = m_gross - m_deduct
             m_retire = truncate_ten(m_gross / 12)
 
-            tot_ann_base += m_base; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
+            tot_ann_base += m_base; tot_ann_ot_hours += m_ot_hours; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
             tot_ann_gross += m_gross; tot_ann_nat += m_nat; tot_ann_hea += m_hea; tot_ann_long += m_long; tot_ann_emp += m_emp
             tot_ann_inc += m_inc; tot_ann_loc += m_loc; tot_ann_other_d += m_other_d; tot_ann_deduct += m_deduct; tot_ann_net += m_net
             tot_ann_retire += m_retire
@@ -1465,6 +1471,7 @@ with tab9:
                 <td><b>{m}월</b> ({m_str})</td>
                 <td>{m_emp_count} 명</td>
                 <td style="text-align:right;">{m_base:,}</td>
+                <td style="text-align:right; background-color:#f0f8ff;"><b>{m_ot_hours:.1f} 시간</b></td>
                 <td style="text-align:right;">{m_ot:,}</td>
                 <td style="text-align:right;">{m_fam:,}</td>
                 <td style="text-align:right;">{m_nontax:,}</td>
@@ -1485,6 +1492,7 @@ with tab9:
         <tr style="background-color: #e6f2ff; font-weight: bold; height: 30px;">
             <td colspan="2">연간 누적 합계</td>
             <td style="text-align:right;">{tot_ann_base:,}</td>
+            <td style="text-align:right; background-color:#d0e8ff;">{tot_ann_ot_hours:.1f} 시간</td>
             <td style="text-align:right;">{tot_ann_ot:,}</td>
             <td style="text-align:right;">{tot_ann_fam:,}</td>
             <td style="text-align:right;">{tot_ann_nontax:,}</td>
@@ -1529,9 +1537,10 @@ with tab9:
             <table border="1" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 11px;" cellpadding="3">
                 <thead>
                     <tr style="background-color: #ffffcc; height: 32px;">
-                        <th style="width: 90px;">지급월</th>
-                        <th style="width: 50px;">인원</th>
+                        <th style="width: 80px;">지급월</th>
+                        <th style="width: 45px;">인원</th>
                         <th>기본급</th>
+                        <th style="background-color: #e6f2ff;">승인 초과시간</th>
                         <th>초과수당</th>
                         <th>가족수당</th>
                         <th>비과세</th>
