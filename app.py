@@ -1,3 +1,95 @@
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # 1. 직원 테이블
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS employees (
+            emp_id TEXT PRIMARY KEY,
+            emp_name TEXT,
+            birth_date TEXT,
+            dept TEXT,
+            position TEXT,
+            hobong TEXT,
+            base_salary INTEGER,
+            hourly_wage INTEGER,
+            family_allowance INTEGER,
+            non_taxable INTEGER,
+            other_allowance INTEGER,
+            other_deduction INTEGER,
+            is_national INTEGER DEFAULT 1,
+            is_health INTEGER DEFAULT 1,
+            is_employment INTEGER DEFAULT 1,
+            is_industrial INTEGER DEFAULT 1,
+            total_annual_leave REAL DEFAULT 15.0
+        )
+    ''')
+
+    # 2. 초과근무 테이블 (DROP 문 제거로 기존 데이터 보존)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS overtime_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            apply_dt TEXT,
+            emp_id TEXT,
+            emp_name TEXT,
+            dept TEXT,
+            position TEXT,
+            work_date TEXT,
+            work_type TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            duration_hours REAL,
+            estimated_pay INTEGER,
+            act_start_time TEXT DEFAULT '18:00:00',
+            act_end_time TEXT DEFAULT '20:00:00',
+            actual_duration_hours REAL DEFAULT 0.0,
+            actual_pay INTEGER DEFAULT 0,
+            status TEXT DEFAULT '신청',
+            reason TEXT,
+            act_reason TEXT
+        )
+    ''')
+
+    # 3. 연차/휴가 관리 테이블
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS leave_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            apply_dt TEXT,
+            emp_id TEXT,
+            emp_name TEXT,
+            dept TEXT,
+            position TEXT,
+            leave_type TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            used_days REAL,
+            reason TEXT
+        )
+    ''')
+
+    # 4. 월별 확정 급여 수치 저장 테이블
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS monthly_payroll_adjust (
+            pay_month TEXT,
+            emp_id TEXT,
+            base_salary INTEGER,
+            ot_pay INTEGER,
+            family_allowance INTEGER,
+            non_taxable INTEGER,
+            other_allowance INTEGER,
+            national_pension INTEGER,
+            health_insurance INTEGER,
+            longterm_care INTEGER,
+            employment_insurance INTEGER,
+            income_tax INTEGER,
+            local_tax INTEGER,
+            other_deduction INTEGER,
+            PRIMARY KEY (pay_month, emp_id)
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
 import streamlit as st
 import pandas as pd
 from datetime import datetime, time
