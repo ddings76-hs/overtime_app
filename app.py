@@ -14,8 +14,8 @@ st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
 # -------------------------------------------------------------------
 try:
-    url: str = st.secrets["https://vumwmqbgmpygqpiofcwc.supabase.co"]
-    key: str = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1bXdtcWJnbXB5Z3FwaW9mY3djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MTAzMTMsImV4cCI6MjEwMzM4NjMxM30.xv4hMvNkgyjneD7hEvOZ4pZV-irIcNVJug2BK7_m5E8"]
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except Exception as e:
     st.error("Supabase 연결 실패! Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY가 정상 설정되었는지 확인이 필요하다.")
