@@ -1,95 +1,3 @@
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # 1. 직원 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS employees (
-            emp_id TEXT PRIMARY KEY,
-            emp_name TEXT,
-            birth_date TEXT,
-            dept TEXT,
-            position TEXT,
-            hobong TEXT,
-            base_salary INTEGER,
-            hourly_wage INTEGER,
-            family_allowance INTEGER,
-            non_taxable INTEGER,
-            other_allowance INTEGER,
-            other_deduction INTEGER,
-            is_national INTEGER DEFAULT 1,
-            is_health INTEGER DEFAULT 1,
-            is_employment INTEGER DEFAULT 1,
-            is_industrial INTEGER DEFAULT 1,
-            total_annual_leave REAL DEFAULT 15.0
-        )
-    ''')
-
-    # 2. 초과근무 테이블 (DROP 문 제거로 기존 데이터 보존)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS overtime_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apply_dt TEXT,
-            emp_id TEXT,
-            emp_name TEXT,
-            dept TEXT,
-            position TEXT,
-            work_date TEXT,
-            work_type TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            duration_hours REAL,
-            estimated_pay INTEGER,
-            act_start_time TEXT DEFAULT '18:00:00',
-            act_end_time TEXT DEFAULT '20:00:00',
-            actual_duration_hours REAL DEFAULT 0.0,
-            actual_pay INTEGER DEFAULT 0,
-            status TEXT DEFAULT '신청',
-            reason TEXT,
-            act_reason TEXT
-        )
-    ''')
-
-    # 3. 연차/휴가 관리 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS leave_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apply_dt TEXT,
-            emp_id TEXT,
-            emp_name TEXT,
-            dept TEXT,
-            position TEXT,
-            leave_type TEXT,
-            start_date TEXT,
-            end_date TEXT,
-            used_days REAL,
-            reason TEXT
-        )
-    ''')
-
-    # 4. 월별 확정 급여 수치 저장 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS monthly_payroll_adjust (
-            pay_month TEXT,
-            emp_id TEXT,
-            base_salary INTEGER,
-            ot_pay INTEGER,
-            family_allowance INTEGER,
-            non_taxable INTEGER,
-            other_allowance INTEGER,
-            national_pension INTEGER,
-            health_insurance INTEGER,
-            longterm_care INTEGER,
-            employment_insurance INTEGER,
-            income_tax INTEGER,
-            local_tax INTEGER,
-            other_deduction INTEGER,
-            PRIMARY KEY (pay_month, emp_id)
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
 import streamlit as st
 import pandas as pd
 from datetime import datetime, time
@@ -99,123 +7,19 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
-# -------------------------------------------------------------------
-# Supabase 클라우드 DB 연결 설정 (Secrets 참조)
-# -------------------------------------------------------------------
-url: str = st.secrets["https://supabase.com/dashboard/project/vumwmqbgmpygqpiofcwc/settings/api-keys"]
-key: str = st.secrets["sb_publishable_TSkMpbuAk-4i4s5qc9WVeg_setAItmnsb_secret_96VoEW_hMk6LAO2UipE7Hg_0zaNxs_G"]
-supabase: Client = create_client(url, key)
-
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템", layout="wide")
 
-# DB 파일 설정
-DB_FILE = "office_management.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # 직원 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS employees (
-            emp_id TEXT PRIMARY KEY,
-            emp_name TEXT,
-            birth_date TEXT,
-            dept TEXT,
-            position TEXT,
-            hobong TEXT,
-            base_salary INTEGER,
-            hourly_wage INTEGER,
-            family_allowance INTEGER,
-            non_taxable INTEGER,
-            other_allowance INTEGER,
-            other_deduction INTEGER,
-            is_national INTEGER DEFAULT 1,
-            is_health INTEGER DEFAULT 1,
-            is_employment INTEGER DEFAULT 1,
-            is_industrial INTEGER DEFAULT 1,
-            total_annual_leave REAL DEFAULT 15.0
-        )
-    ''')
-    
-    # 초과근무 테이블 컬럼 안전 체크
-    c.execute("PRAGMA table_info(overtime_records)")
-    columns = [column[1] for column in c.fetchall()]
-    
-    if len(columns) > 0 and 'act_start_time' not in columns:
-        c.execute("DROP TABLE IF EXISTS overtime_records")
-
-    # 초과근무 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS overtime_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apply_dt TEXT,
-            emp_id TEXT,
-            emp_name TEXT,
-            dept TEXT,
-            position TEXT,
-            work_date TEXT,
-            work_type TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            duration_hours REAL,
-            estimated_pay INTEGER,
-            act_start_time TEXT DEFAULT '18:00:00',
-            act_end_time TEXT DEFAULT '20:00:00',
-            actual_duration_hours REAL DEFAULT 0.0,
-            actual_pay INTEGER DEFAULT 0,
-            status TEXT DEFAULT '신청',
-            reason TEXT,
-            act_reason TEXT
-        )
-    ''')
-
-    # 연차/휴가 관리 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS leave_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apply_dt TEXT,
-            emp_id TEXT,
-            emp_name TEXT,
-            dept TEXT,
-            position TEXT,
-            leave_type TEXT,
-            start_date TEXT,
-            end_date TEXT,
-            used_days REAL,
-            reason TEXT
-        )
-    ''')
-
-    # 월별 확정 급여 수치 저장 테이블
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS monthly_payroll_adjust (
-            pay_month TEXT,
-            emp_id TEXT,
-            base_salary INTEGER,
-            ot_pay INTEGER,
-            family_allowance INTEGER,
-            non_taxable INTEGER,
-            other_allowance INTEGER,
-            national_pension INTEGER,
-            health_insurance INTEGER,
-            longterm_care INTEGER,
-            employment_insurance INTEGER,
-            income_tax INTEGER,
-            local_tax INTEGER,
-            other_deduction INTEGER,
-            PRIMARY KEY (pay_month, emp_id)
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def get_db_connection():
-    return sqlite3.connect(DB_FILE)
+# -------------------------------------------------------------------
+# Supabase 클라우드 DB 연결 설정 (Secrets 참조)
+# -------------------------------------------------------------------
+try:
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(url, key)
+except Exception as e:
+    st.error("Supabase 연결 실패! Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY가 정상 설정되었는지 확인이 필요하다.")
+    st.stop()
 
 def truncate_ten(value):
     return int(value // 10) * 10
@@ -283,45 +87,34 @@ with tab1:
         
         if submit_emp:
             if emp_id and emp_name:
-                conn = get_db_connection()
-                c = conn.cursor()
-                try:
-                    c.execute('''
-                        INSERT INTO employees VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        emp_id, emp_name, birth_date, dept, position, hobong, 
-                        base_salary, hourly_wage, family_allowance, non_taxable, other_allowance, other_deduction,
-                        1 if is_national else 0, 1 if is_health else 0, 1 if is_employment else 0, 1 if is_industrial else 0,
-                        total_leave
-                    ))
-                    conn.commit()
-                    st.success(f"{emp_name} ({position}) 직원이 DB에 정상 등록되었다.")
-                except sqlite3.IntegrityError:
-                    st.error("이미 존재하는 사번이다.")
-                finally:
-                    conn.close()
+                emp_data = {
+                    "emp_id": emp_id, "emp_name": emp_name, "birth_date": birth_date, "dept": dept,
+                    "position": position, "hobong": hobong, "base_salary": base_salary,
+                    "hourly_wage": hourly_wage, "family_allowance": family_allowance,
+                    "non_taxable": non_taxable, "other_allowance": other_allowance, "other_deduction": other_deduction,
+                    "is_national": 1 if is_national else 0, "is_health": 1 if is_health else 0,
+                    "is_employment": 1 if is_employment else 0, "is_industrial": 1 if is_industrial else 0,
+                    "total_annual_leave": total_leave
+                }
+                res = supabase.table("employees").insert(emp_data).execute()
+                if res.data:
+                    st.success(f"{emp_name} ({position}) 직원이 Supabase DB에 정상 등록되었다.")
+                else:
+                    st.error("직원 등록 중 오류가 발생했거나 이미 존재하는 사번이다.")
             else:
                 st.error("사번과 이름을 모두 입력해야 한다.")
 
     st.divider()
     st.header("2. 누적 직원 데이터 조회 및 편집")
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
 
     if not df_emp.empty:
         edited_df = st.data_editor(df_emp, use_container_width=True, num_rows="dynamic")
         if st.button("수정 데이터 DB 저장"):
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM employees")
             for _, row in edited_df.iterrows():
-                c.execute('''
-                    INSERT INTO employees VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', tuple(row))
-            conn.commit()
-            conn.close()
-            st.success("직원 데이터 수정사항이 DB에 반영되었다.")
+                supabase.table("employees").upsert(row.to_dict()).execute()
+            st.success("직원 데이터 수정사항이 Supabase DB에 반영되었다.")
             st.rerun()
 
 # -------------------------------------------------------------------
@@ -329,9 +122,8 @@ with tab1:
 # -------------------------------------------------------------------
 with tab2:
     st.header("1. 초과근무 / 휴일근무 사전 신청")
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
 
     if df_emp.empty:
         st.warning("먼저 '직원 등록 및 정보 관리' 탭에서 직원을 등록해야 한다.")
@@ -366,31 +158,28 @@ with tab2:
             st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간**")
 
             if st.button("사전 신청서 제출"):
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute('''
-                    INSERT INTO overtime_records 
-                    (apply_dt, emp_id, emp_name, dept, position, work_date, work_type, start_time, end_time, duration_hours, estimated_pay, act_start_time, act_end_time, actual_duration_hours, actual_pay, status, reason, act_reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    emp_info['emp_id'], emp_info['emp_name'], emp_info['dept'], emp_info['position'],
-                    str(work_date), work_type, str(start_time), str(end_time), duration_hours, estimated_pay,
-                    str(start_time), str(end_time), duration_hours, estimated_pay, '신청', reason, ''
-                ))
-                conn.commit()
-                conn.close()
-                st.success("초과근무 신청 내역이 등록되었다.")
+                ot_data = {
+                    "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "emp_id": emp_info['emp_id'], "emp_name": emp_info['emp_name'],
+                    "dept": emp_info['dept'], "position": emp_info['position'],
+                    "work_date": str(work_date), "work_type": work_type,
+                    "start_time": str(start_time), "end_time": str(end_time),
+                    "duration_hours": duration_hours, "estimated_pay": estimated_pay,
+                    "act_start_time": str(start_time), "act_end_time": str(end_time),
+                    "actual_duration_hours": duration_hours, "actual_pay": estimated_pay,
+                    "status": "신청", "reason": reason, "act_reason": ""
+                }
+                supabase.table("overtime_records").insert(ot_data).execute()
+                st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표 (수당 금액 표기 제거)
+# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 승인 요약표")
     
-    conn = get_db_connection()
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records ORDER BY id DESC", conn)
-    conn.close()
+    ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
@@ -404,18 +193,12 @@ with tab3:
         with col_ot2:
             st.write("**🗑️ 선택 내역 삭제**")
             if st.button("해당 초과근무 내역 삭제", type="primary", key="del_ot_btn"):
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("DELETE FROM overtime_records WHERE id = ?", (int(target_ot['id']),))
-                conn.commit()
-                conn.close()
+                supabase.table("overtime_records").delete().eq("id", int(target_ot['id'])).execute()
                 st.success(f"ID {target_ot['id']} 초과근무 내역이 정상적으로 삭제되었다.")
                 st.rerun()
 
-        conn = get_db_connection()
-        df_emp_single = pd.read_sql_query("SELECT * FROM employees WHERE emp_id = ?", conn, params=(target_ot['emp_id'],))
-        conn.close()
-
+        emp_s_res = supabase.table("employees").select("*").eq("emp_id", target_ot['emp_id']).execute()
+        df_emp_single = pd.DataFrame(emp_s_res.data) if emp_s_res.data else pd.DataFrame()
         hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
 
         act_s_val = target_ot.get('act_start_time', target_ot['start_time'])
@@ -435,7 +218,6 @@ with tab3:
             
             with col_a2:
                 st.write(f"**실제 수행 근무시간 & 업무 내용 입력**")
-                
                 try:
                     init_s_time = datetime.strptime(str(act_s_val)[:8], "%H:%M:%S").time()
                     init_e_time = datetime.strptime(str(act_e_val)[:8], "%H:%M:%S").time()
@@ -460,23 +242,17 @@ with tab3:
             submit_act = st.form_submit_button("실제 수행 내역 저장 및 승인 반영")
 
             if submit_act:
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute('''
-                    UPDATE overtime_records
-                    SET act_start_time = ?, act_end_time = ?, actual_duration_hours = ?, actual_pay = ?, status = ?, act_reason = ?
-                    WHERE id = ?
-                ''', (str(act_s_time), str(act_e_time), calculated_act_hours, act_pay, status_choice, act_reason_input, int(target_ot['id'])))
-                conn.commit()
-                conn.close()
-                st.success(f"[{target_ot['emp_name']}] 직원의 수행 내역 및 승인 상태({status_choice})가 성공적으로 연동 저장되었다.")
+                update_data = {
+                    "act_start_time": str(act_s_time), "act_end_time": str(act_e_time),
+                    "actual_duration_hours": calculated_act_hours, "actual_pay": act_pay,
+                    "status": status_choice, "act_reason": act_reason_input
+                }
+                supabase.table("overtime_records").update(update_data).eq("id", int(target_ot['id'])).execute()
+                st.success(f"[{target_ot['emp_name']}] 직원의 수행 내역 및 승인 상태({status_choice})가 반영되었다.")
                 st.rerun()
 
-        conn = get_db_connection()
-        df_latest = pd.read_sql_query("SELECT * FROM overtime_records WHERE id = ?", conn, params=(int(target_ot['id']),))
-        conn.close()
-
-        target_ot_latest = df_latest.iloc[0] if not df_latest.empty else target_ot
+        latest_res = supabase.table("overtime_records").select("*").eq("id", int(target_ot['id'])).execute()
+        target_ot_latest = latest_res.data[0] if latest_res.data else target_ot
 
         st.divider()
         st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
@@ -484,7 +260,6 @@ with tab3:
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
-        # 수당 금액을 제거한 확인서 양식
         ot_confirm_template = f"""
         <div style="text-align: right; margin-bottom: 10px;">
             <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
@@ -556,13 +331,8 @@ with tab3:
         
         filter_month = f"{sel_year}-{sel_month:02d}"
 
-        conn = get_db_connection()
-        df_ot_month = pd.read_sql_query(
-            "SELECT * FROM overtime_records WHERE work_date LIKE ? AND status = '승인'", 
-            conn, 
-            params=(f"{filter_month}%",)
-        )
-        conn.close()
+        ot_m_res = supabase.table("overtime_records").select("*").like("work_date", f"{filter_month}%").eq("status", "승인").execute()
+        df_ot_month = pd.DataFrame(ot_m_res.data) if ot_m_res.data else pd.DataFrame()
 
         if df_ot_month.empty:
             st.info(f"💡 [{filter_month}] 승인 완료된 초과근무 내역이 없다.")
@@ -582,9 +352,8 @@ with tab3:
 with tab4:
     st.header("🌴 개인별 연차 관리 & 전 직원 연차 요약표")
     
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -611,28 +380,23 @@ with tab4:
             leave_reason = st.text_area("휴가 사유", key="l_reason")
 
             if st.button("연차 신청서 제출 및 DB 저장"):
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute('''
-                    INSERT INTO leave_records (apply_dt, emp_id, emp_name, dept, position, leave_type, start_date, end_date, used_days, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    l_emp_info['emp_id'], l_emp_info['emp_name'], l_emp_info['dept'], l_emp_info['position'],
-                    leave_type, str(l_start_date), str(l_end_date), used_days, leave_reason
-                ))
-                conn.commit()
-                conn.close()
-                st.success("연차 신청 내역이 저장되었다.")
+                leave_data = {
+                    "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "emp_id": l_emp_info['emp_id'], "emp_name": l_emp_info['emp_name'],
+                    "dept": l_emp_info['dept'], "position": l_emp_info['position'],
+                    "leave_type": leave_type, "start_date": str(l_start_date),
+                    "end_date": str(l_end_date), "used_days": used_days, "reason": leave_reason
+                }
+                supabase.table("leave_records").insert(leave_data).execute()
+                st.success("연차 신청 내역이 Supabase DB에 저장되었다.")
                 st.rerun()
 
         with col_l2:
             st.subheader("2. 개인별 연차 현황 요약 및 삭제")
-            conn = get_db_connection()
-            df_leave_all = pd.read_sql_query("SELECT * FROM leave_records WHERE emp_id = ? ORDER BY id DESC", conn, params=(l_emp_info['emp_id'],))
-            conn.close()
+            l_res = supabase.table("leave_records").select("*").eq("emp_id", l_emp_info['emp_id']).order("id", desc=True).execute()
+            df_leave_all = pd.DataFrame(l_res.data) if l_res.data else pd.DataFrame()
 
-            used_annual = df_leave_all[df_leave_all['leave_type'].str.contains("연차|반차", na=False)]['used_days'].sum()
+            used_annual = df_leave_all[df_leave_all['leave_type'].str.contains("연차|반차", na=False)]['used_days'].sum() if not df_leave_all.empty else 0.0
             total_annual = l_emp_info['total_annual_leave']
             remaining_annual = total_annual - used_annual
 
@@ -642,9 +406,9 @@ with tab4:
             m3.metric("잔여 연차", f"{remaining_annual} 일")
 
             st.write(f"**[{l_emp_info['emp_name']}] 개인 신청 이력**")
-            st.dataframe(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
-
             if not df_leave_all.empty:
+                st.dataframe(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
+
                 st.divider()
                 st.write("**🗑️ 연차 신청 내역 삭제**")
                 del_leave_options = [f"ID {r['id']} | [{r['start_date']}] {r['leave_type']} ({r['used_days']}일)" for _, r in df_leave_all.iterrows()]
@@ -652,20 +416,15 @@ with tab4:
                 selected_del_id = int(selected_del_str.split("|")[0].replace("ID", "").strip())
 
                 if st.button("선택한 연차 내역 삭제", type="primary"):
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM leave_records WHERE id = ?", (selected_del_id,))
-                    conn.commit()
-                    conn.close()
+                    supabase.table("leave_records").delete().eq("id", selected_del_id).execute()
                     st.success("해당 연차 내역이 정상적으로 삭제되었다.")
                     st.rerun()
 
         st.divider()
         st.header("📋 센터 등록 직원 전체 연차 내역 요약표")
         
-        conn = get_db_connection()
-        df_all_leaves = pd.read_sql_query("SELECT * FROM leave_records", conn)
-        conn.close()
+        all_l_res = supabase.table("leave_records").select("*").execute()
+        df_all_leaves = pd.DataFrame(all_l_res.data) if all_l_res.data else pd.DataFrame()
 
         summary_rows = []
         for idx, emp_row in df_emp.iterrows():
@@ -675,13 +434,8 @@ with tab4:
             rem_annual = tot_annual - u_annual
             
             summary_rows.append({
-                "사번": emp_row['emp_id'],
-                "이름": emp_row['emp_name'],
-                "부서": emp_row['dept'],
-                "직위": emp_row['position'],
-                "총 부여 연차": tot_annual,
-                "사용 연차": u_annual,
-                "잔여 연차": rem_annual,
+                "사번": emp_row['emp_id'], "이름": emp_row['emp_name'], "부서": emp_row['dept'], "직위": emp_row['position'],
+                "총 부여 연차": tot_annual, "사용 연차": u_annual, "잔여 연차": rem_annual,
                 "사용률 (%)": round((u_annual / tot_annual * 100), 1) if tot_annual > 0 else 0.0
             })
 
@@ -697,10 +451,8 @@ with tab4:
             body_font = Font(name="맑은 고딕", size=10)
 
             thin_border = Border(
-                left=Side(style='thin', color='000000'),
-                right=Side(style='thin', color='000000'),
-                top=Side(style='thin', color='000000'),
-                bottom=Side(style='thin', color='000000')
+                left=Side(style='thin', color='000000'), right=Side(style='thin', color='000000'),
+                top=Side(style='thin', color='000000'), bottom=Side(style='thin', color='000000')
             )
             align_center = Alignment(horizontal='center', vertical='center')
             align_right = Alignment(horizontal='right', vertical='center')
@@ -709,15 +461,10 @@ with tab4:
                 for cell in row:
                     cell.border = thin_border
                     if cell.row == 1:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = align_center
+                        cell.fill = header_fill; cell.font = header_font; cell.alignment = align_center
                     else:
                         cell.font = body_font
-                        if cell.column in [5, 6, 7, 8]:
-                            cell.alignment = align_right
-                        else:
-                            cell.alignment = align_center
+                        cell.alignment = align_right if cell.column in [5, 6, 7, 8] else align_center
 
             for col in worksheet.columns:
                 max_len = max(sum(2 if ord(c) > 127 else 1 for c in str(cell.value or '')) for cell in col)
@@ -728,8 +475,7 @@ with tab4:
 
         st.download_button(
             label="📥 전 직원 연차 내역 요약표 엑셀 다운로드 (.xlsx)",
-            data=excel_leave_data,
-            file_name=f"전직원_연차요약_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            data=excel_leave_data, file_name=f"전직원_연차요약_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -741,9 +487,8 @@ with tab4:
 with tab5:
     st.header("🖨️ 휴가 (연차) 신청서 인쇄")
     
-    conn = get_db_connection()
-    df_leave_records = pd.read_sql_query("SELECT * FROM leave_records ORDER BY id DESC", conn)
-    conn.close()
+    l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
+    df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
 
     if df_leave_records.empty:
         st.info("등록된 연차/휴가 신청 내역이 없다.")
@@ -815,11 +560,14 @@ with tab6:
     pay_date = st.date_input("지급일 선택", datetime.now(), key="payroll_date")
     pay_month = pay_date.strftime("%Y-%m")
 
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
-    df_adjust = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ?", conn, params=(pay_month,))
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+
+    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).execute()
+    df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -830,7 +578,7 @@ with tab6:
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
-            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))]
+            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))] if not df_ot.empty else pd.DataFrame()
             calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
             if not adj_match.empty:
@@ -893,22 +641,19 @@ with tab6:
         edited_payroll = st.data_editor(df_calc, use_container_width=True)
 
         if st.button("💾 수정사항 개별 급여명세서에 연동 저장"):
-            conn = get_db_connection()
-            c = conn.cursor()
             for idx, r in edited_payroll.iterrows():
-                c.execute('''
-                    INSERT OR REPLACE INTO monthly_payroll_adjust
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    pay_month, r['사번'], r['기본급'], r['초과수당(승인)'], r['가족수당'], r['비과세'], r['기타수당'],
-                    r['국민연금(본인)'], r['건강보험(본인)'], r['장기요양(본인)'], r['고용보험(본인)'], r['소득세'], r['지방소득세'], r['기타공제']
-                ))
-            conn.commit()
-            conn.close()
-            st.success(f"{pay_month} 급여대장 수정 수치가 DB에 저장 및 개별 급여명세서 연동 완료되었다.")
+                pay_adj_data = {
+                    "pay_month": pay_month, "emp_id": r['사번'], "base_salary": int(r['기본급']),
+                    "ot_pay": int(r['초과수당(승인)']), "family_allowance": int(r['가족수당']),
+                    "non_taxable": int(r['비과세']), "other_allowance": int(r['기타수당']),
+                    "national_pension": int(r['국민연금(본인)']), "health_insurance": int(r['건강보험(본인)']),
+                    "longterm_care": int(r['장기요양(본인)']), "employment_insurance": int(r['고용보험(본인)']),
+                    "income_tax": int(r['소득세']), "local_tax": int(r['지방소득세']), "other_deduction": int(r['기타공제'])
+                }
+                supabase.table("monthly_payroll_adjust").upsert(pay_adj_data).execute()
+            st.success(f"{pay_month} 급여대장 수정 수치가 Supabase DB에 저장 및 연동 완료되었다.")
 
         payroll_html_rows = ""
-
         sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
         sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
         sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
@@ -917,7 +662,6 @@ with tab6:
             total_gross = row['기본급'] + row['초과수당(승인)'] + row['가족수당'] + row['비과세'] + row['기타수당']
             emp_deduction_total = row['국민연금(본인)'] + row['건강보험(본인)'] + row['장기요양(본인)'] + row['고용보험(본인)'] + row['소득세'] + row['지방소득세'] + row['기타공제']
             net_pay = total_gross - emp_deduction_total
-
             biz_deduction_total = row['국민연금(사업자)'] + row['건강보험(사업자)'] + row['장기요양(사업자)'] + row['고용보험(사업자)'] + row['산재보험(사업자)']
 
             sum_base += row['기본급']; sum_ot += row['초과수당(승인)']; sum_family += row['가족수당']; sum_nontax += row['비과세']; sum_gross += total_gross
@@ -984,8 +728,7 @@ with tab6:
 
         st.download_button(
             label="📥 통합 급여대장 엑셀 다운로드 (.xlsx)",
-            data=excel_data,
-            file_name=f"통합급여대장_{pay_month}.xlsx",
+            data=excel_data, file_name=f"통합급여대장_{pay_month}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -1018,35 +761,14 @@ with tab6:
                         <th rowspan="2">초과수당</th>
                         <th rowspan="2">가족수당</th>
                         <th rowspan="2">비과세</th>
-                        
-                        <th>국민</th>
-                        <th>건강</th>
-                        <th>장기요양</th>
-                        <th>고용</th>
-                        <th>소득세</th>
-                        <th>지방세</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
                         <th rowspan="2">공제합계</th>
-                        
-                        <th>국민</th>
-                        <th>건강</th>
-                        <th>장기요양</th>
-                        <th>고용</th>
-                        <th>산재</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>산재</th>
                         <th rowspan="2">사업자합계</th>
                     </tr>
                     <tr style="background-color: #ffffcc;">
-                        <th>4.75%</th>
-                        <th>3.595%</th>
-                        <th>12.95%</th>
-                        <th>0.90%</th>
-                        <th>간이세액</th>
-                        <th>10%</th>
-                        
-                        <th>4.75%</th>
-                        <th>3.595%</th>
-                        <th>12.95%</th>
-                        <th>1.15%</th>
-                        <th>7.26%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>0.90%</th><th>간이세액</th><th>10%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>1.15%</th><th>7.26%</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1064,10 +786,11 @@ with tab6:
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
     
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -1082,11 +805,10 @@ with tab7:
 
         current_hourly_wage = int(emp['hourly_wage'])
 
-        conn = get_db_connection()
-        df_adj_single = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ? AND emp_id = ?", conn, params=(pay_month_slip, emp['emp_id']))
-        conn.close()
+        adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("emp_id", emp['emp_id']).execute()
+        df_adj_single = pd.DataFrame(adj_single_res.data) if adj_single_res.data else pd.DataFrame()
 
-        emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))]
+        emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))] if not df_ot.empty else pd.DataFrame()
         weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         total_ot_hours = weekday_ot_hours + holiday_ot_hours
@@ -1266,11 +988,14 @@ with tab8:
     pay_date_print = st.date_input("출력할 급여 지급일 선택", datetime.now(), key="payroll_print_date")
     pay_month_print = pay_date_print.strftime("%Y-%m")
 
-    conn = get_db_connection()
-    df_emp = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
-    df_adjust = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust WHERE pay_month = ?", conn, params=(pay_month_print,))
-    conn.close()
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+
+    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_print).execute()
+    df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -1284,7 +1009,7 @@ with tab8:
 
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
-            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_print))]
+            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_print))] if not df_ot.empty else pd.DataFrame()
             calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
             if not adj_match.empty:
@@ -1437,35 +1162,14 @@ with tab8:
                         <th rowspan="2">초과수당</th>
                         <th rowspan="2">가족수당</th>
                         <th rowspan="2">비과세</th>
-                        
-                        <th>국민</th>
-                        <th>건강</th>
-                        <th>장기요양</th>
-                        <th>고용</th>
-                        <th>소득세</th>
-                        <th>지방세</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
                         <th rowspan="2">공제합계</th>
-                        
-                        <th>국민</th>
-                        <th>건강</th>
-                        <th>장기요양</th>
-                        <th>고용</th>
-                        <th>산재</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>산재</th>
                         <th rowspan="2">사업자합계</th>
                     </tr>
                     <tr style="background-color: #ffffcc;">
-                        <th>4.75%</th>
-                        <th>3.595%</th>
-                        <th>12.95%</th>
-                        <th>0.90%</th>
-                        <th>간이세액</th>
-                        <th>10%</th>
-                        
-                        <th>4.75%</th>
-                        <th>3.595%</th>
-                        <th>12.95%</th>
-                        <th>1.15%</th>
-                        <th>7.26%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>0.90%</th><th>간이세액</th><th>10%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>1.15%</th><th>7.26%</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1478,37 +1182,37 @@ with tab8:
         st.components.v1.html(payroll_print_template, height=600, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 9: 월별 급여대장 총괄표 (승인 초과근무 총시간 컬럼 포함)
+# TAB 9: 월별 급여대장 총괄표
 # -------------------------------------------------------------------
 with tab9:
     st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
     
     c_y9 = st.selectbox("조회 연도 선택", range(datetime.now().year - 2, datetime.now().year + 3), index=2, key="annual_summary_year")
     
-    conn = get_db_connection()
-    df_emp_all = pd.read_sql_query("SELECT * FROM employees", conn)
-    df_ot_all = pd.read_sql_query("SELECT * FROM overtime_records WHERE status = '승인'", conn)
-    df_adj_all = pd.read_sql_query("SELECT * FROM monthly_payroll_adjust", conn)
-    conn.close()
+    emp_all_res = supabase.table("employees").select("*").execute()
+    df_emp_all = pd.DataFrame(emp_all_res.data) if emp_all_res.data else pd.DataFrame()
+
+    ot_all_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot_all = pd.DataFrame(ot_all_res.data) if ot_all_res.data else pd.DataFrame()
+
+    adj_all_res = supabase.table("monthly_payroll_adjust").select("*").execute()
+    df_adj_all = pd.DataFrame(adj_all_res.data) if adj_all_res.data else pd.DataFrame()
 
     if df_emp_all.empty:
         st.warning("등록된 직원 정보가 없다.")
     else:
         monthly_summary_rows = []
-
         tot_ann_count = tot_ann_base = tot_ann_ot_hours = tot_ann_ot = tot_ann_fam = tot_ann_nontax = tot_ann_other_a = 0
         tot_ann_gross = tot_ann_nat = tot_ann_hea = tot_ann_long = tot_ann_emp = tot_ann_inc = tot_ann_loc = 0
         tot_ann_other_d = tot_ann_deduct = tot_ann_net = tot_ann_retire = 0
 
         for m in range(1, 13):
             m_str = f"{c_y9}-{m:02d}"
-            
             m_emp_count = len(df_emp_all)
             m_base = m_ot = m_fam = m_nontax = m_other_a = 0
             m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
             m_ot_hours = 0.0
 
-            # 월별 승인 초과근무 시간 합계 계산
             m_ot_records = df_ot_all[df_ot_all['work_date'].str.startswith(m_str)] if not df_ot_all.empty else pd.DataFrame()
             if not m_ot_records.empty:
                 m_ot_hours = m_ot_records['actual_duration_hours'].sum()
@@ -1516,7 +1220,7 @@ with tab9:
             for _, emp in df_emp_all.iterrows():
                 adj_m = df_adj_all[(df_adj_all['pay_month'] == m_str) & (df_adj_all['emp_id'] == emp['emp_id'])] if not df_adj_all.empty else pd.DataFrame()
                 
-                emp_ot = df_ot_all[(df_ot_all['emp_id'] == emp['emp_id']) & (df_ot_all['work_date'].str.startswith(m_str))]
+                emp_ot = df_ot_all[(df_ot_all['emp_id'] == emp['emp_id']) & (df_ot_all['work_date'].str.startswith(m_str))] if not df_ot_all.empty else pd.DataFrame()
                 calc_ot = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
                 if not adj_m.empty:
