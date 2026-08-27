@@ -93,11 +93,18 @@ def init_db():
 import streamlit as st
 import pandas as pd
 from datetime import datetime, time
-import sqlite3
 import io
 import base64
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from supabase import create_client, Client
+
+# -------------------------------------------------------------------
+# Supabase 클라우드 DB 연결 설정 (Secrets 참조)
+# -------------------------------------------------------------------
+url: str = st.secrets["https://supabase.com/dashboard/project/vumwmqbgmpygqpiofcwc/settings/api-keys"]
+key: str = st.secrets["sb_publishable_TSkMpbuAk-4i4s5qc9WVeg_setAItmnsb_secret_96VoEW_hMk6LAO2UipE7Hg_0zaNxs_G"]
+supabase: Client = create_client(url, key)
 
 # 페이지 기본 설정
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템", layout="wide")
