@@ -14,7 +14,7 @@ st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
 # -------------------------------------------------------------------
 try:
-    url: str = st.secrets["https://supabase.com/dashboard/project/vumwmqbgmpygqpiofcwc"]
+    url: str = st.secrets["https://vumwmqbgmpygqpiofcwc.supabase.co/rest/v1/"]
     key: str = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1bXdtcWJnbXB5Z3FwaW9mY3djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MTAzMTMsImV4cCI6MjEwMzM4NjMxM30.xv4hMvNkgyjneD7hEvOZ4pZV-irIcNVJug2BK7_m5E8"]
     supabase: Client = create_client(url, key)
 except Exception as e:
