@@ -107,11 +107,11 @@ with tab1:
     st.divider()
     st.header("2. 누적 직원 데이터 조회 및 편집")
     try:
-    emp_res = supabase.table("employees").select("*").execute()
-    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+        emp_res = supabase.table("employees").select("*").execute()
+        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
     except Exception as e:
-    st.warning("⚠️ Supabase에서 직원 데이터를 불러오지 못했다. Secrets의 API Key 설정 또는 DB 상태를 확인해 주어야 한다.")
-    df_emp = pd.DataFrame()
+        st.warning("⚠️ Supabase에서 직원 데이터를 불러오지 못했다. Secrets의 API Key 설정 또는 DB 상태를 확인해 주어야 한다.")
+        df_emp = pd.DataFrame()
     
     if not df_emp.empty:
         edited_df = st.data_editor(df_emp, use_container_width=True, num_rows="dynamic")
