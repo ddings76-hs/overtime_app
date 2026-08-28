@@ -317,7 +317,7 @@ with tab3:
             <p style="text-align: center; margin-top: 10px; font-size: 13px;">{target_ot_latest['work_date'][:4]}년 {target_ot_latest['work_date'][5:7]}월 {target_ot_latest['work_date'][8:10]}일</p>
             
             <p style="text-align: right; margin-top: 30px; font-size: 14px; font-weight: bold; padding-right: 10px;">
-                신청 및 확인인: {target_ot_latest['emp_name']} (인)
+                신청자 : {target_ot_latest['emp_name']} (인)
             </p>
         </div>
         """
