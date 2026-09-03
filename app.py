@@ -58,7 +58,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 # TAB 1: 직원 등록 및 정보 관리 (순서 변경 및 소수점 1자리 적용)
 # -------------------------------------------------------------------
 with tab1:
-    st.header("1. 누적 직원 데이터 조회 및 편집")
+    st.header("1. 직원 데이터 조회 및 편집")
     try:
         emp_res = supabase.table("employees").select("*").execute()
         df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
