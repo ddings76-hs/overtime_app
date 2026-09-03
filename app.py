@@ -55,10 +55,28 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 ])
 
 # -------------------------------------------------------------------
-# TAB 1: 직원 등록 및 정보 관리
+# TAB 1: 직원 등록 및 정보 관리 (순서 변경 및 소수점 1자리 적용)
 # -------------------------------------------------------------------
 with tab1:
-    st.header("1. 신규 직원 등록")
+    st.header("1. 누적 직원 데이터 조회 및 편집")
+    try:
+        emp_res = supabase.table("employees").select("*").execute()
+        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    except Exception as e:
+        st.warning("⚠️ Supabase에서 직원 데이터를 불러오지 못했다. Secrets의 API Key 설정 또는 DB 상태를 확인해 주어야 한다.")
+        df_emp = pd.DataFrame()
+    
+    if not df_emp.empty:
+        edited_df = st.data_editor(df_emp, use_container_width=True, num_rows="dynamic")
+        if st.button("수정 데이터 DB 저장"):
+            for _, row in edited_df.iterrows():
+                supabase.table("employees").upsert(row.to_dict()).execute()
+            st.success("직원 데이터 수정사항이 Supabase DB에 반영되었다.")
+            st.rerun()
+
+    st.divider()
+
+    st.header("2. 신규 직원 등록")
     with st.form("employee_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
@@ -68,7 +86,8 @@ with tab1:
             dept = st.text_input("부서")
             position = st.text_input("직위", value="주임")
             hobong = st.text_input("호봉", value="1호봉")
-            total_leave = st.number_input("연간 총 연차 부여일수", min_value=0.0, value=15.0, step=0.5)
+            # 소수점 1자리까지 입력 가능하도록 step 및 format 설정
+            total_leave = st.number_input("연간 총 연차 부여일수", min_value=0.0, value=15.0, step=0.1, format="%.1f")
         with col2:
             base_salary = st.number_input("기본급 (원)", min_value=0, value=2500000, step=100000)
             hourly_wage = st.number_input("통상시급 (원)", min_value=0, value=12000, step=500)
@@ -103,23 +122,6 @@ with tab1:
                     st.error("직원 등록 중 오류가 발생했거나 이미 존재하는 사번이다.")
             else:
                 st.error("사번과 이름을 모두 입력해야 한다.")
-
-    st.divider()
-    st.header("2. 누적 직원 데이터 조회 및 편집")
-    try:
-        emp_res = supabase.table("employees").select("*").execute()
-        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    except Exception as e:
-        st.warning("⚠️ Supabase에서 직원 데이터를 불러오지 못했다. Secrets의 API Key 설정 또는 DB 상태를 확인해 주어야 한다.")
-        df_emp = pd.DataFrame()
-    
-    if not df_emp.empty:
-        edited_df = st.data_editor(df_emp, use_container_width=True, num_rows="dynamic")
-        if st.button("수정 데이터 DB 저장"):
-            for _, row in edited_df.iterrows():
-                supabase.table("employees").upsert(row.to_dict()).execute()
-            st.success("직원 데이터 수정사항이 Supabase DB에 반영되었다.")
-            st.rerun()
 
 # -------------------------------------------------------------------
 # TAB 2: 초과근무 사전 신청
