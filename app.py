@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.3", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.6.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -341,10 +341,10 @@ with tab2:
                 st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표 (수정 완료)
+# TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계
 # -------------------------------------------------------------------
 with tab3:
-    st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 승인 요약표")
+    st.header("✅ 실제 초과/휴일근무 수행 내역 입력 & 급여 연계")
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
@@ -488,40 +488,108 @@ with tab3:
         st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
 
         st.divider()
-        st.subheader("📊 월별 승인 초과/휴일근무 집계 요약표")
-        
+        st.subheader("📊 월별 초과/휴일근무 일자별 내역 및 급여 연계")
+
         current_year = datetime.now().year
         c_y, c_m = st.columns(2)
         with c_y:
             sel_year = st.selectbox("조회 연도 선택", range(current_year - 2, current_year + 3), index=2, key="ot_year_sel")
         with c_m:
             sel_month = st.selectbox("조회 월 선택", range(1, 13), index=datetime.now().month - 1, key="ot_month_sel")
-        
+
         filter_month = f"{sel_year}-{sel_month:02d}"
 
-        ot_m_res = supabase.table("overtime_records").select("*").like("work_date", f"{filter_month}%").eq("status", "승인").execute()
+        # 선택한 월의 전체 초과/휴일근무 데이터 조회 (근무일자 오름차순)
+        ot_m_res = supabase.table("overtime_records").select("*").like("work_date", f"{filter_month}%").order("work_date", desc=False).execute()
         df_ot_month = pd.DataFrame(ot_m_res.data) if ot_m_res.data else pd.DataFrame()
 
         if df_ot_month.empty:
-            st.info(f"💡 [{filter_month}] 승인 완료된 근무 내역이 없다.")
+            st.info(f"💡 [{filter_month}] 등록된 초과/휴일근무 내역이 없습니다.")
         else:
-            def process_ot_summary(group):
-                work_dates = ", ".join(sorted(group['work_date'].unique()))
-                weekday_hours = group[group['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum()
-                holiday_hours = group[group['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum()
-                total_hours = group['actual_duration_hours'].sum()
-                return pd.Series({
-                    '근무일자_목록': work_dates,
-                    '승인_건수': len(group),
-                    '평일_인정시간_h': round(weekday_hours, 1),
-                    '휴일_인정시간_h': round(holiday_hours, 1),
-                    '총_인정시간_h': round(total_hours, 1)
-                })
+            display_ot_df = df_ot_month[[
+                'id', 'work_date', 'emp_id', 'emp_name', 'dept', 'position', 
+                'work_type', 'act_start_time', 'act_end_time', 'actual_duration_hours', 'actual_pay', 'status'
+            ]].copy()
 
-            summary_ot = df_ot_month.groupby(['emp_id', 'emp_name', 'dept', 'position', 'status']).apply(process_ot_summary).reset_index()
+            display_ot_df.columns = [
+                'ID', '근무일자', '사번', '이름', '부서', '직위', 
+                '근무구분', '시작시간', '종료시간', '인정시간(h)', '계산수당(원)', '승인상태'
+            ]
+
+            st.write(f"**[{filter_month}] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(display_ot_df)}건)**")
             
-            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과 및 휴일근무 상세 현황**")
-            st.dataframe(summary_ot, use_container_width=True)
+            st.dataframe(
+                display_ot_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "계산수당(원)": st.column_config.NumberColumn("계산수당(원)", format="%d 원"),
+                    "인정시간(h)": st.column_config.NumberColumn("인정시간(h)", format="%.1f 시간")
+                }
+            )
+
+            approved_df = df_ot_month[df_ot_month['status'] == '승인']
+            
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            col_stat1.metric("월 전체 신청 건수", f"{len(df_ot_month)} 건")
+            col_stat2.metric("최종 승인 건수", f"{len(approved_df)} 건")
+            col_stat3.metric("승인 총 수당 합계", f"{int(approved_df['actual_pay'].sum()):,} 원")
+
+            st.markdown("---")
+            
+            link_col1, link_col2 = st.columns([3, 1])
+            with link_col1:
+                st.write("💡 아래 버튼을 누르면 위 **[승인]** 완료된 초과/휴일근무 수당이 해당 월 통합 급여대장에 일괄 반영됩니다.")
+            with link_col2:
+                if st.button("🔄 해당월 급여대장 수당 연계 반영", type="primary", use_container_width=True):
+                    if approved_df.empty:
+                        st.warning("승인된 근무 내역이 없어 연계할 데이터가 없습니다.")
+                    else:
+                        emp_totals = approved_df.groupby('emp_id')['actual_pay'].sum().to_dict()
+                        pay_date_str = f"{filter_month}-25"
+                        
+                        for emp_id, ot_sum_pay in emp_totals.items():
+                            adj_check = supabase.table("monthly_payroll_adjust")\
+                                .select("*")\
+                                .eq("pay_month", filter_month)\
+                                .eq("pay_run_no", 1)\
+                                .eq("emp_id", emp_id)\
+                                .execute()
+                            
+                            if adj_check.data:
+                                supabase.table("monthly_payroll_adjust")\
+                                    .update({"ot_pay": int(ot_sum_pay), "ot_pay_overridden": True})\
+                                    .eq("pay_month", filter_month)\
+                                    .eq("pay_run_no", 1)\
+                                    .eq("emp_id", emp_id)\
+                                    .execute()
+                            else:
+                                emp_info_res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
+                                if emp_info_res.data:
+                                    e = emp_info_res.data[0]
+                                    supabase.table("monthly_payroll_adjust").insert({
+                                        "pay_month": filter_month,
+                                        "pay_run_no": 1,
+                                        "pay_run_name": "정기급여",
+                                        "pay_date": pay_date_str,
+                                        "emp_id": emp_id,
+                                        "base_salary": safe_int(e.get("base_salary")),
+                                        "ot_pay": int(ot_sum_pay),
+                                        "ot_pay_overridden": True,
+                                        "family_allowance": safe_int(e.get("family_allowance")),
+                                        "non_taxable": safe_int(e.get("non_taxable")),
+                                        "other_allowance": safe_int(e.get("other_allowance")),
+                                        "national_pension": safe_int(e.get("national_pension")),
+                                        "health_insurance": safe_int(e.get("health_insurance")),
+                                        "longterm_care": safe_int(e.get("longterm_care")),
+                                        "employment_insurance": safe_int(e.get("employment_insurance")),
+                                        "income_tax": safe_int(e.get("income_tax")),
+                                        "local_tax": safe_int(e.get("local_tax")),
+                                        "other_deduction": safe_int(e.get("other_deduction"))
+                                    }).execute()
+
+                        st.success(f"✅ [{filter_month}] 승인 내역({len(approved_df)}건)이 통합 급여대장에 성공적으로 연계·반영되었습니다!")
+                        st.rerun()
 
 # -------------------------------------------------------------------
 # TAB 4: 개인별 연차 관리 & 전 직원 연차 요약표
@@ -775,14 +843,12 @@ with tab6:
         calculated_rows = []
         no = 1
         
-        # 급여지급일(pay_date) 기준 전월 25일 ~ 급여지급 월 전일 계산
         ot_start_date = (pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
         ot_end_date = pay_date - timedelta(days=1)
 
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
-            # 기준일자 범위 내 승인된 평일/휴일 근무 수당 자동 합산
             emp_ot = df_ot[
                 (df_ot['emp_id'] == emp['emp_id']) & 
                 (df_ot['work_date'] >= str(ot_start_date)) & 
@@ -1172,7 +1238,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (수정 완료)
+# TAB 7: 개별 급여명세서 인쇄
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -1205,7 +1271,6 @@ with tab7:
         ot_start_date_slip = (slip_pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
         ot_end_date_slip = slip_pay_date - timedelta(days=1)
 
-        # 승인된 평일/휴일 근무 내역 필터링 및 시간 집계
         emp_ot = df_ot[
             (df_ot['emp_id'] == emp['emp_id']) & 
             (df_ot['work_date'] >= str(ot_start_date_slip)) & 
