@@ -10,7 +10,7 @@ from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.3", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -42,7 +42,7 @@ def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_ru
 
     for _, row in payroll_df.iterrows():
         gross_pay = sum(safe_int(row[c]) for c in [
-            '기본급', '초과수당(승인)', '가족수당', '비과세', '기타수당'
+            '기본급', '초과수당(승인)', '가족수당', '명절상여', '비과세', '기타수당'
         ])
         employee_deductions = sum(safe_int(row[c]) for c in [
             '국민연금(본인)', '건강보험(본인)', '장기요양(본인)',
@@ -63,6 +63,7 @@ def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_ru
             "family_allowance": safe_int(row['가족수당']),
             "non_taxable": safe_int(row['비과세']),
             "other_allowance": safe_int(row['기타수당']),
+            "holiday_bonus": safe_int(row['명절상여']),
             "gross_pay": gross_pay,
             "employee_deductions": employee_deductions,
             "net_pay": net_pay,
@@ -164,13 +165,28 @@ with tab1:
             "base_salary": "기본급", "hourly_wage": "통상시급",
             "family_allowance": "가족수당", "non_taxable": "비과세",
             "other_allowance": "기타수당", "other_deduction": "기타공제",
+            "holiday_bonus": "명절상여",
+            "national_pension": "국민연금(본인)", "health_insurance": "건강보험(본인)",
+            "longterm_care": "장기요양(본인)", "employment_insurance": "고용보험(본인)",
+            "income_tax": "소득세", "local_tax": "지방소득세",
+            "employer_national_pension": "국민연금(회사)",
+            "employer_health_insurance": "건강보험(회사)",
+            "employer_longterm_care": "장기요양(회사)",
+            "employer_employment_insurance": "고용보험(회사)",
+            "employer_industrial_insurance": "산재보험(회사)",
+            "retirement_accrual": "퇴직적립금",
             "is_national": "국민연금 가입", "is_health": "건강보험 가입",
             "is_employment": "고용보험 가입", "is_industrial": "산재보험 가입",
-            "total_annual_leave": "연간 연차일수", "created_at": "등록일시",
+            "total_annual_leave": "연간 연차일수", "created_at": "등록일시", "updated_at": "수정일시",
             "id": "DB번호"
         }
         display_emp = df_emp.rename(columns=employee_column_labels)
-        employee_money_columns = ["기본급", "통상시급", "가족수당", "비과세", "기타수당", "기타공제"]
+        employee_money_columns = [
+            "기본급", "통상시급", "가족수당", "명절상여", "비과세", "기타수당", "기타공제",
+            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
+            "소득세", "지방소득세", "국민연금(회사)", "건강보험(회사)",
+            "장기요양(회사)", "고용보험(회사)", "산재보험(회사)", "퇴직적립금"
+        ]
         employee_config = {
             col: st.column_config.NumberColumn(col, min_value=0, step=10, format="localized", width="medium")
             for col in employee_money_columns if col in display_emp.columns
@@ -215,12 +231,32 @@ with tab1:
             non_taxable = st.number_input("비과세 (원)", min_value=0, value=100000, step=10000)
             other_allowance = st.number_input("기타수당 (원)", min_value=0, value=0, step=10000)
             other_deduction = st.number_input("기타공제 (원)", min_value=0, value=0, step=10000)
+            holiday_bonus = st.number_input("명절상여 기본액 (원)", min_value=0, value=0, step=10000)
 
-            st.write("**4대보험 가입 여부 선택**")
+            st.write("**보험 가입 여부**")
             is_national = st.checkbox("국민연금 가입", value=True)
             is_health = st.checkbox("건강/장기요양보험 가입", value=True)
             is_employment = st.checkbox("고용보험 가입", value=True)
             is_industrial = st.checkbox("산재보험 가입", value=True)
+
+        st.markdown("**직원 부담 보험료·세금 및 회사 부담금 기본값**  ")
+        st.caption("입력한 금액은 새 월 급여대장의 최초값으로 사용되며, 급여대장에서 다시 수정할 수 있습니다.")
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            national_pension = st.number_input("국민연금 본인부담", min_value=0, value=0, step=10)
+            health_insurance = st.number_input("건강보험 본인부담", min_value=0, value=0, step=10)
+            longterm_care = st.number_input("장기요양 본인부담", min_value=0, value=0, step=10)
+            employment_insurance = st.number_input("고용보험 본인부담", min_value=0, value=0, step=10)
+        with d2:
+            income_tax = st.number_input("소득세", min_value=0, value=0, step=10)
+            local_tax = st.number_input("지방소득세", min_value=0, value=0, step=10)
+            employer_national_pension = st.number_input("국민연금 회사부담", min_value=0, value=0, step=10)
+            employer_health_insurance = st.number_input("건강보험 회사부담", min_value=0, value=0, step=10)
+        with d3:
+            employer_longterm_care = st.number_input("장기요양 회사부담", min_value=0, value=0, step=10)
+            employer_employment_insurance = st.number_input("고용보험 회사부담", min_value=0, value=0, step=10)
+            employer_industrial_insurance = st.number_input("산재보험 회사부담", min_value=0, value=0, step=10)
+            retirement_accrual = st.number_input("퇴직적립금", min_value=0, value=0, step=10)
             
         submit_emp = st.form_submit_button("직원 DB 등록")
         
@@ -230,7 +266,17 @@ with tab1:
                     "emp_id": emp_id, "emp_name": emp_name, "birth_date": birth_date, "dept": dept,
                     "position": position, "hobong": hobong, "base_salary": base_salary,
                     "hourly_wage": hourly_wage, "family_allowance": family_allowance,
-                    "non_taxable": non_taxable, "other_allowance": other_allowance, "other_deduction": other_deduction,
+                    "non_taxable": non_taxable, "other_allowance": other_allowance, "holiday_bonus": holiday_bonus,
+                    "other_deduction": other_deduction,
+                    "national_pension": national_pension, "health_insurance": health_insurance,
+                    "longterm_care": longterm_care, "employment_insurance": employment_insurance,
+                    "income_tax": income_tax, "local_tax": local_tax,
+                    "employer_national_pension": employer_national_pension,
+                    "employer_health_insurance": employer_health_insurance,
+                    "employer_longterm_care": employer_longterm_care,
+                    "employer_employment_insurance": employer_employment_insurance,
+                    "employer_industrial_insurance": employer_industrial_insurance,
+                    "retirement_accrual": retirement_accrual,
                     "is_national": 1 if is_national else 0, "is_health": 1 if is_health else 0,
                     "is_employment": 1 if is_employment else 0, "is_industrial": 1 if is_industrial else 0,
                     "total_annual_leave": total_leave
@@ -734,6 +780,7 @@ with tab6:
                 base = adj['base_salary']
                 ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
                 family = adj['family_allowance']
+                holiday_bonus = safe_int(adj.get('holiday_bonus'))
                 non_tax = adj['non_taxable']
                 other_allow = adj['other_allowance']
                 emp_national = adj['national_pension']
@@ -747,6 +794,7 @@ with tab6:
                 ot_pay = calculated_ot_pay
                 base = emp['base_salary']
                 family = emp['family_allowance']
+                holiday_bonus = 0
                 non_tax = emp['non_taxable']
                 other_allow = emp['other_allowance']
                 other_deduct = emp['other_deduction']
@@ -754,29 +802,33 @@ with tab6:
                 total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
                 taxable_gross_calc = total_gross_calc - non_tax
 
-                emp_national = truncate_ten(taxable_gross_calc * 0.0475) if emp.get('is_national', 1) == 1 else 0
-                emp_health = truncate_ten(taxable_gross_calc * 0.03595) if emp.get('is_health', 1) == 1 else 0
-                emp_longterm = truncate_ten(emp_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
-                emp_employment = truncate_ten(taxable_gross_calc * 0.0090) if emp.get('is_employment', 1) == 1 else 0
-                emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
-                emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+                # V1.4부터 자동 요율 계산 대신 직원등록 시 입력한 실제 금액을 최초값으로 사용한다.
+                emp_national = safe_int(emp.get('national_pension'))
+                emp_health = safe_int(emp.get('health_insurance'))
+                emp_longterm = safe_int(emp.get('longterm_care'))
+                emp_employment = safe_int(emp.get('employment_insurance'))
+                emp_income_tax = safe_int(emp.get('income_tax'))
+                emp_local_tax = safe_int(emp.get('local_tax'))
 
                 # 2차 대장은 정기급여가 자동 중복되지 않도록 최초 생성 시 금액을 0원으로 시작한다.
                 # 필요한 상여금·공제액은 엑셀형 편집기에서 직접 입력한다.
                 if pay_run_no == 2:
                     base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    holiday_bonus = safe_int(emp.get('holiday_bonus'))
                     emp_national = emp_health = emp_longterm = emp_employment = 0
                     emp_income_tax = emp_local_tax = 0
 
-            tot_g = base + ot_pay + family + non_tax + other_allow
+            tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
             taxable_gross = tot_g - non_tax
 
-            biz_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
-            biz_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
-            biz_longterm = truncate_ten(biz_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
-            biz_employment = truncate_ten(taxable_gross * 0.0115) if emp.get('is_employment', 1) == 1 else 0
-            biz_industrial = truncate_ten(taxable_gross * 0.0726) if emp.get('is_industrial', 1) == 1 else 0
-            retirement_accrual = truncate_ten(tot_g / 12)
+            biz_national = safe_int(emp.get('employer_national_pension'))
+            biz_health = safe_int(emp.get('employer_health_insurance'))
+            biz_longterm = safe_int(emp.get('employer_longterm_care'))
+            biz_employment = safe_int(emp.get('employer_employment_insurance'))
+            biz_industrial = safe_int(emp.get('employer_industrial_insurance'))
+            retirement_accrual = safe_int(emp.get('retirement_accrual'))
+            if pay_run_no == 2 and adj_match.empty:
+                biz_national = biz_health = biz_longterm = biz_employment = biz_industrial = retirement_accrual = 0
 
             if not adj_match.empty:
                 biz_national = safe_int(adj.get('employer_national_pension')) if pd.notna(adj.get('employer_national_pension')) else biz_national
@@ -788,7 +840,7 @@ with tab6:
 
             calculated_rows.append({
                 "No": no, "사번": emp['emp_id'], "이름": emp['emp_name'], "생년월일": emp['birth_date'], "부서": emp['dept'], "직위": emp['position'], "호봉": emp['hobong'],
-                "기본급": base, "초과수당(승인)": ot_pay, "가족수당": family, "비과세": non_tax, "기타수당": other_allow,
+                "기본급": base, "초과수당(승인)": ot_pay, "가족수당": family, "명절상여": holiday_bonus, "비과세": non_tax, "기타수당": other_allow,
                 "국민연금(본인)": emp_national, "건강보험(본인)": emp_health, "장기요양(본인)": emp_longterm, "고용보험(본인)": emp_employment,
                 "소득세": emp_income_tax, "지방소득세": emp_local_tax, "기타공제": other_deduct,
                 "국민연금(사업자)": biz_national, "건강보험(사업자)": biz_health, "장기요양(사업자)": biz_longterm, "고용보험(사업자)": biz_employment, "산재보험(사업자)": biz_industrial,
@@ -803,7 +855,7 @@ with tab6:
 
         identity_columns = ["No", "사번", "이름", "생년월일", "부서", "직위", "호봉"]
         amount_columns = [
-            "기본급", "초과수당(승인)", "가족수당", "비과세", "기타수당",
+            "기본급", "초과수당(승인)", "가족수당", "명절상여", "비과세", "기타수당",
             "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
             "소득세", "지방소득세", "기타공제", "국민연금(사업자)",
             "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)",
@@ -849,7 +901,7 @@ with tab6:
         if invalid_cells:
             st.error("금액은 0 이상의 숫자로 입력해 주세요: " + ", ".join(invalid_cells[:8]) + (" 외" if len(invalid_cells) > 8 else ""))
 
-        gross_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "비과세", "기타수당"]].sum(axis=1)
+        gross_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "명절상여", "비과세", "기타수당"]].sum(axis=1)
         deduction_series = edited_payroll[["국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)", "소득세", "지방소득세", "기타공제"]].sum(axis=1)
         employer_series = edited_payroll[["국민연금(사업자)", "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)", "산재보험(사업자)"]].sum(axis=1)
         net_series = gross_series - deduction_series
@@ -882,6 +934,7 @@ with tab6:
                     "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
                     "pay_date": pay_date.isoformat(), "emp_id": r['사번'], "base_salary": int(r['기본급']),
                     "ot_pay": int(r['초과수당(승인)']), "family_allowance": int(r['가족수당']),
+                    "holiday_bonus": int(r['명절상여']),
                     "non_taxable": int(r['비과세']), "other_allowance": int(r['기타수당']),
                     "national_pension": int(r['국민연금(본인)']), "health_insurance": int(r['건강보험(본인)']),
                     "longterm_care": int(r['장기요양(본인)']), "employment_insurance": int(r['고용보험(본인)']),
@@ -900,17 +953,17 @@ with tab6:
             st.success(f"{pay_month} {pay_run_no}차 {pay_run_name} 수정 수치가 저장되었습니다.")
 
         payroll_html_rows = ""
-        sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
+        sum_base = sum_ot = sum_family = sum_holiday = sum_nontax = sum_gross = 0
         sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
         sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
 
         for idx, row in edited_payroll.iterrows():
-            total_gross = row['기본급'] + row['초과수당(승인)'] + row['가족수당'] + row['비과세'] + row['기타수당']
+            total_gross = row['기본급'] + row['초과수당(승인)'] + row['가족수당'] + row['명절상여'] + row['비과세'] + row['기타수당']
             emp_deduction_total = row['국민연금(본인)'] + row['건강보험(본인)'] + row['장기요양(본인)'] + row['고용보험(본인)'] + row['소득세'] + row['지방소득세'] + row['기타공제']
             net_pay = total_gross - emp_deduction_total
             biz_deduction_total = row['국민연금(사업자)'] + row['건강보험(사업자)'] + row['장기요양(사업자)'] + row['고용보험(사업자)'] + row['산재보험(사업자)']
 
-            sum_base += row['기본급']; sum_ot += row['초과수당(승인)']; sum_family += row['가족수당']; sum_nontax += row['비과세']; sum_gross += total_gross
+            sum_base += row['기본급']; sum_ot += row['초과수당(승인)']; sum_family += row['가족수당']; sum_holiday += row['명절상여']; sum_nontax += row['비과세']; sum_gross += total_gross
             sum_nat += row['국민연금(본인)']; sum_hea += row['건강보험(본인)']; sum_long += row['장기요양(본인)']; sum_emp += row['고용보험(본인)']
             sum_inc += row['소득세']; sum_loc += row['지방소득세']; sum_other_d += row['기타공제']; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
             sum_b_nat += row['국민연금(사업자)']; sum_b_hea += row['건강보험(사업자)']; sum_b_long += row['장기요양(사업자)']; sum_b_emp += row['고용보험(사업자)']; sum_b_ind += row['산재보험(사업자)']; sum_b_tot += biz_deduction_total; sum_retire += row['퇴직적립금']
@@ -921,6 +974,7 @@ with tab6:
                 <td style="text-align:right;">{row['기본급']:,}</td>
                 <td style="text-align:right;">{row['초과수당(승인)']:,}</td>
                 <td style="text-align:right;">{row['가족수당']:,}</td>
+                <td style="text-align:right;">{row['명절상여']:,}</td>
                 <td style="text-align:right;">{row['비과세']:,}</td>
                 <td style="text-align:right; font-weight:bold;">{total_gross:,}</td>
                 <td style="text-align:right;">{row['국민연금(본인)']:,}</td>
@@ -947,7 +1001,7 @@ with tab6:
         current_hash = payload_hash(snapshot, accounting_export)
 
         if not closing_table_ready or not multi_run_ready:
-            st.warning("먼저 제공된 V1.3 SQL 설정 파일을 Supabase에서 실행해야 급여 확정 기능을 사용할 수 있습니다.")
+            st.warning("먼저 제공된 V1.4 SQL 설정 파일을 Supabase에서 실행해야 급여 확정 기능을 사용할 수 있습니다.")
         elif current_closing and current_closing.get("status") == "finalized":
             saved_hash = current_closing.get("content_hash", "")
             if saved_hash == current_hash:
@@ -968,6 +1022,7 @@ with tab6:
                         "pay_date": pay_date.isoformat(), "emp_id": r['사번'],
                         "base_salary": safe_int(r['기본급']), "ot_pay": safe_int(r['초과수당(승인)']),
                         "ot_pay_overridden": True, "family_allowance": safe_int(r['가족수당']),
+                        "holiday_bonus": safe_int(r['명절상여']),
                         "non_taxable": safe_int(r['비과세']), "other_allowance": safe_int(r['기타수당']),
                         "national_pension": safe_int(r['국민연금(본인)']), "health_insurance": safe_int(r['건강보험(본인)']),
                         "longterm_care": safe_int(r['장기요양(본인)']), "employment_insurance": safe_int(r['고용보험(본인)']),
@@ -1023,6 +1078,7 @@ with tab6:
             <td style="text-align:right;">{sum_base:,}</td>
             <td style="text-align:right;">{sum_ot:,}</td>
             <td style="text-align:right;">{sum_family:,}</td>
+            <td style="text-align:right;">{sum_holiday:,}</td>
             <td style="text-align:right;">{sum_nontax:,}</td>
             <td style="text-align:right;">{sum_gross:,}</td>
             <td style="text-align:right;">{sum_nat:,}</td>
@@ -1076,7 +1132,7 @@ with tab6:
                         <th rowspan="3" style="width: 50px;">이름</th>
                         <th rowspan="3" style="width: 65px;">생년월일</th>
                         <th rowspan="3" style="width: 40px;">호봉</th>
-                        <th colspan="4">지급 내역</th>
+                        <th colspan="5">지급 내역</th>
                         <th rowspan="3">급여총액</th>
                         <th colspan="7">근로자 본인 부담금</th>
                         <th rowspan="3" style="background-color: #fff2cc;">실지급액</th>
@@ -1087,6 +1143,7 @@ with tab6:
                         <th rowspan="2">기본급</th>
                         <th rowspan="2">초과수당</th>
                         <th rowspan="2">가족수당</th>
+                        <th rowspan="2">명절상여</th>
                         <th rowspan="2">비과세</th>
                         <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
                         <th rowspan="2">공제합계</th>
@@ -1148,6 +1205,7 @@ with tab7:
             base = adj['base_salary']
             ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
             family = adj['family_allowance']
+            holiday_bonus = safe_int(adj.get('holiday_bonus'))
             non_tax = adj['non_taxable']
             other_allow = adj['other_allowance']
             emp_national = adj['national_pension']
@@ -1161,6 +1219,7 @@ with tab7:
             ot_pay = calculated_ot_pay
             base = emp['base_salary']
             family = emp['family_allowance']
+            holiday_bonus = 0
             non_tax = emp['non_taxable']
             other_allow = emp['other_allowance']
             other_deduct = emp['other_deduction']
@@ -1168,18 +1227,19 @@ with tab7:
             total_gross_tmp = truncate_ten(base + ot_pay + family + non_tax + other_allow)
             taxable_gross_tmp = total_gross_tmp - non_tax
 
-            emp_national = truncate_ten(taxable_gross_tmp * 0.0475) if emp['is_national'] == 1 else 0
-            emp_health = truncate_ten(taxable_gross_tmp * 0.03595) if emp['is_health'] == 1 else 0
-            emp_longterm = truncate_ten(emp_health * 0.1295) if emp['is_health'] == 1 else 0
-            emp_employment = truncate_ten(taxable_gross_tmp * 0.0090) if emp['is_employment'] == 1 else 0
-            emp_income_tax = truncate_ten(taxable_gross_tmp * 0.03)
-            emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+            emp_national = safe_int(emp.get('national_pension'))
+            emp_health = safe_int(emp.get('health_insurance'))
+            emp_longterm = safe_int(emp.get('longterm_care'))
+            emp_employment = safe_int(emp.get('employment_insurance'))
+            emp_income_tax = safe_int(emp.get('income_tax'))
+            emp_local_tax = safe_int(emp.get('local_tax'))
             if slip_run_no == 2:
                 base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                holiday_bonus = safe_int(emp.get('holiday_bonus'))
                 emp_national = emp_health = emp_longterm = emp_employment = 0
                 emp_income_tax = emp_local_tax = 0
 
-        total_gross = base + ot_pay + family + non_tax + other_allow
+        total_gross = base + ot_pay + family + holiday_bonus + non_tax + other_allow
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
@@ -1230,6 +1290,8 @@ with tab7:
                 <tr>
                     <td style="padding: 6px; background: #f9f9f9;">가족수당</td>
                     <td style="padding: 6px; text-align: right;">{family:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">명절상여</td>
+                    <td style="padding: 6px; text-align: right;">{holiday_bonus:,} 원</td>
                     <td style="padding: 6px; background: #f9f9f9;">장기요양보험</td>
                     <td style="padding: 6px; text-align: right;">{emp_longterm:,} 원</td>
                 </tr>
@@ -1340,7 +1402,7 @@ with tab8:
         payroll_print_rows = ""
         no = 1
 
-        sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
+        sum_base = sum_ot = sum_family = sum_holiday = sum_nontax = sum_gross = 0
         sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
         sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
 
@@ -1354,6 +1416,7 @@ with tab8:
                 base = adj['base_salary']
                 ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
                 family = adj['family_allowance']
+                holiday_bonus = safe_int(adj.get('holiday_bonus'))
                 non_tax = adj['non_taxable']
                 other_allow = adj['other_allowance']
                 emp_national = adj['national_pension']
@@ -1367,6 +1430,7 @@ with tab8:
                 ot_pay = calculated_ot_pay
                 base = emp['base_salary']
                 family = emp['family_allowance']
+                holiday_bonus = 0
                 non_tax = emp['non_taxable']
                 other_allow = emp['other_allowance']
                 other_deduct = emp['other_deduction']
@@ -1374,31 +1438,32 @@ with tab8:
                 total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
                 taxable_gross_calc = total_gross_calc - non_tax
 
-                emp_national = truncate_ten(taxable_gross_calc * 0.0475) if emp.get('is_national', 1) == 1 else 0
-                emp_health = truncate_ten(taxable_gross_calc * 0.03595) if emp.get('is_health', 1) == 1 else 0
-                emp_longterm = truncate_ten(emp_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
-                emp_employment = truncate_ten(taxable_gross_calc * 0.0090) if emp.get('is_employment', 1) == 1 else 0
-                emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
-                emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+                emp_national = safe_int(emp.get('national_pension'))
+                emp_health = safe_int(emp.get('health_insurance'))
+                emp_longterm = safe_int(emp.get('longterm_care'))
+                emp_employment = safe_int(emp.get('employment_insurance'))
+                emp_income_tax = safe_int(emp.get('income_tax'))
+                emp_local_tax = safe_int(emp.get('local_tax'))
                 if print_run_no == 2:
                     base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    holiday_bonus = safe_int(emp.get('holiday_bonus'))
                     emp_national = emp_health = emp_longterm = emp_employment = 0
                     emp_income_tax = emp_local_tax = 0
 
-            tot_g = base + ot_pay + family + non_tax + other_allow
+            tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
             taxable_gross = tot_g - non_tax
             emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
             net_pay = tot_g - emp_deduction_total
 
-            biz_national = truncate_ten(taxable_gross * 0.0475) if emp.get('is_national', 1) == 1 else 0
-            biz_health = truncate_ten(taxable_gross * 0.03595) if emp.get('is_health', 1) == 1 else 0
-            biz_longterm = truncate_ten(biz_health * 0.1295) if emp.get('is_health', 1) == 1 else 0
-            biz_employment = truncate_ten(taxable_gross * 0.0115) if emp.get('is_employment', 1) == 1 else 0
-            biz_industrial = truncate_ten(taxable_gross * 0.0726) if emp.get('is_industrial', 1) == 1 else 0
+            biz_national = safe_int(adj.get('employer_national_pension')) if not adj_match.empty else safe_int(emp.get('employer_national_pension'))
+            biz_health = safe_int(adj.get('employer_health_insurance')) if not adj_match.empty else safe_int(emp.get('employer_health_insurance'))
+            biz_longterm = safe_int(adj.get('employer_longterm_care')) if not adj_match.empty else safe_int(emp.get('employer_longterm_care'))
+            biz_employment = safe_int(adj.get('employer_employment_insurance')) if not adj_match.empty else safe_int(emp.get('employer_employment_insurance'))
+            biz_industrial = safe_int(adj.get('employer_industrial_insurance')) if not adj_match.empty else safe_int(emp.get('employer_industrial_insurance'))
             biz_deduction_total = biz_national + biz_health + biz_longterm + biz_employment + biz_industrial
-            retirement_accrual = truncate_ten(tot_g / 12)
+            retirement_accrual = safe_int(adj.get('retirement_accrual')) if not adj_match.empty else safe_int(emp.get('retirement_accrual'))
 
-            sum_base += base; sum_ot += ot_pay; sum_family += family; sum_nontax += non_tax; sum_gross += tot_g
+            sum_base += base; sum_ot += ot_pay; sum_family += family; sum_holiday += holiday_bonus; sum_nontax += non_tax; sum_gross += tot_g
             sum_nat += emp_national; sum_hea += emp_health; sum_long += emp_longterm; sum_emp += emp_employment
             sum_inc += emp_income_tax; sum_loc += emp_local_tax; sum_other_d += other_deduct; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
             sum_b_nat += biz_national; sum_b_hea += biz_health; sum_b_long += biz_longterm; sum_b_emp += biz_employment; sum_b_ind += biz_industrial; sum_b_tot += biz_deduction_total; sum_retire += retirement_accrual
@@ -1409,6 +1474,7 @@ with tab8:
                 <td style="text-align:right;">{base:,}</td>
                 <td style="text-align:right;">{ot_pay:,}</td>
                 <td style="text-align:right;">{family:,}</td>
+                <td style="text-align:right;">{holiday_bonus:,}</td>
                 <td style="text-align:right;">{non_tax:,}</td>
                 <td style="text-align:right; font-weight:bold;">{tot_g:,}</td>
                 <td style="text-align:right;">{emp_national:,}</td>
@@ -1436,6 +1502,7 @@ with tab8:
             <td style="text-align:right;">{sum_base:,}</td>
             <td style="text-align:right;">{sum_ot:,}</td>
             <td style="text-align:right;">{sum_family:,}</td>
+            <td style="text-align:right;">{sum_holiday:,}</td>
             <td style="text-align:right;">{sum_nontax:,}</td>
             <td style="text-align:right;">{sum_gross:,}</td>
             <td style="text-align:right;">{sum_nat:,}</td>
@@ -1491,7 +1558,7 @@ with tab8:
                         <th rowspan="3" style="width: 50px;">이름</th>
                         <th rowspan="3" style="width: 65px;">생년월일</th>
                         <th rowspan="3" style="width: 40px;">호봉</th>
-                        <th colspan="4">지급 내역</th>
+                        <th colspan="5">지급 내역</th>
                         <th rowspan="3">급여총액</th>
                         <th colspan="7">근로자 본인 부담금</th>
                         <th rowspan="3" style="background-color: #fff2cc;">실지급액</th>
@@ -1502,6 +1569,7 @@ with tab8:
                         <th rowspan="2">기본급</th>
                         <th rowspan="2">초과수당</th>
                         <th rowspan="2">가족수당</th>
+                        <th rowspan="2">명절상여</th>
                         <th rowspan="2">비과세</th>
                         <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
                         <th rowspan="2">공제합계</th>
@@ -1543,14 +1611,14 @@ with tab9:
         st.warning("등록된 직원 정보가 없다.")
     else:
         monthly_summary_rows = []
-        tot_ann_count = tot_ann_base = tot_ann_ot_hours = tot_ann_ot = tot_ann_fam = tot_ann_nontax = tot_ann_other_a = 0
+        tot_ann_count = tot_ann_base = tot_ann_ot_hours = tot_ann_ot = tot_ann_fam = tot_ann_holiday = tot_ann_nontax = tot_ann_other_a = 0
         tot_ann_gross = tot_ann_nat = tot_ann_hea = tot_ann_long = tot_ann_emp = tot_ann_inc = tot_ann_loc = 0
         tot_ann_other_d = tot_ann_deduct = tot_ann_net = tot_ann_retire = 0
 
         for m in range(1, 13):
             m_str = f"{c_y9}-{m:02d}"
             m_emp_count = len(df_emp_all)
-            m_base = m_ot = m_fam = m_nontax = m_other_a = 0
+            m_base = m_ot = m_fam = m_holiday = m_nontax = m_other_a = 0
             m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
             m_retire = 0
             m_ot_hours = 0.0
@@ -1568,6 +1636,7 @@ with tab9:
                 if not adj_m.empty:
                     base = safe_int(adj_m['base_salary'].sum())
                     fam = safe_int(adj_m['family_allowance'].sum())
+                    m_holiday += safe_int(adj_m['holiday_bonus'].sum()) if 'holiday_bonus' in adj_m.columns else 0
                     nontax = safe_int(adj_m['non_taxable'].sum())
                     other_a = safe_int(adj_m['other_allowance'].sum())
                     nat = safe_int(adj_m['national_pension'].sum())
@@ -1595,23 +1664,23 @@ with tab9:
                     tot_g_tmp = truncate_ten(base + ot + fam + nontax + other_a)
                     taxable_tmp = tot_g_tmp - nontax
 
-                    nat = truncate_ten(taxable_tmp * 0.0475) if emp.get('is_national', 1) == 1 else 0
-                    hea = truncate_ten(taxable_tmp * 0.03595) if emp.get('is_health', 1) == 1 else 0
-                    lng = truncate_ten(hea * 0.1295) if emp.get('is_health', 1) == 1 else 0
-                    e_emp = truncate_ten(taxable_tmp * 0.0090) if emp.get('is_employment', 1) == 1 else 0
-                    inc = truncate_ten(taxable_tmp * 0.03)
-                    loc = truncate_ten(inc * 0.10)
-                    retire = truncate_ten((base + ot + fam + nontax + other_a) / 12)
+                    nat = safe_int(emp.get('national_pension'))
+                    hea = safe_int(emp.get('health_insurance'))
+                    lng = safe_int(emp.get('longterm_care'))
+                    e_emp = safe_int(emp.get('employment_insurance'))
+                    inc = safe_int(emp.get('income_tax'))
+                    loc = safe_int(emp.get('local_tax'))
+                    retire = safe_int(emp.get('retirement_accrual'))
 
                 m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
                 m_nat += nat; m_hea += hea; m_long += lng; m_emp += e_emp
                 m_inc += inc; m_loc += loc; m_other_d += other_d
                 m_retire += retire
 
-            m_gross = m_base + m_ot + m_fam + m_nontax + m_other_a
+            m_gross = m_base + m_ot + m_fam + m_holiday + m_nontax + m_other_a
             m_deduct = m_nat + m_hea + m_long + m_emp + m_inc + m_loc + m_other_d
             m_net = m_gross - m_deduct
-            tot_ann_base += m_base; tot_ann_ot_hours += m_ot_hours; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
+            tot_ann_base += m_base; tot_ann_ot_hours += m_ot_hours; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_holiday += m_holiday; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
             tot_ann_gross += m_gross; tot_ann_nat += m_nat; tot_ann_hea += m_hea; tot_ann_long += m_long; tot_ann_emp += m_emp
             tot_ann_inc += m_inc; tot_ann_loc += m_loc; tot_ann_other_d += m_other_d; tot_ann_deduct += m_deduct; tot_ann_net += m_net
             tot_ann_retire += m_retire
@@ -1624,6 +1693,7 @@ with tab9:
                 <td style="text-align:right; background-color:#f0f8ff;"><b>{m_ot_hours:.1f} 시간</b></td>
                 <td style="text-align:right;">{m_ot:,}</td>
                 <td style="text-align:right;">{m_fam:,}</td>
+                <td style="text-align:right;">{m_holiday:,}</td>
                 <td style="text-align:right;">{m_nontax:,}</td>
                 <td style="text-align:right; font-weight:bold; background-color:#f9f9f9;">{m_gross:,}</td>
                 <td style="text-align:right;">{m_nat:,}</td>
@@ -1645,6 +1715,7 @@ with tab9:
             <td style="text-align:right; background-color:#d0e8ff;">{tot_ann_ot_hours:.1f} 시간</td>
             <td style="text-align:right;">{tot_ann_ot:,}</td>
             <td style="text-align:right;">{tot_ann_fam:,}</td>
+            <td style="text-align:right;">{tot_ann_holiday:,}</td>
             <td style="text-align:right;">{tot_ann_nontax:,}</td>
             <td style="text-align:right;">{tot_ann_gross:,}</td>
             <td style="text-align:right;">{tot_ann_nat:,}</td>
@@ -1693,6 +1764,7 @@ with tab9:
                         <th style="background-color: #e6f2ff;">승인 초과시간</th>
                         <th>초과수당</th>
                         <th>가족수당</th>
+                        <th>명절상여</th>
                         <th>비과세</th>
                         <th style="background-color: #fff2cc;">급여총액</th>
                         <th>국민연금</th>
