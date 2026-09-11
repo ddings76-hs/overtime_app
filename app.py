@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.2", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -341,7 +341,7 @@ with tab2:
                 st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
 
 # -------------------------------------------------------------------
-# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표
+# TAB 3: 실제 수행 입력 & 삭제 기능 & 월별 승인 요약표 (수정 완료)
 # -------------------------------------------------------------------
 with tab3:
     st.header("✅ 실제 초과근무 수행 내역 입력 & 월별 승인 요약표")
@@ -423,7 +423,7 @@ with tab3:
         target_ot_latest = latest_res.data[0] if latest_res.data else target_ot
 
         st.divider()
-        st.subheader("🖨️ 초과근무 신청 및 확인서 인쇄")
+        st.subheader("🖨️ 초과/휴일근무 신청 및 확인서 인쇄")
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
@@ -435,7 +435,7 @@ with tab3:
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
             {logo_html}
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
-                <h2 style="margin: 0; padding-top: 15px; font-size: 22px; text-decoration: underline;">초 과 근 무 신 청 및 확 인 서</h2>
+                <h2 style="margin: 0; padding-top: 15px; font-size: 22px; text-decoration: underline;">초 과 / 휴 일 근 무 신 청 및 확 인 서</h2>
                 <table style="border-collapse: collapse; text-align: center; font-size: 12px; width: 210px;" border="1">
                     <tr style="height: 20px; background-color: #f2f2f2;">
                         <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
@@ -458,7 +458,7 @@ with tab3:
                 </tr>
                 <tr style="height: 38px;">
                     <th style="padding: 6px; background: #f9f9f9;">근무구분</th>
-                    <td style="padding: 6px;" colspan="3">{target_ot_latest['work_type']} (최종 상태: {target_ot_latest['status']})</td>
+                    <td style="padding: 6px;" colspan="3"><b>{target_ot_latest['work_type']}</b> (최종 상태: {target_ot_latest['status']})</td>
                 </tr>
                 <tr style="height: 38px;">
                     <th style="padding: 6px; background: #f9f9f9;">사전 신청일시</th>
@@ -477,7 +477,7 @@ with tab3:
                 </tr>
             </table>
 
-            <p style="text-align: center; margin-top: 35px; font-size: 14px;">위와 같이 초과근무를 신청하고 실제 수행 내역을 확인합니다.</p>
+            <p style="text-align: center; margin-top: 35px; font-size: 14px;">위와 같이 근무를 신청하고 실제 수행 내역을 확인합니다.</p>
             <p style="text-align: center; margin-top: 10px; font-size: 13px;">{target_ot_latest['work_date'][:4]}년 {target_ot_latest['work_date'][5:7]}월 {target_ot_latest['work_date'][8:10]}일</p>
             
             <p style="text-align: right; margin-top: 30px; font-size: 14px; font-weight: bold; padding-right: 10px;">
@@ -488,7 +488,7 @@ with tab3:
         st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
 
         st.divider()
-        st.subheader("📊 월별 승인 초과근무 집계 요약표")
+        st.subheader("📊 월별 승인 초과/휴일근무 집계 요약표")
         
         current_year = datetime.now().year
         c_y, c_m = st.columns(2)
@@ -503,15 +503,24 @@ with tab3:
         df_ot_month = pd.DataFrame(ot_m_res.data) if ot_m_res.data else pd.DataFrame()
 
         if df_ot_month.empty:
-            st.info(f"💡 [{filter_month}] 승인 완료된 초과근무 내역이 없다.")
+            st.info(f"💡 [{filter_month}] 승인 완료된 근무 내역이 없다.")
         else:
-            summary_ot = df_ot_month.groupby(['emp_id', 'emp_name', 'dept', 'position', 'status']).agg(
-                승인_건수=('id', 'count'),
-                총_인정시간_h=('actual_duration_hours', 'sum')
-            ).reset_index()
-            summary_ot['총_인정시간_h'] = summary_ot['총_인정시간_h'].round(1)
+            def process_ot_summary(group):
+                work_dates = ", ".join(sorted(group['work_date'].unique()))
+                weekday_hours = group[group['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum()
+                holiday_hours = group[group['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum()
+                total_hours = group['actual_duration_hours'].sum()
+                return pd.Series({
+                    '근무일자_목록': work_dates,
+                    '승인_건수': len(group),
+                    '평일_인정시간_h': round(weekday_hours, 1),
+                    '휴일_인정시간_h': round(holiday_hours, 1),
+                    '총_인정시간_h': round(total_hours, 1)
+                })
+
+            summary_ot = df_ot_month.groupby(['emp_id', 'emp_name', 'dept', 'position', 'status']).apply(process_ot_summary).reset_index()
             
-            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과근무 인정 시간 현황**")
+            st.write(f"**[{filter_month}] 최종 승인된 직원별 초과 및 휴일근무 상세 현황**")
             st.dataframe(summary_ot, use_container_width=True)
 
 # -------------------------------------------------------------------
@@ -773,7 +782,7 @@ with tab6:
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
-            # 기준일자 범위 내 승인된 초과근무 내역 조회
+            # 기준일자 범위 내 승인된 평일/휴일 근무 수당 자동 합산
             emp_ot = df_ot[
                 (df_ot['emp_id'] == emp['emp_id']) & 
                 (df_ot['work_date'] >= str(ot_start_date)) & 
@@ -1163,7 +1172,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄
+# TAB 7: 개별 급여명세서 인쇄 (수정 완료)
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -1196,6 +1205,7 @@ with tab7:
         ot_start_date_slip = (slip_pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
         ot_end_date_slip = slip_pay_date - timedelta(days=1)
 
+        # 승인된 평일/휴일 근무 내역 필터링 및 시간 집계
         emp_ot = df_ot[
             (df_ot['emp_id'] == emp['emp_id']) & 
             (df_ot['work_date'] >= str(ot_start_date_slip)) & 
@@ -1286,7 +1296,7 @@ with tab7:
                     <td style="padding: 6px; text-align: right;">{emp_national:,} 원</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; background: #f9f9f9;">시간외수당 ({total_ot_hours:.1f}h)</td>
+                    <td style="padding: 6px; background: #f9f9f9;">시간외/휴일수당 ({total_ot_hours:.1f}h)</td>
                     <td style="padding: 6px; text-align: right;">{ot_pay:,} 원</td>
                     <td style="padding: 6px; background: #f9f9f9;">건강보험</td>
                     <td style="padding: 6px; text-align: right;">{emp_health:,} 원</td>
@@ -1336,8 +1346,8 @@ with tab7:
                 </tr>
                 <tr style="height: 32px;">
                     <td><b>{current_hourly_wage:,} 원</b></td>
-                    <td>{weekday_ot_hours if weekday_ot_hours > 0 else '-'}</td>
-                    <td>{holiday_ot_hours if holiday_ot_hours > 0 else '-'}</td>
+                    <td>{f"{weekday_ot_hours:.1f}h" if weekday_ot_hours > 0 else '-'}</td>
+                    <td>{f"{holiday_ot_hours:.1f}h" if holiday_ot_hours > 0 else '-'}</td>
                     <td>-</td>
                 </tr>
             </table>
