@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import io
 import base64
 import json
@@ -35,7 +35,7 @@ def safe_int(value):
 
 # 국세청 근로소득 간이세액표(2026.03.01 시행) 중 공제대상가족 1명 열.
 # 배포 시 별도 엑셀 파일 없이 동일 기준을 적용하도록 원본 표의 구간·세액을 압축 내장한다.
-_TAX_TABLE_1_PERSON_B64 = "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"
+_TAX_TABLE_1_PERSON_B64 = "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"
 
 def _load_tax_table_1_person():
     raw = zlib.decompress(base64.b64decode(_TAX_TABLE_1_PERSON_B64)).decode("utf-8")
@@ -122,8 +122,6 @@ def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_ru
         "pay_run_name": pay_run_name, "pay_date": pay_date.isoformat(), "employees": employees, "totals": totals
     }
 
-    # 회계 지출에는 총급여·사업주 보험·퇴직적립만 반영한다.
-    # 실지급액과 근로자 공제액은 payroll_summary에만 두어 중복 지출을 방지한다.
     accounting_export = {
         "schema_version": "payroll-accounting-1.1",
         "source_type": "payroll", "source_key": f"payroll:{pay_month}:run-{pay_run_no}",
@@ -264,7 +262,6 @@ with tab1:
             dept = st.text_input("부서")
             position = st.text_input("직위", value="주임")
             hobong = st.text_input("호봉", value="1호봉")
-            # 소수점 1자리까지 입력 가능하도록 step 및 format 설정
             total_leave = st.number_input("연간 총 연차 부여일수", min_value=0.0, value=15.0, step=0.1, format="%.1f")
         with col2:
             base_salary = st.number_input("기본급 (원)", min_value=0, value=2500000, step=100000)
@@ -790,21 +787,6 @@ with tab6:
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
-    # 직원별 지정 기간 내 승인 수당 합산 연계
-    from datetime import timedelta
-
-    # 급여지급일(pay_date) 기준 전월 25일 ~ 급여지급 월 전일 계산
-    ot_start_date = (pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
-    ot_end_date = pay_date - timedelta(days=1)
-
-    # 기준일자 범위 내 승인된 초과근무 내역 조회
-    emp_ot = df_ot[
-        (df_ot['emp_id'] == emp['emp_id']) & 
-        (df_ot['work_date'] >= str(ot_start_date)) & 
-        (df_ot['work_date'] <= str(ot_end_date))
-    ] if not df_ot.empty else pd.DataFrame()
-
-    calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
     multi_run_ready = True
     try:
         adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
@@ -828,10 +810,20 @@ with tab6:
         calculated_rows = []
         no = 1
         
+        # 급여지급일(pay_date) 기준 전월 25일 ~ 급여지급 월 전일 계산
+        ot_start_date = (pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date = pay_date - timedelta(days=1)
+
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
 
-            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month))] if not df_ot.empty else pd.DataFrame()
+            # 기준일자 범위 내 승인된 초과근무 내역 조회
+            emp_ot = df_ot[
+                (df_ot['emp_id'] == emp['emp_id']) & 
+                (df_ot['work_date'] >= str(ot_start_date)) & 
+                (df_ot['work_date'] <= str(ot_end_date))
+            ] if not df_ot.empty else pd.DataFrame()
+
             calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
             if not adj_match.empty:
@@ -861,7 +853,6 @@ with tab6:
                 total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
                 taxable_gross_calc = total_gross_calc - non_tax
 
-                # V1.4부터 자동 요율 계산 대신 직원등록 시 입력한 실제 금액을 최초값으로 사용한다.
                 emp_national = safe_int(emp.get('national_pension'))
                 emp_health = safe_int(emp.get('health_insurance'))
                 emp_longterm = safe_int(emp.get('longterm_care'))
@@ -869,8 +860,6 @@ with tab6:
                 emp_income_tax = safe_int(emp.get('income_tax'))
                 emp_local_tax = safe_int(emp.get('local_tax'))
 
-                # 2차 대장은 정기급여가 자동 중복되지 않도록 최초 생성 시 금액을 0원으로 시작한다.
-                # 필요한 상여금·공제액은 엑셀형 편집기에서 직접 입력한다.
                 if pay_run_no == 2:
                     base = ot_pay = family = non_tax = other_allow = other_deduct = 0
                     holiday_bonus = safe_int(emp.get('holiday_bonus'))
@@ -1080,7 +1069,6 @@ with tab6:
         with confirm_col:
             confirm_label = "🔒 월 급여 확정" if not current_closing else "🔁 변경 내용 재확정"
             if st.button(confirm_label, disabled=(not closing_table_ready or not multi_run_ready or bool(invalid_cells)), use_container_width=True):
-                # 확정 시 편집값도 함께 저장하여 명세서·인쇄 화면과 동일하게 유지한다.
                 for _, r in edited_payroll.iterrows():
                     supabase.table("monthly_payroll_adjust").upsert({
                         "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
@@ -1230,7 +1218,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄
+# TAB 7: 개별 급여명세서 인쇄 (최종 날짜 범위 연계 적용)
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -1259,7 +1247,18 @@ with tab7:
         adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).eq("emp_id", emp['emp_id']).execute()
         df_adj_single = pd.DataFrame(adj_single_res.data) if adj_single_res.data else pd.DataFrame()
 
-        emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))] if not df_ot.empty else pd.DataFrame()
+        # [수정 반영] 선택한 지급 월(25일 기준) 전월 25일 ~ 지급 월 전일 날짜 범위 산출
+        slip_pay_date = datetime.strptime(f"{pay_month_slip}-25", "%Y-%m-%d").date()
+        ot_start_date_slip = (slip_pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date_slip = slip_pay_date - timedelta(days=1)
+
+        # [수정 반영] 날짜 범위 내 승인된 초과근무 내역 필터링 및 시간·수당 계산
+        emp_ot = df_ot[
+            (df_ot['emp_id'] == emp['emp_id']) & 
+            (df_ot['work_date'] >= str(ot_start_date_slip)) & 
+            (df_ot['work_date'] <= str(ot_end_date_slip))
+        ] if not df_ot.empty else pd.DataFrame()
+
         weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
         total_ot_hours = weekday_ot_hours + holiday_ot_hours
@@ -1472,9 +1471,17 @@ with tab8:
         sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
         sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
 
+        ot_start_date_print = (pay_date_print.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date_print = pay_date_print - timedelta(days=1)
+
         for idx, emp in df_emp.iterrows():
             adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
-            emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_print))] if not df_ot.empty else pd.DataFrame()
+            emp_ot = df_ot[
+                (df_ot['emp_id'] == emp['emp_id']) & 
+                (df_ot['work_date'] >= str(ot_start_date_print)) & 
+                (df_ot['work_date'] <= str(ot_end_date_print))
+            ] if not df_ot.empty else pd.DataFrame()
+
             calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
             if not adj_match.empty:
