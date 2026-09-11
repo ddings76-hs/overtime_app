@@ -3,6 +3,8 @@ import pandas as pd
 from datetime import datetime, time
 import io
 import base64
+import json
+import hashlib
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
@@ -23,6 +25,94 @@ except Exception as e:
 
 def truncate_ten(value):
     return int(value // 10) * 10
+
+def safe_int(value):
+    """pandas/numpy 숫자를 JSON 저장이 가능한 정수로 통일한다."""
+    if pd.isna(value):
+        return 0
+    return int(value)
+
+def build_payroll_snapshot(pay_month, pay_date, payroll_df):
+    """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
+    employees = []
+    totals = {
+        "gross_pay": 0, "employee_deductions": 0, "net_pay": 0,
+        "employer_insurance": 0, "retirement_accrual": 0
+    }
+
+    for _, row in payroll_df.iterrows():
+        gross_pay = sum(safe_int(row[c]) for c in [
+            '기본급', '초과수당(승인)', '가족수당', '비과세', '기타수당'
+        ])
+        employee_deductions = sum(safe_int(row[c]) for c in [
+            '국민연금(본인)', '건강보험(본인)', '장기요양(본인)',
+            '고용보험(본인)', '소득세', '지방소득세', '기타공제'
+        ])
+        employer_insurance = sum(safe_int(row[c]) for c in [
+            '국민연금(사업자)', '건강보험(사업자)', '장기요양(사업자)',
+            '고용보험(사업자)', '산재보험(사업자)'
+        ])
+        retirement = safe_int(row['퇴직적립금'])
+        net_pay = gross_pay - employee_deductions
+
+        employees.append({
+            "emp_id": str(row['사번']), "emp_name": str(row['이름']),
+            "dept": str(row['부서']), "position": str(row['직위']),
+            "base_salary": safe_int(row['기본급']),
+            "overtime_pay": safe_int(row['초과수당(승인)']),
+            "family_allowance": safe_int(row['가족수당']),
+            "non_taxable": safe_int(row['비과세']),
+            "other_allowance": safe_int(row['기타수당']),
+            "gross_pay": gross_pay,
+            "employee_deductions": employee_deductions,
+            "net_pay": net_pay,
+            "employer_insurance": employer_insurance,
+            "retirement_accrual": retirement
+        })
+        totals["gross_pay"] += gross_pay
+        totals["employee_deductions"] += employee_deductions
+        totals["net_pay"] += net_pay
+        totals["employer_insurance"] += employer_insurance
+        totals["retirement_accrual"] += retirement
+
+    snapshot = {
+        "schema_version": "1.0", "pay_month": pay_month,
+        "pay_date": pay_date.isoformat(), "employees": employees, "totals": totals
+    }
+
+    # 회계 지출에는 총급여·사업주 보험·퇴직적립만 반영한다.
+    # 실지급액과 근로자 공제액은 payroll_summary에만 두어 중복 지출을 방지한다.
+    accounting_export = {
+        "schema_version": "payroll-accounting-1.0",
+        "source_type": "payroll", "source_key": f"payroll:{pay_month}",
+        "pay_month": pay_month, "pay_date": pay_date.isoformat(),
+        "title": f"{pay_month} 급여 및 사용자부담금",
+        "items": [
+            {"itemDate": pay_date.isoformat(), "accountItem": "급여 및 제수당",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "임직원", "detailSummary": f"{pay_month} 급여총액",
+             "amount": totals["gross_pay"]},
+            {"itemDate": pay_date.isoformat(), "accountItem": "사회보험료",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "사회보험 기관", "detailSummary": f"{pay_month} 사업주 부담 사회보험",
+             "amount": totals["employer_insurance"]},
+            {"itemDate": pay_date.isoformat(), "accountItem": "퇴직급여",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "퇴직연금 기관", "detailSummary": f"{pay_month} 퇴직적립금",
+             "amount": totals["retirement_accrual"]}
+        ],
+        "payroll_summary": totals,
+        "accounting_total": totals["gross_pay"] + totals["employer_insurance"] + totals["retirement_accrual"],
+        "notice": "실지급액과 근로자 공제액은 급여총액의 구성정보이며 지출액에 다시 더하지 않습니다."
+    }
+    return snapshot, accounting_export
+
+def payload_hash(snapshot, accounting_export):
+    canonical = json.dumps(
+        {"payroll": snapshot, "accounting": accounting_export},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 # 세션 내 로고 이미지 관리
 if 'logo_b64' not in st.session_state:
@@ -575,6 +665,14 @@ with tab6:
     adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).execute()
     df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
 
+    closing_table_ready = True
+    current_closing = None
+    try:
+        closing_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month).execute()
+        current_closing = closing_res.data[0] if closing_res.data else None
+    except Exception:
+        closing_table_ready = False
+
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
     else:
@@ -590,7 +688,7 @@ with tab6:
             if not adj_match.empty:
                 adj = adj_match.iloc[0]
                 base = adj['base_salary']
-                ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
+                ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
                 family = adj['family_allowance']
                 non_tax = adj['non_taxable']
                 other_allow = adj['other_allowance']
@@ -629,6 +727,14 @@ with tab6:
             biz_industrial = truncate_ten(taxable_gross * 0.0726) if emp.get('is_industrial', 1) == 1 else 0
             retirement_accrual = truncate_ten(tot_g / 12)
 
+            if not adj_match.empty:
+                biz_national = safe_int(adj.get('employer_national_pension')) if pd.notna(adj.get('employer_national_pension')) else biz_national
+                biz_health = safe_int(adj.get('employer_health_insurance')) if pd.notna(adj.get('employer_health_insurance')) else biz_health
+                biz_longterm = safe_int(adj.get('employer_longterm_care')) if pd.notna(adj.get('employer_longterm_care')) else biz_longterm
+                biz_employment = safe_int(adj.get('employer_employment_insurance')) if pd.notna(adj.get('employer_employment_insurance')) else biz_employment
+                biz_industrial = safe_int(adj.get('employer_industrial_insurance')) if pd.notna(adj.get('employer_industrial_insurance')) else biz_industrial
+                retirement_accrual = safe_int(adj.get('retirement_accrual')) if pd.notna(adj.get('retirement_accrual')) else retirement_accrual
+
             calculated_rows.append({
                 "No": no, "사번": emp['emp_id'], "이름": emp['emp_name'], "생년월일": emp['birth_date'], "부서": emp['dept'], "직위": emp['position'], "호봉": emp['hobong'],
                 "기본급": base, "초과수당(승인)": ot_pay, "가족수당": family, "비과세": non_tax, "기타수당": other_allow,
@@ -655,6 +761,13 @@ with tab6:
                     "national_pension": int(r['국민연금(본인)']), "health_insurance": int(r['건강보험(본인)']),
                     "longterm_care": int(r['장기요양(본인)']), "employment_insurance": int(r['고용보험(본인)']),
                     "income_tax": int(r['소득세']), "local_tax": int(r['지방소득세']), "other_deduction": int(r['기타공제'])
+                    , "ot_pay_overridden": True,
+                    "employer_national_pension": int(r['국민연금(사업자)']),
+                    "employer_health_insurance": int(r['건강보험(사업자)']),
+                    "employer_longterm_care": int(r['장기요양(사업자)']),
+                    "employer_employment_insurance": int(r['고용보험(사업자)']),
+                    "employer_industrial_insurance": int(r['산재보험(사업자)']),
+                    "retirement_accrual": int(r['퇴직적립금'])
                 }
                 supabase.table("monthly_payroll_adjust").upsert(pay_adj_data).execute()
             st.success(f"{pay_month} 급여대장 수정 수치가 Supabase DB에 저장 및 연동 완료되었다.")
@@ -700,6 +813,80 @@ with tab6:
                 <td style="text-align:right;">{row['퇴직적립금']:,}</td>
             </tr>
             """
+
+        st.divider()
+        st.subheader("🔒 월 급여 확정 및 회계자료")
+        snapshot, accounting_export = build_payroll_snapshot(pay_month, pay_date, edited_payroll)
+        current_hash = payload_hash(snapshot, accounting_export)
+
+        if not closing_table_ready:
+            st.warning("먼저 제공된 SQL 설정 파일을 Supabase에서 실행해야 월 급여 확정 기능을 사용할 수 있습니다.")
+        elif current_closing and current_closing.get("status") == "finalized":
+            saved_hash = current_closing.get("content_hash", "")
+            if saved_hash == current_hash:
+                st.success(f"{pay_month} 급여가 확정되었습니다. (확정본 {current_closing.get('revision', 1)}차)")
+            else:
+                st.warning("확정 후 급여대장 값이 변경되었습니다. 변경 내용을 저장한 뒤 재확정해 주세요.")
+        else:
+            st.info("현재 월은 아직 확정되지 않았습니다. 편집값을 확인한 뒤 확정해 주세요.")
+
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            confirm_label = "🔒 월 급여 확정" if not current_closing else "🔁 변경 내용 재확정"
+            if st.button(confirm_label, disabled=not closing_table_ready, use_container_width=True):
+                # 확정 시 편집값도 함께 저장하여 명세서·인쇄 화면과 동일하게 유지한다.
+                for _, r in edited_payroll.iterrows():
+                    supabase.table("monthly_payroll_adjust").upsert({
+                        "pay_month": pay_month, "emp_id": r['사번'],
+                        "base_salary": safe_int(r['기본급']), "ot_pay": safe_int(r['초과수당(승인)']),
+                        "ot_pay_overridden": True, "family_allowance": safe_int(r['가족수당']),
+                        "non_taxable": safe_int(r['비과세']), "other_allowance": safe_int(r['기타수당']),
+                        "national_pension": safe_int(r['국민연금(본인)']), "health_insurance": safe_int(r['건강보험(본인)']),
+                        "longterm_care": safe_int(r['장기요양(본인)']), "employment_insurance": safe_int(r['고용보험(본인)']),
+                        "income_tax": safe_int(r['소득세']), "local_tax": safe_int(r['지방소득세']),
+                        "other_deduction": safe_int(r['기타공제']),
+                        "employer_national_pension": safe_int(r['국민연금(사업자)']),
+                        "employer_health_insurance": safe_int(r['건강보험(사업자)']),
+                        "employer_longterm_care": safe_int(r['장기요양(사업자)']),
+                        "employer_employment_insurance": safe_int(r['고용보험(사업자)']),
+                        "employer_industrial_insurance": safe_int(r['산재보험(사업자)']),
+                        "retirement_accrual": safe_int(r['퇴직적립금'])
+                    }).execute()
+
+                revision = safe_int(current_closing.get("revision", 0)) + 1 if current_closing else 1
+                supabase.table("payroll_monthly_closings").upsert({
+                    "pay_month": pay_month, "pay_date": pay_date.isoformat(),
+                    "status": "finalized", "revision": revision,
+                    "payroll_data": snapshot, "accounting_export": accounting_export,
+                    "content_hash": current_hash, "finalized_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }).execute()
+                st.success(f"{pay_month} 급여를 {revision}차 확정본으로 저장했습니다.")
+                st.rerun()
+
+        with cancel_col:
+            can_cancel = bool(current_closing and current_closing.get("status") == "finalized")
+            if st.button("🔓 확정 취소", disabled=not can_cancel, use_container_width=True):
+                supabase.table("payroll_monthly_closings").update({
+                    "status": "cancelled", "updated_at": datetime.now().isoformat()
+                }).eq("pay_month", pay_month).execute()
+                st.warning(f"{pay_month} 급여 확정을 취소했습니다.")
+                st.rerun()
+
+        export_ready = bool(
+            current_closing and current_closing.get("status") == "finalized"
+            and current_closing.get("content_hash") == current_hash
+        )
+        if export_ready:
+            export_bytes = json.dumps(
+                current_closing["accounting_export"], ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            st.download_button(
+                "📤 확정 회계자료 JSON 다운로드", data=export_bytes,
+                file_name=f"급여회계자료_{pay_month}_확정{current_closing.get('revision', 1)}차.json",
+                mime="application/json", use_container_width=True
+            )
+            st.caption("회계 지출 합계: " + f"{current_closing['accounting_export']['accounting_total']:,}원 · 근로자 공제액은 중복 합산하지 않습니다.")
 
         summary_html_row = f"""
         <tr style="background-color: #e6f2ff; font-weight: bold;">
@@ -823,7 +1010,7 @@ with tab7:
         if not df_adj_single.empty:
             adj = df_adj_single.iloc[0]
             base = adj['base_salary']
-            ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
+            ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
             family = adj['family_allowance']
             non_tax = adj['non_taxable']
             other_allow = adj['other_allowance']
@@ -1021,7 +1208,7 @@ with tab8:
             if not adj_match.empty:
                 adj = adj_match.iloc[0]
                 base = adj['base_salary']
-                ot_pay = adj['ot_pay'] if adj['ot_pay'] > 0 else calculated_ot_pay
+                ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
                 family = adj['family_allowance']
                 non_tax = adj['non_taxable']
                 other_allow = adj['other_allowance']
@@ -1232,7 +1419,7 @@ with tab9:
                 if not adj_m.empty:
                     adj = adj_m.iloc[0]
                     base = adj['base_salary']
-                    ot = adj['ot_pay'] if adj['ot_pay'] > 0 else calc_ot
+                    ot = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calc_ot
                     fam = adj['family_allowance']
                     nontax = adj['non_taxable']
                     other_a = adj['other_allowance']
