@@ -10,7 +10,7 @@ from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -32,7 +32,7 @@ def safe_int(value):
         return 0
     return int(value)
 
-def build_payroll_snapshot(pay_month, pay_date, payroll_df):
+def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
     """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
     employees = []
     totals = {
@@ -76,21 +76,22 @@ def build_payroll_snapshot(pay_month, pay_date, payroll_df):
         totals["retirement_accrual"] += retirement
 
     snapshot = {
-        "schema_version": "1.0", "pay_month": pay_month,
-        "pay_date": pay_date.isoformat(), "employees": employees, "totals": totals
+        "schema_version": "1.1", "pay_month": pay_month, "pay_run_no": pay_run_no,
+        "pay_run_name": pay_run_name, "pay_date": pay_date.isoformat(), "employees": employees, "totals": totals
     }
 
     # 회계 지출에는 총급여·사업주 보험·퇴직적립만 반영한다.
     # 실지급액과 근로자 공제액은 payroll_summary에만 두어 중복 지출을 방지한다.
     accounting_export = {
-        "schema_version": "payroll-accounting-1.0",
-        "source_type": "payroll", "source_key": f"payroll:{pay_month}",
-        "pay_month": pay_month, "pay_date": pay_date.isoformat(),
-        "title": f"{pay_month} 급여 및 사용자부담금",
+        "schema_version": "payroll-accounting-1.1",
+        "source_type": "payroll", "source_key": f"payroll:{pay_month}:run-{pay_run_no}",
+        "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+        "pay_date": pay_date.isoformat(),
+        "title": f"{pay_month} {pay_run_name} 및 사용자부담금",
         "items": [
             {"itemDate": pay_date.isoformat(), "accountItem": "급여 및 제수당",
              "botamCategory": "인건비", "payMethod": "계좌이체",
-             "vendor": "임직원", "detailSummary": f"{pay_month} 급여총액",
+             "vendor": "임직원", "detailSummary": f"{pay_month} {pay_run_name} 총액",
              "amount": totals["gross_pay"]},
             {"itemDate": pay_date.isoformat(), "accountItem": "사회보험료",
              "botamCategory": "인건비", "payMethod": "계좌이체",
@@ -157,10 +158,39 @@ with tab1:
         df_emp = pd.DataFrame()
     
     if not df_emp.empty:
-        edited_df = st.data_editor(df_emp, use_container_width=True, num_rows="dynamic")
+        employee_column_labels = {
+            "emp_id": "사번", "emp_name": "이름", "birth_date": "생년월일",
+            "dept": "부서", "position": "직위", "hobong": "호봉",
+            "base_salary": "기본급", "hourly_wage": "통상시급",
+            "family_allowance": "가족수당", "non_taxable": "비과세",
+            "other_allowance": "기타수당", "other_deduction": "기타공제",
+            "is_national": "국민연금 가입", "is_health": "건강보험 가입",
+            "is_employment": "고용보험 가입", "is_industrial": "산재보험 가입",
+            "total_annual_leave": "연간 연차일수", "created_at": "등록일시",
+            "id": "DB번호"
+        }
+        display_emp = df_emp.rename(columns=employee_column_labels)
+        employee_money_columns = ["기본급", "통상시급", "가족수당", "비과세", "기타수당", "기타공제"]
+        employee_config = {
+            col: st.column_config.NumberColumn(col, min_value=0, step=10, format="localized", width="medium")
+            for col in employee_money_columns if col in display_emp.columns
+        }
+        for col in ["국민연금 가입", "건강보험 가입", "고용보험 가입", "산재보험 가입"]:
+            if col in display_emp.columns:
+                display_emp[col] = display_emp[col].astype(bool)
+                employee_config[col] = st.column_config.CheckboxColumn(col)
+        edited_display_df = st.data_editor(
+            display_emp, use_container_width=True, num_rows="dynamic", hide_index=True,
+            column_config=employee_config
+        )
+        edited_df = edited_display_df.rename(columns={v: k for k, v in employee_column_labels.items()})
         if st.button("수정 데이터 DB 저장"):
             for _, row in edited_df.iterrows():
-                supabase.table("employees").upsert(row.to_dict()).execute()
+                save_row = row.to_dict()
+                for col in ["is_national", "is_health", "is_employment", "is_industrial"]:
+                    if col in save_row:
+                        save_row[col] = 1 if bool(save_row[col]) else 0
+                supabase.table("employees").upsert(save_row).execute()
             st.success("직원 데이터 수정사항이 Supabase DB에 반영되었다.")
             st.rerun()
 
@@ -652,9 +682,17 @@ with tab5:
 # -------------------------------------------------------------------
 with tab6:
     st.header("📊 통합 급여대장 (수정 및 엑셀)")
-    
-    pay_date = st.date_input("지급일 선택", datetime.now(), key="payroll_date")
+
+    run_col1, run_col2, run_col3 = st.columns([1, 1, 2])
+    with run_col1:
+        pay_date = st.date_input("지급일 선택", datetime.now(), key="payroll_date")
+    with run_col2:
+        pay_run_no = st.selectbox("급여대장 차수", [1, 2], format_func=lambda x: f"{x}차 대장", key="pay_run_no")
+    with run_col3:
+        default_run_name = "정기급여" if pay_run_no == 1 else "명절상여금"
+        pay_run_name = st.text_input("급여대장 명칭", value=default_run_name, key=f"pay_run_name_{pay_run_no}").strip() or default_run_name
     pay_month = pay_date.strftime("%Y-%m")
+    st.caption(f"현재 편집 대상: {pay_month} · {pay_run_no}차 · {pay_run_name} · 지급일 {pay_date.isoformat()}")
 
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
@@ -662,13 +700,19 @@ with tab6:
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
-    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).execute()
-    df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+    multi_run_ready = True
+    try:
+        adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
+        df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+    except Exception:
+        multi_run_ready = False
+        df_adjust = pd.DataFrame()
+        st.error("먼저 V1.3 다중 급여대장 SQL 설정 파일을 Supabase에서 실행해 주세요.")
 
     closing_table_ready = True
     current_closing = None
     try:
-        closing_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month).execute()
+        closing_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
         current_closing = closing_res.data[0] if closing_res.data else None
     except Exception:
         closing_table_ready = False
@@ -717,6 +761,13 @@ with tab6:
                 emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
                 emp_local_tax = truncate_ten(emp_income_tax * 0.10)
 
+                # 2차 대장은 정기급여가 자동 중복되지 않도록 최초 생성 시 금액을 0원으로 시작한다.
+                # 필요한 상여금·공제액은 엑셀형 편집기에서 직접 입력한다.
+                if pay_run_no == 2:
+                    base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    emp_national = emp_health = emp_longterm = emp_employment = 0
+                    emp_income_tax = emp_local_tax = 0
+
             tot_g = base + ot_pay + family + non_tax + other_allow
             taxable_gross = tot_g - non_tax
 
@@ -747,15 +798,89 @@ with tab6:
 
         df_calc = pd.DataFrame(calculated_rows)
 
-        st.subheader(f"✏️ {pay_month} 급여대장 항목별 수정 편집기")
-        st.info("💡 공제·수당 수치를 수정한 후 아래 [수정사항 명세서 반영 저장] 버튼을 누르면 개별 급여명세서에 적용된다.")
-        
-        edited_payroll = st.data_editor(df_calc, use_container_width=True)
+        st.subheader(f"✏️ {pay_month} {pay_run_no}차 {pay_run_name} 엑셀형 편집기")
+        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 복사해 붙여넣을 수 있습니다. 직원 기본정보는 잠겨 있으며 금액 항목만 수정됩니다.")
 
-        if st.button("💾 수정사항 개별 급여명세서에 연동 저장"):
+        identity_columns = ["No", "사번", "이름", "생년월일", "부서", "직위", "호봉"]
+        amount_columns = [
+            "기본급", "초과수당(승인)", "가족수당", "비과세", "기타수당",
+            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
+            "소득세", "지방소득세", "기타공제", "국민연금(사업자)",
+            "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)",
+            "산재보험(사업자)", "퇴직적립금"
+        ]
+        column_config = {
+            "No": st.column_config.NumberColumn("No", width="small"),
+            "사번": st.column_config.TextColumn("사번", width="small"),
+            "이름": st.column_config.TextColumn("이름", width="small"),
+            "생년월일": st.column_config.TextColumn("생년월일", width="medium"),
+            "부서": st.column_config.TextColumn("부서", width="small"),
+            "직위": st.column_config.TextColumn("직위", width="small"),
+            "호봉": st.column_config.TextColumn("호봉", width="small")
+        }
+        for col in amount_columns:
+            column_config[col] = st.column_config.NumberColumn(
+                col, min_value=0, step=10, format="localized", width="medium",
+                help="10원 단위로 입력할 수 있습니다."
+            )
+
+        reset_version_key = f"payroll_editor_reset_version_{pay_month}_{pay_run_no}"
+        if reset_version_key not in st.session_state:
+            st.session_state[reset_version_key] = 0
+        editor_key = f"payroll_excel_editor_{pay_month}_{pay_run_no}_{st.session_state[reset_version_key]}"
+        edited_payroll = st.data_editor(
+            df_calc,
+            key=editor_key,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=identity_columns,
+            column_config=column_config,
+            height=min(650, max(220, 38 * (len(df_calc) + 2)))
+        )
+
+        invalid_cells = []
+        for col in amount_columns:
+            numeric_values = pd.to_numeric(edited_payroll[col], errors="coerce")
+            bad_rows = edited_payroll[numeric_values.isna() | (numeric_values < 0)]
+            invalid_cells.extend([f"{name} - {col}" for name in bad_rows["이름"].astype(str).tolist()])
+            edited_payroll[col] = numeric_values.fillna(0).round().astype(int)
+
+        if invalid_cells:
+            st.error("금액은 0 이상의 숫자로 입력해 주세요: " + ", ".join(invalid_cells[:8]) + (" 외" if len(invalid_cells) > 8 else ""))
+
+        gross_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "비과세", "기타수당"]].sum(axis=1)
+        deduction_series = edited_payroll[["국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)", "소득세", "지방소득세", "기타공제"]].sum(axis=1)
+        employer_series = edited_payroll[["국민연금(사업자)", "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)", "산재보험(사업자)"]].sum(axis=1)
+        net_series = gross_series - deduction_series
+        if (net_series < 0).any():
+            invalid_cells.append("공제합계가 급여총액을 초과한 직원")
+            st.error("공제합계가 급여총액보다 큰 직원이 있습니다. 실지급액이 음수가 되지 않도록 확인해 주세요.")
+
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("급여총액", f"{int(gross_series.sum()):,}원")
+        metric_cols[1].metric("근로자 공제합계", f"{int(deduction_series.sum()):,}원")
+        metric_cols[2].metric("실지급액", f"{int(net_series.sum()):,}원")
+        metric_cols[3].metric("사업주 부담보험", f"{int(employer_series.sum()):,}원")
+        metric_cols[4].metric("퇴직적립금", f"{int(edited_payroll['퇴직적립금'].sum()):,}원")
+
+        action_col1, action_col2 = st.columns([3, 1])
+        with action_col1:
+            save_adjustments = st.button(
+                "💾 수정사항 개별 급여명세서에 연동 저장",
+                disabled=bool(invalid_cells),
+                use_container_width=True
+            )
+        with action_col2:
+            if st.button("↩ 저장값 다시 불러오기", use_container_width=True):
+                st.session_state[reset_version_key] += 1
+                st.rerun()
+
+        if save_adjustments:
             for idx, r in edited_payroll.iterrows():
                 pay_adj_data = {
-                    "pay_month": pay_month, "emp_id": r['사번'], "base_salary": int(r['기본급']),
+                    "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                    "pay_date": pay_date.isoformat(), "emp_id": r['사번'], "base_salary": int(r['기본급']),
                     "ot_pay": int(r['초과수당(승인)']), "family_allowance": int(r['가족수당']),
                     "non_taxable": int(r['비과세']), "other_allowance": int(r['기타수당']),
                     "national_pension": int(r['국민연금(본인)']), "health_insurance": int(r['건강보험(본인)']),
@@ -769,8 +894,10 @@ with tab6:
                     "employer_industrial_insurance": int(r['산재보험(사업자)']),
                     "retirement_accrual": int(r['퇴직적립금'])
                 }
-                supabase.table("monthly_payroll_adjust").upsert(pay_adj_data).execute()
-            st.success(f"{pay_month} 급여대장 수정 수치가 Supabase DB에 저장 및 연동 완료되었다.")
+                supabase.table("monthly_payroll_adjust").upsert(
+                    pay_adj_data, on_conflict="pay_month,pay_run_no,emp_id"
+                ).execute()
+            st.success(f"{pay_month} {pay_run_no}차 {pay_run_name} 수정 수치가 저장되었습니다.")
 
         payroll_html_rows = ""
         sum_base = sum_ot = sum_family = sum_nontax = sum_gross = 0
@@ -816,15 +943,15 @@ with tab6:
 
         st.divider()
         st.subheader("🔒 월 급여 확정 및 회계자료")
-        snapshot, accounting_export = build_payroll_snapshot(pay_month, pay_date, edited_payroll)
+        snapshot, accounting_export = build_payroll_snapshot(pay_month, pay_date, edited_payroll, pay_run_no, pay_run_name)
         current_hash = payload_hash(snapshot, accounting_export)
 
-        if not closing_table_ready:
-            st.warning("먼저 제공된 SQL 설정 파일을 Supabase에서 실행해야 월 급여 확정 기능을 사용할 수 있습니다.")
+        if not closing_table_ready or not multi_run_ready:
+            st.warning("먼저 제공된 V1.3 SQL 설정 파일을 Supabase에서 실행해야 급여 확정 기능을 사용할 수 있습니다.")
         elif current_closing and current_closing.get("status") == "finalized":
             saved_hash = current_closing.get("content_hash", "")
             if saved_hash == current_hash:
-                st.success(f"{pay_month} 급여가 확정되었습니다. (확정본 {current_closing.get('revision', 1)}차)")
+                st.success(f"{pay_month} {pay_run_no}차 {pay_run_name}이 확정되었습니다. (수정확정 {current_closing.get('revision', 1)}차)")
             else:
                 st.warning("확정 후 급여대장 값이 변경되었습니다. 변경 내용을 저장한 뒤 재확정해 주세요.")
         else:
@@ -833,11 +960,12 @@ with tab6:
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
             confirm_label = "🔒 월 급여 확정" if not current_closing else "🔁 변경 내용 재확정"
-            if st.button(confirm_label, disabled=not closing_table_ready, use_container_width=True):
+            if st.button(confirm_label, disabled=(not closing_table_ready or not multi_run_ready or bool(invalid_cells)), use_container_width=True):
                 # 확정 시 편집값도 함께 저장하여 명세서·인쇄 화면과 동일하게 유지한다.
                 for _, r in edited_payroll.iterrows():
                     supabase.table("monthly_payroll_adjust").upsert({
-                        "pay_month": pay_month, "emp_id": r['사번'],
+                        "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                        "pay_date": pay_date.isoformat(), "emp_id": r['사번'],
                         "base_salary": safe_int(r['기본급']), "ot_pay": safe_int(r['초과수당(승인)']),
                         "ot_pay_overridden": True, "family_allowance": safe_int(r['가족수당']),
                         "non_taxable": safe_int(r['비과세']), "other_allowance": safe_int(r['기타수당']),
@@ -851,17 +979,18 @@ with tab6:
                         "employer_employment_insurance": safe_int(r['고용보험(사업자)']),
                         "employer_industrial_insurance": safe_int(r['산재보험(사업자)']),
                         "retirement_accrual": safe_int(r['퇴직적립금'])
-                    }).execute()
+                    }, on_conflict="pay_month,pay_run_no,emp_id").execute()
 
                 revision = safe_int(current_closing.get("revision", 0)) + 1 if current_closing else 1
                 supabase.table("payroll_monthly_closings").upsert({
-                    "pay_month": pay_month, "pay_date": pay_date.isoformat(),
+                    "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                    "pay_date": pay_date.isoformat(),
                     "status": "finalized", "revision": revision,
                     "payroll_data": snapshot, "accounting_export": accounting_export,
                     "content_hash": current_hash, "finalized_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().isoformat()
-                }).execute()
-                st.success(f"{pay_month} 급여를 {revision}차 확정본으로 저장했습니다.")
+                }, on_conflict="pay_month,pay_run_no").execute()
+                st.success(f"{pay_month} {pay_run_no}차 {pay_run_name}을 수정확정 {revision}차로 저장했습니다.")
                 st.rerun()
 
         with cancel_col:
@@ -869,8 +998,8 @@ with tab6:
             if st.button("🔓 확정 취소", disabled=not can_cancel, use_container_width=True):
                 supabase.table("payroll_monthly_closings").update({
                     "status": "cancelled", "updated_at": datetime.now().isoformat()
-                }).eq("pay_month", pay_month).execute()
-                st.warning(f"{pay_month} 급여 확정을 취소했습니다.")
+                }).eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
+                st.warning(f"{pay_month} {pay_run_no}차 급여 확정을 취소했습니다.")
                 st.rerun()
 
         export_ready = bool(
@@ -883,7 +1012,7 @@ with tab6:
             ).encode("utf-8")
             st.download_button(
                 "📤 확정 회계자료 JSON 다운로드", data=export_bytes,
-                file_name=f"급여회계자료_{pay_month}_확정{current_closing.get('revision', 1)}차.json",
+                file_name=f"급여회계자료_{pay_month}_{pay_run_no}차_{pay_run_name}_확정{current_closing.get('revision', 1)}차.json",
                 mime="application/json", use_container_width=True
             )
             st.caption("회계 지출 합계: " + f"{current_closing['accounting_export']['accounting_total']:,}원 · 근로자 공제액은 중복 합산하지 않습니다.")
@@ -916,12 +1045,17 @@ with tab6:
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_급여대장")
+            edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
+            worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
+            for col_idx, col_name in enumerate(edited_payroll.columns, 1):
+                if col_name in amount_columns:
+                    for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
+                        cell[0].number_format = '#,##0'
         excel_data = output.getvalue()
 
         st.download_button(
             label="📥 통합 급여대장 엑셀 다운로드 (.xlsx)",
-            data=excel_data, file_name=f"통합급여대장_{pay_month}.xlsx",
+            data=excel_data, file_name=f"통합급여대장_{pay_month}_{pay_run_no}차_{pay_run_name}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
@@ -995,10 +1129,12 @@ with tab7:
             selected_slip_str = st.selectbox("직원 선택", emp_slip_list, key="slip_emp")
             selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
             emp = df_emp[df_emp['emp_id'] == selected_slip_id].iloc[0]
+        with col2:
+            slip_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="slip_run_no")
 
         current_hourly_wage = int(emp['hourly_wage'])
 
-        adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("emp_id", emp['emp_id']).execute()
+        adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).eq("emp_id", emp['emp_id']).execute()
         df_adj_single = pd.DataFrame(adj_single_res.data) if adj_single_res.data else pd.DataFrame()
 
         emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'].str.startswith(pay_month_slip))] if not df_ot.empty else pd.DataFrame()
@@ -1038,6 +1174,10 @@ with tab7:
             emp_employment = truncate_ten(taxable_gross_tmp * 0.0090) if emp['is_employment'] == 1 else 0
             emp_income_tax = truncate_ten(taxable_gross_tmp * 0.03)
             emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+            if slip_run_no == 2:
+                base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                emp_national = emp_health = emp_longterm = emp_employment = 0
+                emp_income_tax = emp_local_tax = 0
 
         total_gross = base + ot_pay + family + non_tax + other_allow
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
@@ -1052,7 +1192,7 @@ with tab7:
         <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
             {logo_html}
             <h2 style="text-align: center; margin-top: 0; margin-bottom: 25px; font-size: 24px; text-decoration: underline; clear: both;">
-                {pay_month_slip}월 급 여 명 세 서
+                {pay_month_slip}월 {slip_run_no}차 급 여 명 세 서
             </h2>
 
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;" border="1">
@@ -1177,8 +1317,12 @@ with tab7:
 # -------------------------------------------------------------------
 with tab8:
     st.header("🖨️ 통합 급여대장 인쇄")
-    
-    pay_date_print = st.date_input("출력할 급여 지급일 선택", datetime.now(), key="payroll_print_date")
+
+    print_col1, print_col2 = st.columns(2)
+    with print_col1:
+        pay_date_print = st.date_input("출력할 급여 지급일 선택", datetime.now(), key="payroll_print_date")
+    with print_col2:
+        print_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="print_run_no")
     pay_month_print = pay_date_print.strftime("%Y-%m")
 
     emp_res = supabase.table("employees").select("*").execute()
@@ -1187,7 +1331,7 @@ with tab8:
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
-    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_print).execute()
+    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_print).eq("pay_run_no", print_run_no).execute()
     df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
 
     if df_emp.empty:
@@ -1236,6 +1380,10 @@ with tab8:
                 emp_employment = truncate_ten(taxable_gross_calc * 0.0090) if emp.get('is_employment', 1) == 1 else 0
                 emp_income_tax = truncate_ten(taxable_gross_calc * 0.03)
                 emp_local_tax = truncate_ten(emp_income_tax * 0.10)
+                if print_run_no == 2:
+                    base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    emp_national = emp_health = emp_longterm = emp_employment = 0
+                    emp_income_tax = emp_local_tax = 0
 
             tot_g = base + ot_pay + family + non_tax + other_allow
             taxable_gross = tot_g - non_tax
@@ -1317,7 +1465,7 @@ with tab8:
         <div style="border: 2px solid #000; padding: 20px; font-family: 'Malgun Gothic', sans-serif; background: #fff; width: 100%; box-sizing: border-box;">
             {logo_html}
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; clear: both;">
-                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{pay_month_print}월 통합 급여대장</h2>
+                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{pay_month_print}월 {print_run_no}차 통합 급여대장</h2>
                 <table style="border-collapse: collapse; text-align: center; font-size: 11px; width: 210px;" border="1">
                     <tr style="height: 18px; background-color: #f2f2f2;">
                         <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
@@ -1404,6 +1552,7 @@ with tab9:
             m_emp_count = len(df_emp_all)
             m_base = m_ot = m_fam = m_nontax = m_other_a = 0
             m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
+            m_retire = 0
             m_ot_hours = 0.0
 
             m_ot_records = df_ot_all[df_ot_all['work_date'].str.startswith(m_str)] if not df_ot_all.empty else pd.DataFrame()
@@ -1417,19 +1566,24 @@ with tab9:
                 calc_ot = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
                 if not adj_m.empty:
-                    adj = adj_m.iloc[0]
-                    base = adj['base_salary']
-                    ot = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calc_ot
-                    fam = adj['family_allowance']
-                    nontax = adj['non_taxable']
-                    other_a = adj['other_allowance']
-                    nat = adj['national_pension']
-                    hea = adj['health_insurance']
-                    lng = adj['longterm_care']
-                    e_emp = adj['employment_insurance']
-                    inc = adj['income_tax']
-                    loc = adj['local_tax']
-                    other_d = adj['other_deduction']
+                    base = safe_int(adj_m['base_salary'].sum())
+                    fam = safe_int(adj_m['family_allowance'].sum())
+                    nontax = safe_int(adj_m['non_taxable'].sum())
+                    other_a = safe_int(adj_m['other_allowance'].sum())
+                    nat = safe_int(adj_m['national_pension'].sum())
+                    hea = safe_int(adj_m['health_insurance'].sum())
+                    lng = safe_int(adj_m['longterm_care'].sum())
+                    e_emp = safe_int(adj_m['employment_insurance'].sum())
+                    inc = safe_int(adj_m['income_tax'].sum())
+                    loc = safe_int(adj_m['local_tax'].sum())
+                    other_d = safe_int(adj_m['other_deduction'].sum())
+                    retire = safe_int(adj_m['retirement_accrual'].fillna(0).sum()) if 'retirement_accrual' in adj_m.columns else 0
+                    ot = 0
+                    for _, adj in adj_m.iterrows():
+                        if bool(adj.get('ot_pay_overridden', False)):
+                            ot += safe_int(adj.get('ot_pay'))
+                        elif safe_int(adj.get('pay_run_no', 1)) == 1:
+                            ot += calc_ot
                 else:
                     ot = calc_ot
                     base = emp['base_salary']
@@ -1447,16 +1601,16 @@ with tab9:
                     e_emp = truncate_ten(taxable_tmp * 0.0090) if emp.get('is_employment', 1) == 1 else 0
                     inc = truncate_ten(taxable_tmp * 0.03)
                     loc = truncate_ten(inc * 0.10)
+                    retire = truncate_ten((base + ot + fam + nontax + other_a) / 12)
 
                 m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
                 m_nat += nat; m_hea += hea; m_long += lng; m_emp += e_emp
                 m_inc += inc; m_loc += loc; m_other_d += other_d
+                m_retire += retire
 
             m_gross = m_base + m_ot + m_fam + m_nontax + m_other_a
             m_deduct = m_nat + m_hea + m_long + m_emp + m_inc + m_loc + m_other_d
             m_net = m_gross - m_deduct
-            m_retire = truncate_ten(m_gross / 12)
-
             tot_ann_base += m_base; tot_ann_ot_hours += m_ot_hours; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
             tot_ann_gross += m_gross; tot_ann_nat += m_nat; tot_ann_hea += m_hea; tot_ann_long += m_long; tot_ann_emp += m_emp
             tot_ann_inc += m_inc; tot_ann_loc += m_loc; tot_ann_other_d += m_other_d; tot_ann_deduct += m_deduct; tot_ann_net += m_net
