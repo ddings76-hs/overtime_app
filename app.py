@@ -5,12 +5,13 @@ import io
 import base64
 import json
 import hashlib
+import zlib
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.4", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -31,6 +32,46 @@ def safe_int(value):
     if pd.isna(value):
         return 0
     return int(value)
+
+# 국세청 근로소득 간이세액표(2026.03.01 시행) 중 공제대상가족 1명 열.
+# 배포 시 별도 엑셀 파일 없이 동일 기준을 적용하도록 원본 표의 구간·세액을 압축 내장한다.
+_TAX_TABLE_1_PERSON_B64 = "eNpNm1uW7SgMQyfUHwHMw2Pp1fOfRnMibafuz8GCWwQMQjbJv//u/dx//+w9fz/Pf//86+I+TyEq7vO1UXHn10bFnV8bFd//K8TF88wPUZv2tVHxtK+Niqd/bVQ8/Wuj4hlfGxXP+NqoeOJro+KJr42K7+iMqHjm10bFs742Kp71tVHx7K+NiuebZxfPN88unm+eXTzfPLt4vnl2Mb95djG/eXYxv3l2Mb95djG/eXYxv3l2Mb95djG/eXYxv3l2Mb95djG/eXYxv3l2Mb95djG/eXYxv3l2Mb95djG/eXYxv3l2Mb95djG/eXbxnTdDlO/v/IO5XfvTrrld+9OuuV3/0667Xf/Trrvd+NNuuN340264XfxpF24Xf9qF280/7abbzT/tptutP+2W263qS7BNTX5rTbDNRx5o7Rh2a7mh3fG9sM1HvmijG3ZrOaSNFGzzsVdiGXZXdswcL4zZ7Js7DMGT5xW8BTeGoeodht3aTjoaJWazn84x7NZ2VWqUmE3e6k837NZyWH80Spv3V63bMuzWclvvHqW92OS5ixp2azmvD4/SvmxyXg+P0r5sct5vFC+Ma+W8Pv1HPte+8PIfsS+bnNe3p8q+bHJe354q+7LJef14quzLLuf11FTZvL9qnWnYreW88WiqbN7ft3q0Ydit5by71gTbl13OG30bdms5bwyN0ub9Vetoht1azhuhUdq8v2o9p+HJLnjh5VFONodabz+gfdnlvOE1aPP+qnUCu7WcF49h+7LLedHcpX3Z5bzohtmmcl4MYLeW8yI8sfZll/NiAntTy3mxBNu8v2rtnWazDTkvjmH7csh5kcBFGL/f+Whibd7ft3o2YLeW86bZx+b9VeuxDLu1nDdNMzbvr1pPYLeW86b5xGYbct7cwG4t581j2L4cct7MY9it5bz1GLYvh5y3GrBby3mra5PYvL9qPYAn3PrCYbgoV63NmgPKlfOWl6bN+6vWB9it5bzlpWnz/kpJPsBuLedtnyQ2769ad2C3lvO2l6bN+6vWAezWct6ehu3LkPO2l6ZNUe1PIBu2L2NaJQPXMSQZrKVp8/5aCwO7tUVhM2xfhpWhl6bNFqck7Qvbl2GNGMBubaHopWnz/lq9Aqv1tDTfgifHp9W4qddmmxaGJg6bv8NWWlBzYrNNy7+pUdrUqfRTaoY9sXOV8Hphz+BES/gIxJ6oBm9Y7Ik+8EGFvVBsPnuwFwrN2w17cbo37QnsxTkeWubYixPbmwV7cTabsbEXzG0hgL3gaLMw9oKNzbfYC971CYy9OS3Nodi7fcz74rZ3sabmE3vDj2ZA7A0TmuuwN5xnOYS92RHmL+zN2jdTYW9WuXUI9mY9m32wDyxknsE+LF0zCvaptat5xj4sXh9g2IfVaz7APixf73zsgz99/GAf/OndjH3wp/ct9mH9+vDATtZvCsdO/OkDATvLn5pn7MSf0ziyNT4/vHiUnPV8az6xk/GZorGT8ZmMsZPxmXaxE396/djuRFwpxYbdibBSrI7diahSohK7O4K67bZwbAS4zsDPttR+tH8/26K6SViW7dint3C/m/9vfLvfU4JfUv5xv7YdufSueSvbMUrvos+yHY1069+yHXf0MY7wwfNVUCDcNqFFPO7XNkFEDPfL+D2+WO6X8Xt8IZleNiHAHJrPVuM3rvVQtnV8nzoXyrZi70tSvWxr86uA1S+2VXi3DinbervvrnFhW1lfbaxxYVtD3xBG84lttdyP1ye2dfFVzZpPbCvgfsTPZVvr9tR5V7ZVbU9FFWVbv/b0+sS2Uh2P1+fA3w43Hq9P293qczxen+MLGhU/eX3a7laUo4X79XitHUfb7jdZTwRc6td2tx4c3evTdg8CNK9P2z0Ixbw+bXerueEYDbtbt43h9Rmsb493pPtlfXu8Mdwv69vjdQSD3a2vRnh9Rlb4rGjP63Oyvj3eKZ2A3a2lhs8R7G4xdcNDPaftbjV1h6Xnsd0n4WS638m+Er6972x366mxl55/Ev57vL+fFz/sQ+OeZ9vdeuoe+3oe2916auTS+rHdradulKC/s9jPGl9YX2F366no0ifY3Xoqhs537G49FcPzYLtbT0UcrR/b3Xoq5tI8LxIbDnMXz0kKwwGtz1PsvgldJeKxu/XUT54I93itpy5Naly2u/XU5Nyx3a2npnNW2N16anbpFuxuPTXh/1385cDWvGe7W0/dZeNxwV+Pca/zA381h7zSCdjdempu7zvb3Xpqwoe2u/XUTGWpsLv11HqU68Lu1lOrSU9id+up1byPbPdDQLw1rgNfO/QdXv+2u/XUiqn5T5JRDmedKMDu1lNrSbdjd+up6y2NK+HrMJ4al+1uPbWO4hTsbj21Ujofu1tP7Uc6GbtbT+0mnYndrad27x6X97P11LZ+wB7WTTv0d7CH9dFdZm4flX5T2KxzBHtY72yfX9jDuuY4zsIejbuefIR3zhvf3Shfhj0adzEKQrFH425FITj2sL44v1uCH945nwhxFe+MShQ6mB3SjdjDuuAGueqXBJ3P/7ROwB6jbg4UeACMUVcAnjkDg5zTM+UygEHC6PEeAxhke97rh7eCw+uplLVGzalMnqVZrgEMkiQ3vtP8cc6S4bgCWwPkQCU90bs9wclJbuEeqRrgd0SSltTeGXUWkjlND5BDj+TA6GJ9gEEWYIQHyDFGuP/Kl18F5xVx/UgP0MAggI9fyPVW1IlL3sgDNDAIyWNp7wKMXbGpB2hgEGTD5gCDaHqGB2hgEDZPx4kAg/h4jXQffw5wJRykiAEGEe9KHakAg9B2N3ETwCCG3SHxAjAIVveW2gEYRKU7RccAg/Dz/ATBW+HOs+JqCR6AUQHm1gkEMCpyfEwJBqJCxqHcAkBUbDh16AIE12bpqBQgKrprkoUAUWGcdQZAEK89S4QNEARmT0qJAURFYE2SFCAq1AqdUQBRMZUToABB8HSjZ43cQFSU1LWjAOILh7SoAaLiHgtBgCDAuQyvkXN9UJGMpThAVMiylDsAiIpNjsQXQBCEhE8xgCDaCIepAFFhxZLeBIiKH1IHN0AQKMxfKuCtcOdEBNOpJoBA+s8trQIQaPzbTiM3ELOC1eMKdz5Lxdq1BgJ5vpzeBQh0+G7atQCB4N5mBoBAWW9LK4BAQp/eXOHO0convBIR04jis7cr3DnqNx+RTJQ8Lhk0XOHO0bO5FDADBML1FSZvhTuH0B6nUgECQntCXAIQENrjmwCAgNDuYesKdw6h3W2uxWAgILQ2jyvcOYTWjve5gYDQegtXEAGgHEIhAkBAaH0/rnDniWa5vKQKi/entIO2M8BEpY3f4n0ruCNDO5zuCuIMjm8LaoCJUAtndAEmSo2tBjCRandgrnDnaLXpG2qAiVibs7nCnaPW5lbaBmAi19ajK2aAiV5bQwEGwOxfwOwKd45iW6lUCcBEsnEOAkwk2/a9JcBEsu09XeHOkWznEZEBTCTbGc0V7hzJdnxGAcyoQFt3NgATyZZNVx8AE8mWMVzxXWqqwsligIlku8eHKw5RISeowiiAOSucn65w5xDacxTQA0wI7X2P4q1w5xBa87U1wITQ2hIBAEwIraUUAMD8kgbhCncOofWpsBJgQmjX1a5w5xDaeEThABNCG2O5gsi3DjFROMDclZrornDnEFp0BVUAE0KLEAEATAjtkqRcS9gNod397Qp3DqHtRwkBgAmh7d8A3gp3DqHt431uYEJoZ4hFASaEdo8JPW4S3ENoEICBiWTLJXoFWEVoTWsXYBWhTQWIAAtCa494F2BBaM2nGsAqQkvF+gALQushQgZYEFo/U3/KwILQxtAVKcCC0IZjNYDVKg+jABhgQWg3mninBGBBaNMKAGBBaO+GeSvcOYS2HikygAWhrdA7CAALQlup9C7AgtD2kKAHWBDaPgrwAVa95eCMLcCC0M5WrAaw4ltfmhJeOIDQbjioP2VgBS5uypoXELh4SsMVEOViEUABExc7Si1g4uLU2i1gMstDzFDArFnWVitgMstdp1oBi1neoowCFgN1bFDAqoHquCtg0VcTlxSwGKiZuoBNX74yKGBXX167AJu+fClXgAntrlwdkB9AX5YfBZjQ1uni9j8A+TCv3QKC90qkSwo4X6ZMUwJgQrvDUgQJsExoV3ZJsACs5G2Ux2uXLJ8JbbeQ2AZYJrTdnOddlbdz5zf60exmPY0rjlR4AWTeuAIpgNTb8J1VAeTeokmeF0DyLZZizgJMaHs+uiYtwIR2t6bWbgGNl2hSeYYCTGh7hTJnBZjQ9joKRgswoe09lLMuwIT2CzL0pwBMaHf1KAFRgAltn61XagropB2dYSnAhLavZNCUAJjQbjOtXYBtQjuPMxMA24R2ntSdAsA2oZ3m5CnADpKeR7klgB1kPYfWLsA2od1tIzkIsE1oZ/iFTYBdbw1tKRmAzSs/YZ0IsE1o5xdGqYJF4M5vTKApmSyCxUvyEpAA24R2xavkOcA2od1gSdoHYJvQDolvgG1Cu/tfuh1gm9B+saimZLECSfl2xZwA24R2rpDRlGxWoDsn6wuwTWjn3cVvhTs3oV2ikNIH2Ca034v3mt36iIKX81NRKsA+lXH22jWwTWiX4JQWAdgmtKuiJLwAtgkt+1ZWG2DzZcDoSoUBbF71H8trF8qrd/eb8iUAm5fxw8ILYPN2/ZWcml0Dx4SWl1339znIr8Kd/+6UVMHec+crlEgBOA9fAlh4AZyHdLvvAQGOCS23LzhPXTi489O1dgGOCe3G2hLCAKfxhpqFF8AxoWVORUUAp1ey/1FaDeTwwvHzWNKDHF4XvqeUIiaQw8u+T7P4Ajm8qvu0I7kPcuq64cqc9n0f8xJG3TdoCYOcunAYXbkAkFM3DmNt/x/ohyeIJuYCOdw5PNAKyOHS4bdV1A/0F3Xl4RdvQU7UhwiPdgvI4d7hcpSWMsjh4uFZrDMokJuHS/VeBHAgVw/3yeyfIkGe4AzPW7FgfchwtC9BTr18mL7OOsWDPEFur+giQm5eHl95gxwuIH4D0hNAhdxA3H9SyCCHK4j2vrBY3yX9auozBr8CCXK4hGh9SviBHG4hfmkyPcGGjM/3mYOeYNcFHDUpPQNyTl0+hcQGyDn1GURKCYAcriLatMQEOdxFtOlXzkAOlxHtp4K+b6r0mqtrnNgEOVn3X90rMf8eCW+NNQfIyfoIonklQo3cSLT3O7H6YutXwxOkv5YBSe4kbnSqlQiST71C6kMIJOsLm2dqJYJkq48oUisRJPmc5ffmmp6g1cFEjW+KQJJPSXo3I4Fkq1vAo5UIkvUZxxhaiSBZH2GMrZUIkt8nFCEFApL1AcRsYj6QrM8X5tGZB5JwYl9TUTpIjrqJ9OsDIAkn9isx1c/gQnjVZxIKqEASTuzp9BNIwok9UxIeJOHE3725+jGScOJoXaIRJOHE0VInFkjCiaP79RWQhBOvE5RYAUk48Y5PGQmQnPXxw9beznrDmyeYjoFBsi5kl6+JQLJuZO9Rkt9Xfr8anmD7mxOQhBPHadpzIAknjrMlMkASTrwrdLsftEJ9uGC2BEk48Ze1VD9GctetsF/sAsl6wZlXOUGyXmXufp8eJOul5THFYiAJJ0b4iyuQPPXZQkregiSceGNS73qE4qmb6fG4HyQLT3Dj0f19//ir4Qm28/sgCSfGcY4dJOHE61CdCyAJJ14J2NzPef58Vvl+ijB+AeJ//wOJg4x4"
+
+def _load_tax_table_1_person():
+    raw = zlib.decompress(base64.b64decode(_TAX_TABLE_1_PERSON_B64)).decode("utf-8")
+    return json.loads(raw)
+
+TAX_TABLE_1_PERSON = _load_tax_table_1_person()
+
+def calculate_income_tax_1_person(taxable_monthly_pay):
+    """비과세 제외 월 급여를 기준으로 부양가족 1명·자녀 0명·100% 소득세를 계산한다."""
+    pay = max(0, safe_int(taxable_monthly_pay))
+    if pay < 10_000_000:
+        for lower, upper, tax in TAX_TABLE_1_PERSON:
+            if lower <= pay < upper:
+                return safe_int(tax)
+        return 0
+
+    base_tax = 1_507_400
+    if pay == 10_000_000:
+        return base_tax
+    if pay <= 14_000_000:
+        tax = base_tax + (pay - 10_000_000) * 0.98 * 0.35 + 25_000
+    elif pay <= 28_000_000:
+        tax = base_tax + 1_397_000 + (pay - 14_000_000) * 0.98 * 0.38
+    elif pay <= 30_000_000:
+        tax = base_tax + 6_610_600 + (pay - 28_000_000) * 0.98 * 0.40
+    elif pay <= 45_000_000:
+        tax = base_tax + 7_394_600 + (pay - 30_000_000) * 0.40
+    elif pay <= 87_000_000:
+        tax = base_tax + 13_394_600 + (pay - 45_000_000) * 0.42
+    else:
+        tax = base_tax + 31_034_600 + (pay - 87_000_000) * 0.45
+    return truncate_ten(tax)
+
+def calculate_local_income_tax(income_tax):
+    """지방소득세는 산출 소득세의 10%를 10원 단위로 절사한다."""
+    return truncate_ten(safe_int(income_tax) * 0.10)
 
 def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
     """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
@@ -184,7 +225,7 @@ with tab1:
         employee_money_columns = [
             "기본급", "통상시급", "가족수당", "명절상여", "비과세", "기타수당", "기타공제",
             "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
-            "소득세", "지방소득세", "국민연금(회사)", "건강보험(회사)",
+            "국민연금(회사)", "건강보험(회사)",
             "장기요양(회사)", "고용보험(회사)", "산재보험(회사)", "퇴직적립금"
         ]
         employee_config = {
@@ -197,7 +238,8 @@ with tab1:
                 employee_config[col] = st.column_config.CheckboxColumn(col)
         edited_display_df = st.data_editor(
             display_emp, use_container_width=True, num_rows="dynamic", hide_index=True,
-            column_config=employee_config
+            column_config=employee_config,
+            disabled=[col for col in ["소득세", "지방소득세"] if col in display_emp.columns]
         )
         edited_df = edited_display_df.rename(columns={v: k for k, v in employee_column_labels.items()})
         if st.button("수정 데이터 DB 저장"):
@@ -248,8 +290,9 @@ with tab1:
             longterm_care = st.number_input("장기요양 본인부담", min_value=0, value=0, step=10)
             employment_insurance = st.number_input("고용보험 본인부담", min_value=0, value=0, step=10)
         with d2:
-            income_tax = st.number_input("소득세", min_value=0, value=0, step=10)
-            local_tax = st.number_input("지방소득세", min_value=0, value=0, step=10)
+            st.info("소득세는 부양가족 1명·자녀 0명·100% 기준으로 자동 계산되며, 지방소득세는 소득세의 10%로 자동 계산됩니다.")
+            income_tax = 0
+            local_tax = 0
             employer_national_pension = st.number_input("국민연금 회사부담", min_value=0, value=0, step=10)
             employer_health_insurance = st.number_input("건강보험 회사부담", min_value=0, value=0, step=10)
         with d3:
@@ -820,6 +863,8 @@ with tab6:
 
             tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
             taxable_gross = tot_g - non_tax
+            emp_income_tax = calculate_income_tax_1_person(taxable_gross)
+            emp_local_tax = calculate_local_income_tax(emp_income_tax)
 
             biz_national = safe_int(emp.get('employer_national_pension'))
             biz_health = safe_int(emp.get('employer_health_insurance'))
@@ -851,7 +896,7 @@ with tab6:
         df_calc = pd.DataFrame(calculated_rows)
 
         st.subheader(f"✏️ {pay_month} {pay_run_no}차 {pay_run_name} 엑셀형 편집기")
-        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 복사해 붙여넣을 수 있습니다. 직원 기본정보는 잠겨 있으며 금액 항목만 수정됩니다.")
+        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 붙여넣을 수 있습니다. 소득세·지방소득세는 부양가족 1명·자녀 0명·100% 기준으로 자동 계산됩니다.")
 
         identity_columns = ["No", "사번", "이름", "생년월일", "부서", "직위", "호봉"]
         amount_columns = [
@@ -886,7 +931,7 @@ with tab6:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            disabled=identity_columns,
+            disabled=identity_columns + ["소득세", "지방소득세"],
             column_config=column_config,
             height=min(650, max(220, 38 * (len(df_calc) + 2)))
         )
@@ -897,6 +942,10 @@ with tab6:
             bad_rows = edited_payroll[numeric_values.isna() | (numeric_values < 0)]
             invalid_cells.extend([f"{name} - {col}" for name in bad_rows["이름"].astype(str).tolist()])
             edited_payroll[col] = numeric_values.fillna(0).round().astype(int)
+
+        taxable_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "명절상여", "기타수당"]].sum(axis=1)
+        edited_payroll["소득세"] = taxable_series.apply(calculate_income_tax_1_person).astype(int)
+        edited_payroll["지방소득세"] = edited_payroll["소득세"].apply(calculate_local_income_tax).astype(int)
 
         if invalid_cells:
             st.error("금액은 0 이상의 숫자로 입력해 주세요: " + ", ".join(invalid_cells[:8]) + (" 외" if len(invalid_cells) > 8 else ""))
@@ -1240,6 +1289,9 @@ with tab7:
                 emp_income_tax = emp_local_tax = 0
 
         total_gross = base + ot_pay + family + holiday_bonus + non_tax + other_allow
+        taxable_gross = total_gross - non_tax
+        emp_income_tax = calculate_income_tax_1_person(taxable_gross)
+        emp_local_tax = calculate_local_income_tax(emp_income_tax)
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
@@ -1290,8 +1342,6 @@ with tab7:
                 <tr>
                     <td style="padding: 6px; background: #f9f9f9;">가족수당</td>
                     <td style="padding: 6px; text-align: right;">{family:,} 원</td>
-                    <td style="padding: 6px; background: #f9f9f9;">명절상여</td>
-                    <td style="padding: 6px; text-align: right;">{holiday_bonus:,} 원</td>
                     <td style="padding: 6px; background: #f9f9f9;">장기요양보험</td>
                     <td style="padding: 6px; text-align: right;">{emp_longterm:,} 원</td>
                 </tr>
@@ -1302,14 +1352,14 @@ with tab7:
                     <td style="padding: 6px; text-align: right;">{emp_employment:,} 원</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; background: #f9f9f9;">기타수당</td>
-                    <td style="padding: 6px; text-align: right;">{other_allow:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">명절상여</td>
+                    <td style="padding: 6px; text-align: right;">{holiday_bonus:,} 원</td>
                     <td style="padding: 6px; background: #f9f9f9;">소득세 / 지방소득세</td>
                     <td style="padding: 6px; text-align: right;">{(emp_income_tax + emp_local_tax):,} 원</td>
                 </tr>
                 <tr>
-                    <td style="padding: 6px; background: #f9f9f9;">-</td>
-                    <td style="padding: 6px; text-align: right;">-</td>
+                    <td style="padding: 6px; background: #f9f9f9;">기타수당</td>
+                    <td style="padding: 6px; text-align: right;">{other_allow:,} 원</td>
                     <td style="padding: 6px; background: #f9f9f9;">기타공제</td>
                     <td style="padding: 6px; text-align: right;">{other_deduct:,} 원</td>
                 </tr>
@@ -1452,6 +1502,8 @@ with tab8:
 
             tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
             taxable_gross = tot_g - non_tax
+            emp_income_tax = calculate_income_tax_1_person(taxable_gross)
+            emp_local_tax = calculate_local_income_tax(emp_income_tax)
             emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
             net_pay = tot_g - emp_deduction_total
 
@@ -1643,16 +1695,27 @@ with tab9:
                     hea = safe_int(adj_m['health_insurance'].sum())
                     lng = safe_int(adj_m['longterm_care'].sum())
                     e_emp = safe_int(adj_m['employment_insurance'].sum())
-                    inc = safe_int(adj_m['income_tax'].sum())
-                    loc = safe_int(adj_m['local_tax'].sum())
+                    inc = loc = 0
                     other_d = safe_int(adj_m['other_deduction'].sum())
                     retire = safe_int(adj_m['retirement_accrual'].fillna(0).sum()) if 'retirement_accrual' in adj_m.columns else 0
                     ot = 0
                     for _, adj in adj_m.iterrows():
                         if bool(adj.get('ot_pay_overridden', False)):
-                            ot += safe_int(adj.get('ot_pay'))
+                            run_ot = safe_int(adj.get('ot_pay'))
                         elif safe_int(adj.get('pay_run_no', 1)) == 1:
-                            ot += calc_ot
+                            run_ot = calc_ot
+                        else:
+                            run_ot = 0
+                        ot += run_ot
+                        run_taxable = (
+                            safe_int(adj.get('base_salary')) + run_ot
+                            + safe_int(adj.get('family_allowance'))
+                            + safe_int(adj.get('holiday_bonus'))
+                            + safe_int(adj.get('other_allowance'))
+                        )
+                        run_income_tax = calculate_income_tax_1_person(run_taxable)
+                        inc += run_income_tax
+                        loc += calculate_local_income_tax(run_income_tax)
                 else:
                     ot = calc_ot
                     base = emp['base_salary']
@@ -1668,8 +1731,8 @@ with tab9:
                     hea = safe_int(emp.get('health_insurance'))
                     lng = safe_int(emp.get('longterm_care'))
                     e_emp = safe_int(emp.get('employment_insurance'))
-                    inc = safe_int(emp.get('income_tax'))
-                    loc = safe_int(emp.get('local_tax'))
+                    inc = calculate_income_tax_1_person(taxable_tmp)
+                    loc = calculate_local_income_tax(inc)
                     retire = safe_int(emp.get('retirement_accrual'))
 
                 m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
