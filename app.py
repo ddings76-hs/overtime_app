@@ -791,9 +791,20 @@ with tab6:
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
     # 직원별 지정 기간 내 승인 수당 합산 연계
-    emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'] >= start_date) & (df_ot['work_date'] <= end_date)]
-    calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+    from datetime import timedelta
 
+    # 급여지급일(pay_date) 기준 전월 25일 ~ 급여지급 월 전일 계산
+    ot_start_date = (pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
+    ot_end_date = pay_date - timedelta(days=1)
+
+    # 기준일자 범위 내 승인된 초과근무 내역 조회
+    emp_ot = df_ot[
+        (df_ot['emp_id'] == emp['emp_id']) & 
+        (df_ot['work_date'] >= str(ot_start_date)) & 
+        (df_ot['work_date'] <= str(ot_end_date))
+    ] if not df_ot.empty else pd.DataFrame()
+
+    calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
     multi_run_ready = True
     try:
         adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
