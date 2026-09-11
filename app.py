@@ -786,8 +786,13 @@ with tab6:
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
 
+    # 승인된 초과근무 데이터 자동 불러오기
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+
+    # 직원별 지정 기간 내 승인 수당 합산 연계
+    emp_ot = df_ot[(df_ot['emp_id'] == emp['emp_id']) & (df_ot['work_date'] >= start_date) & (df_ot['work_date'] <= end_date)]
+    calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
 
     multi_run_ready = True
     try:
