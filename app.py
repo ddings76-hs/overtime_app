@@ -3,15 +3,13 @@ import pandas as pd
 from datetime import datetime, time, timedelta
 import io
 import base64
-import json
 import hashlib
-import zlib
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
 
 # 페이지 기본 설정
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.1", layout="wide")
+st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.5.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -32,68 +30,6 @@ def safe_int(value):
     if pd.isna(value):
         return 0
     return int(value)
-
-def calculate_income_tax_1_person(taxable_monthly_pay):
-    """비과세 제외 월 급여를 기준으로 부양가족 1명·자녀 0명·100% 소득세를 계산한다."""
-    pay = max(0, safe_int(taxable_monthly_pay))
-    
-    # 1,000만원 미만 구간 간이 계산식
-    if pay < 1060000:
-        return 0
-    elif pay < 1500000:
-        tax = (pay - 1060000) * 0.05
-    elif pay < 3000000:
-        tax = 22000 + (pay - 1500000) * 0.12
-    elif pay < 4500000:
-        tax = 202000 + (pay - 3000000) * 0.15
-    elif pay < 10000000:
-        tax = 427000 + (pay - 4500000) * 0.24
-    else:
-        # 1,000만원 이상 고소득 구간
-        base_tax = 1747000
-        if pay <= 14000000:
-            tax = base_tax + (pay - 10000000) * 0.35 * 0.98
-        elif pay <= 28000000:
-            tax = base_tax + 1372000 + (pay - 14000000) * 0.38 * 0.98
-        elif pay <= 30000000:
-            tax = base_tax + 6585600 + (pay - 28000000) * 0.40 * 0.98
-        elif pay <= 45000000:
-            tax = base_tax + 7369600 + (pay - 30000000) * 0.40
-        elif pay <= 87000000:
-            tax = base_tax + 13369600 + (pay - 45000000) * 0.42
-        else:
-            tax = base_tax + 31009600 + (pay - 87000000) * 0.45
-            
-    return truncate_ten(tax)
-def calculate_income_tax_1_person(taxable_monthly_pay):
-    """비과세 제외 월 급여를 기준으로 부양가족 1명·자녀 0명·100% 소득세를 계산한다."""
-    pay = max(0, safe_int(taxable_monthly_pay))
-    if pay < 10_000_000:
-        for lower, upper, tax in TAX_TABLE_1_PERSON:
-            if lower <= pay < upper:
-                return safe_int(tax)
-        return 0
-
-    base_tax = 1_507_400
-    if pay == 10_000_000:
-        return base_tax
-    if pay <= 14_000_000:
-        tax = base_tax + (pay - 10_000_000) * 0.98 * 0.35 + 25_000
-    elif pay <= 28_000_000:
-        tax = base_tax + 1_397_000 + (pay - 14_000_000) * 0.98 * 0.38
-    elif pay <= 30_000_000:
-        tax = base_tax + 6_610_600 + (pay - 28_000_000) * 0.98 * 0.40
-    elif pay <= 45_000_000:
-        tax = base_tax + 7_394_600 + (pay - 30_000_000) * 0.40
-    elif pay <= 87_000_000:
-        tax = base_tax + 13_394_600 + (pay - 45_000_000) * 0.42
-    else:
-        tax = base_tax + 31_034_600 + (pay - 87_000_000) * 0.45
-    return truncate_ten(tax)
-
-def calculate_local_income_tax(income_tax):
-    """지방소득세는 산출 소득세의 10%를 10원 단위로 절사한다."""
-    return truncate_ten(safe_int(income_tax) * 0.10)
 
 def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
     """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
@@ -171,6 +107,7 @@ def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_ru
     return snapshot, accounting_export
 
 def payload_hash(snapshot, accounting_export):
+    import json
     canonical = json.dumps(
         {"payroll": snapshot, "accounting": accounting_export},
         ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -208,7 +145,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 ])
 
 # -------------------------------------------------------------------
-# TAB 1: 직원 등록 및 정보 관리 (순서 변경 및 소수점 1자리 적용)
+# TAB 1: 직원 등록 및 정보 관리
 # -------------------------------------------------------------------
 with tab1:
     st.header("1. 직원 데이터 조회 및 편집")
@@ -244,7 +181,7 @@ with tab1:
         display_emp = df_emp.rename(columns=employee_column_labels)
         employee_money_columns = [
             "기본급", "통상시급", "가족수당", "명절상여", "비과세", "기타수당", "기타공제",
-            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
+            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)", "소득세", "지방소득세",
             "국민연금(회사)", "건강보험(회사)",
             "장기요양(회사)", "고용보험(회사)", "산재보험(회사)", "퇴직적립금"
         ]
@@ -258,8 +195,7 @@ with tab1:
                 employee_config[col] = st.column_config.CheckboxColumn(col)
         edited_display_df = st.data_editor(
             display_emp, use_container_width=True, num_rows="dynamic", hide_index=True,
-            column_config=employee_config,
-            disabled=[col for col in ["소득세", "지방소득세"] if col in display_emp.columns]
+            column_config=employee_config
         )
         edited_df = edited_display_df.rename(columns={v: k for k, v in employee_column_labels.items()})
         if st.button("수정 데이터 DB 저장"):
@@ -300,8 +236,7 @@ with tab1:
             is_employment = st.checkbox("고용보험 가입", value=True)
             is_industrial = st.checkbox("산재보험 가입", value=True)
 
-        st.markdown("**직원 부담 보험료·세금 및 회사 부담금 기본값**  ")
-        st.caption("입력한 금액은 새 월 급여대장의 최초값으로 사용되며, 급여대장에서 다시 수정할 수 있습니다.")
+        st.markdown("**직원 부담 보험료·세금 및 회사 부담금 기본값**")
         d1, d2, d3 = st.columns(3)
         with d1:
             national_pension = st.number_input("국민연금 본인부담", min_value=0, value=0, step=10)
@@ -309,9 +244,8 @@ with tab1:
             longterm_care = st.number_input("장기요양 본인부담", min_value=0, value=0, step=10)
             employment_insurance = st.number_input("고용보험 본인부담", min_value=0, value=0, step=10)
         with d2:
-            st.info("소득세는 부양가족 1명·자녀 0명·100% 기준으로 자동 계산되며, 지방소득세는 소득세의 10%로 자동 계산됩니다.")
-            income_tax = 0
-            local_tax = 0
+            income_tax = st.number_input("소득세 본인부담", min_value=0, value=0, step=10)
+            local_tax = st.number_input("지방소득세 본인부담", min_value=0, value=0, step=10)
             employer_national_pension = st.number_input("국민연금 회사부담", min_value=0, value=0, step=10)
             employer_health_insurance = st.number_input("건강보험 회사부담", min_value=0, value=0, step=10)
         with d3:
@@ -860,8 +794,8 @@ with tab6:
                 emp_health = adj['health_insurance']
                 emp_longterm = adj['longterm_care']
                 emp_employment = adj['employment_insurance']
-                emp_income_tax = adj['income_tax']
-                emp_local_tax = adj['local_tax']
+                emp_income_tax = safe_int(adj.get('income_tax'))
+                emp_local_tax = safe_int(adj.get('local_tax'))
                 other_deduct = adj['other_deduction']
             else:
                 ot_pay = calculated_ot_pay
@@ -871,9 +805,6 @@ with tab6:
                 non_tax = emp['non_taxable']
                 other_allow = emp['other_allowance']
                 other_deduct = emp['other_deduction']
-
-                total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
-                taxable_gross_calc = total_gross_calc - non_tax
 
                 emp_national = safe_int(emp.get('national_pension'))
                 emp_health = safe_int(emp.get('health_insurance'))
@@ -887,11 +818,6 @@ with tab6:
                     holiday_bonus = safe_int(emp.get('holiday_bonus'))
                     emp_national = emp_health = emp_longterm = emp_employment = 0
                     emp_income_tax = emp_local_tax = 0
-
-            tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
-            taxable_gross = tot_g - non_tax
-            emp_income_tax = calculate_income_tax_1_person(taxable_gross)
-            emp_local_tax = calculate_local_income_tax(emp_income_tax)
 
             biz_national = safe_int(emp.get('employer_national_pension'))
             biz_health = safe_int(emp.get('employer_health_insurance'))
@@ -923,7 +849,7 @@ with tab6:
         df_calc = pd.DataFrame(calculated_rows)
 
         st.subheader(f"✏️ {pay_month} {pay_run_no}차 {pay_run_name} 엑셀형 편집기")
-        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 붙여넣을 수 있습니다. 소득세·지방소득세는 부양가족 1명·자녀 0명·100% 기준으로 자동 계산됩니다.")
+        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 붙여넣을 수 있습니다.")
 
         identity_columns = ["No", "사번", "이름", "생년월일", "부서", "직위", "호봉"]
         amount_columns = [
@@ -958,7 +884,7 @@ with tab6:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            disabled=identity_columns + ["소득세", "지방소득세"],
+            disabled=identity_columns,
             column_config=column_config,
             height=min(650, max(220, 38 * (len(df_calc) + 2)))
         )
@@ -969,10 +895,6 @@ with tab6:
             bad_rows = edited_payroll[numeric_values.isna() | (numeric_values < 0)]
             invalid_cells.extend([f"{name} - {col}" for name in bad_rows["이름"].astype(str).tolist()])
             edited_payroll[col] = numeric_values.fillna(0).round().astype(int)
-
-        taxable_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "명절상여", "기타수당"]].sum(axis=1)
-        edited_payroll["소득세"] = taxable_series.apply(calculate_income_tax_1_person).astype(int)
-        edited_payroll["지방소득세"] = edited_payroll["소득세"].apply(calculate_local_income_tax).astype(int)
 
         if invalid_cells:
             st.error("금액은 0 이상의 숫자로 입력해 주세요: " + ", ".join(invalid_cells[:8]) + (" 외" if len(invalid_cells) > 8 else ""))
@@ -1137,6 +1059,7 @@ with tab6:
             and current_closing.get("content_hash") == current_hash
         )
         if export_ready:
+            import json
             export_bytes = json.dumps(
                 current_closing["accounting_export"], ensure_ascii=False, indent=2
             ).encode("utf-8")
@@ -1240,7 +1163,7 @@ with tab6:
         st.components.v1.html(payroll_template, height=520, scrolling=True)
 
 # -------------------------------------------------------------------
-# TAB 7: 개별 급여명세서 인쇄 (최종 날짜 범위 연계 적용)
+# TAB 7: 개별 급여명세서 인쇄
 # -------------------------------------------------------------------
 with tab7:
     st.header("📄 개별 급여명세서 인쇄")
@@ -1269,12 +1192,10 @@ with tab7:
         adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).eq("emp_id", emp['emp_id']).execute()
         df_adj_single = pd.DataFrame(adj_single_res.data) if adj_single_res.data else pd.DataFrame()
 
-        # [수정 반영] 선택한 지급 월(25일 기준) 전월 25일 ~ 지급 월 전일 날짜 범위 산출
         slip_pay_date = datetime.strptime(f"{pay_month_slip}-25", "%Y-%m-%d").date()
         ot_start_date_slip = (slip_pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
         ot_end_date_slip = slip_pay_date - timedelta(days=1)
 
-        # [수정 반영] 날짜 범위 내 승인된 초과근무 내역 필터링 및 시간·수당 계산
         emp_ot = df_ot[
             (df_ot['emp_id'] == emp['emp_id']) & 
             (df_ot['work_date'] >= str(ot_start_date_slip)) & 
@@ -1298,8 +1219,8 @@ with tab7:
             emp_health = adj['health_insurance']
             emp_longterm = adj['longterm_care']
             emp_employment = adj['employment_insurance']
-            emp_income_tax = adj['income_tax']
-            emp_local_tax = adj['local_tax']
+            emp_income_tax = safe_int(adj.get('income_tax'))
+            emp_local_tax = safe_int(adj.get('local_tax'))
             other_deduct = adj['other_deduction']
         else:
             ot_pay = calculated_ot_pay
@@ -1309,9 +1230,6 @@ with tab7:
             non_tax = emp['non_taxable']
             other_allow = emp['other_allowance']
             other_deduct = emp['other_deduction']
-
-            total_gross_tmp = truncate_ten(base + ot_pay + family + non_tax + other_allow)
-            taxable_gross_tmp = total_gross_tmp - non_tax
 
             emp_national = safe_int(emp.get('national_pension'))
             emp_health = safe_int(emp.get('health_insurance'))
@@ -1326,9 +1244,6 @@ with tab7:
                 emp_income_tax = emp_local_tax = 0
 
         total_gross = base + ot_pay + family + holiday_bonus + non_tax + other_allow
-        taxable_gross = total_gross - non_tax
-        emp_income_tax = calculate_income_tax_1_person(taxable_gross)
-        emp_local_tax = calculate_local_income_tax(emp_income_tax)
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
 
@@ -1518,8 +1433,8 @@ with tab8:
                 emp_health = adj['health_insurance']
                 emp_longterm = adj['longterm_care']
                 emp_employment = adj['employment_insurance']
-                emp_income_tax = adj['income_tax']
-                emp_local_tax = adj['local_tax']
+                emp_income_tax = safe_int(adj.get('income_tax'))
+                emp_local_tax = safe_int(adj.get('local_tax'))
                 other_deduct = adj['other_deduction']
             else:
                 ot_pay = calculated_ot_pay
@@ -1529,9 +1444,6 @@ with tab8:
                 non_tax = emp['non_taxable']
                 other_allow = emp['other_allowance']
                 other_deduct = emp['other_deduction']
-
-                total_gross_calc = truncate_ten(base + ot_pay + family + non_tax + other_allow)
-                taxable_gross_calc = total_gross_calc - non_tax
 
                 emp_national = safe_int(emp.get('national_pension'))
                 emp_health = safe_int(emp.get('health_insurance'))
@@ -1546,9 +1458,6 @@ with tab8:
                     emp_income_tax = emp_local_tax = 0
 
             tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
-            taxable_gross = tot_g - non_tax
-            emp_income_tax = calculate_income_tax_1_person(taxable_gross)
-            emp_local_tax = calculate_local_income_tax(emp_income_tax)
             emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
             net_pay = tot_g - emp_deduction_total
 
@@ -1740,7 +1649,8 @@ with tab9:
                     hea = safe_int(adj_m['health_insurance'].sum())
                     lng = safe_int(adj_m['longterm_care'].sum())
                     e_emp = safe_int(adj_m['employment_insurance'].sum())
-                    inc = loc = 0
+                    inc = safe_int(adj_m['income_tax'].sum()) if 'income_tax' in adj_m.columns else 0
+                    loc = safe_int(adj_m['local_tax'].sum()) if 'local_tax' in adj_m.columns else 0
                     other_d = safe_int(adj_m['other_deduction'].sum())
                     retire = safe_int(adj_m['retirement_accrual'].fillna(0).sum()) if 'retirement_accrual' in adj_m.columns else 0
                     ot = 0
@@ -1752,15 +1662,6 @@ with tab9:
                         else:
                             run_ot = 0
                         ot += run_ot
-                        run_taxable = (
-                            safe_int(adj.get('base_salary')) + run_ot
-                            + safe_int(adj.get('family_allowance'))
-                            + safe_int(adj.get('holiday_bonus'))
-                            + safe_int(adj.get('other_allowance'))
-                        )
-                        run_income_tax = calculate_income_tax_1_person(run_taxable)
-                        inc += run_income_tax
-                        loc += calculate_local_income_tax(run_income_tax)
                 else:
                     ot = calc_ot
                     base = emp['base_salary']
@@ -1769,15 +1670,12 @@ with tab9:
                     other_a = emp['other_allowance']
                     other_d = emp['other_deduction']
 
-                    tot_g_tmp = truncate_ten(base + ot + fam + nontax + other_a)
-                    taxable_tmp = tot_g_tmp - nontax
-
                     nat = safe_int(emp.get('national_pension'))
                     hea = safe_int(emp.get('health_insurance'))
                     lng = safe_int(emp.get('longterm_care'))
                     e_emp = safe_int(emp.get('employment_insurance'))
-                    inc = calculate_income_tax_1_person(taxable_tmp)
-                    loc = calculate_local_income_tax(inc)
+                    inc = safe_int(emp.get('income_tax'))
+                    loc = safe_int(emp.get('local_tax'))
                     retire = safe_int(emp.get('retirement_accrual'))
 
                 m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
