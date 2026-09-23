@@ -18,6 +18,9 @@ from supabase import create_client, Client
 # 페이지 기본 설정
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
+APP_ASSET_BUCKET = "app-assets"
+APP_VERSION = "v12"
+COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
 # -------------------------------------------------------------------
@@ -126,6 +129,51 @@ CURRENT_EMAIL = str(_user_value(CURRENT_USER, "email", ""))
 CURRENT_META = _user_metadata(CURRENT_USER)
 CURRENT_ROLE = str(st.session_state.get("auth_role", CURRENT_META.get("role", "viewer")))
 CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_company_logo_bytes():
+    """Supabase Storage의 고정 경로에서 회사 로고를 불러옵니다."""
+    try:
+        return supabase.storage.from_(APP_ASSET_BUCKET).download(COMPANY_LOGO_PATH)
+    except Exception:
+        return None
+
+def save_company_logo(uploaded_file):
+    """회사 로고를 Storage 고정 경로에 upsert하여 앱 재시작 후에도 유지합니다."""
+    content = uploaded_file.getvalue()
+    content_type = uploaded_file.type or "image/png"
+    try:
+        supabase.storage.from_(APP_ASSET_BUCKET).upload(
+            COMPANY_LOGO_PATH,
+            content,
+            {"content-type": content_type, "upsert": "true"}
+        )
+    except Exception:
+        # SDK/Storage 버전에 따라 upload upsert가 다를 수 있어 update로 재시도
+        try:
+            supabase.storage.from_(APP_ASSET_BUCKET).update(
+                COMPANY_LOGO_PATH,
+                content,
+                {"content-type": content_type, "upsert": "true"}
+            )
+        except Exception:
+            # 파일이 아직 없을 경우 최종 upload
+            supabase.storage.from_(APP_ASSET_BUCKET).upload(
+                COMPANY_LOGO_PATH,
+                content,
+                {"content-type": content_type}
+            )
+    load_company_logo_bytes.clear()
+    return True
+
+def company_logo_data_uri():
+    data = load_company_logo_bytes()
+    if not data:
+        return ""
+    encoded = base64.b64encode(data).decode("ascii")
+    # 브라우저 표시용. PNG/JPG 모두 대부분 정상 렌더링됨
+    return f"data:image/png;base64,{encoded}"
+
 
 # 역할별 앱 권한
 ROLE_PERMISSIONS = {
@@ -384,8 +432,11 @@ ROLE_ALLOWED_MENUS = {
 }
 
 with st.sidebar:
+    _logo_bytes = load_company_logo_bytes()
+    if _logo_bytes:
+        st.image(_logo_bytes, width=170)
     st.markdown("## 🏢 업무관리")
-    st.caption("화성시장기요양지원센터")
+    st.caption(f"화성시장기요양지원센터 · {APP_VERSION}")
     st.markdown(
         f"""<div style="padding:10px 12px;background:#f7f9fc;border:1px solid #e6eaf0;border-radius:10px;margin:10px 0 12px;">
         <div style="font-weight:700;">👤 {CURRENT_NAME}</div>
@@ -402,6 +453,26 @@ with st.sidebar:
         st.session_state.auth_user = None
         st.session_state.auth_role = "viewer"
         st.rerun()
+
+    if CURRENT_ROLE == "admin":
+        with st.expander("🎨 회사 로고 관리"):
+            st.caption("저장한 로고는 Supabase Storage에 보관되어 앱 재시작·재배포 후에도 유지됩니다.")
+            logo_file = st.file_uploader(
+                "로고 파일",
+                type=["png", "jpg", "jpeg"],
+                key="company_logo_upload"
+            )
+            if st.button("💾 회사 로고 저장", use_container_width=True):
+                if logo_file is None:
+                    st.warning("저장할 로고 파일을 선택해 주세요.")
+                else:
+                    try:
+                        save_company_logo(logo_file)
+                        write_audit_log("회사 로고 변경", "app_assets", COMPANY_LOGO_PATH, logo_file.name)
+                        st.success("회사 로고를 저장했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"회사 로고 저장 실패: {e}")
     st.divider()
     allowed_menus = ROLE_ALLOWED_MENUS.get(CURRENT_ROLE, ROLE_ALLOWED_MENUS["viewer"])
     visible_groups = [g for g, items in MENU_GROUPS.items() if any(name in allowed_menus for name, _ in items)]
@@ -420,6 +491,16 @@ with st.sidebar:
 active_tab = MENU_TO_TAB[menu]
 
 # 현재 위치 표시
+_main_logo = load_company_logo_bytes()
+if _main_logo:
+    hc1, hc2 = st.columns([1, 8])
+    with hc1:
+        st.image(_main_logo, width=110)
+    with hc2:
+        st.markdown(f"### 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
+else:
+    st.markdown(f"### 🏢 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
+
 st.markdown(
     f"""<div class="ui-card">
     <div class="ui-eyebrow">{menu_group.replace('👥 ','').replace('⏱️ ','').replace('💰 ','').replace('🚗 ','')} · 업무관리</div>
