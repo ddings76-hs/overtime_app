@@ -131,8 +131,8 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
-# 탭 구성 (tab1 ~ tab9)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+# 탭 구성 (tab1 ~ tab11)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "👥 직원 등록 및 정보 관리", 
     "📝 초과/휴일근무 신청", 
     "✅ 초과근무 수행 입력 & 요약표", 
@@ -141,7 +141,9 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 통합 급여대장 (수정 및 엑셀)", 
     "📄 개별 급여명세서 인쇄",
     "🖨️ 통합 급여대장 인쇄",
-    "📑 월별 급여대장 총괄표"
+    "📑 월별 급여대장 총괄표",
+    "🚗 출장 신청·관리",
+    "📋 출장 복명·복무규정"
 ])
 
 # -------------------------------------------------------------------
@@ -2048,3 +2050,288 @@ with tab9:
         </div>
         """
         st.components.v1.html(annual_summary_template, height=650, scrolling=True)
+
+
+# -------------------------------------------------------------------
+# TAB 10: 출장 신청·관리
+# -------------------------------------------------------------------
+with tab10:
+    st.header("🚗 출장 신청 및 관리")
+    st.caption("복무규정 제25조~제28조 및 여비관리 세칙 기준")
+
+    with st.expander("📖 출장 관련 복무규정 바로보기", expanded=False):
+        st.markdown("""
+**제25조(출장명령)**  
+직무수행을 위해 출장하는 직원은 출장신청서를 제출하고 출장명령을 받아야 합니다. 지정된 출장기일 안에 업무수행에 전력을 다하고, 업무를 완수하지 못할 사유가 생기면 즉시 상사에게 보고하여 지시를 받아야 합니다.
+
+**제26조(출장 중의 사정변경)**  
+출장 목적지 외 장소 방문 또는 출장기일 연장이 필요한 경우 사전에 상사에게 보고하고 승인을 받아야 합니다. 부득이하게 사전승인을 받지 못한 경우 귀원 즉시 사후승인을 받아야 합니다.
+
+**제27조(출장보고)**  
+출장용무를 마치고 귀원한 때에는 지체 없이 출장보고서를 제출해야 합니다. 다만 경미하거나 비밀에 속하는 사항은 구두보고가 가능합니다.
+
+**제28조(출장여비)**  
+출장여비는 「여비관리 세칙」에 따릅니다.
+        """)
+
+    # 테이블 존재 여부 안내
+    try:
+        trip_res = supabase.table("business_trips").select("*").order("id", desc=True).execute()
+        df_trips = pd.DataFrame(trip_res.data) if trip_res.data else pd.DataFrame()
+        trip_table_ok = True
+    except Exception:
+        df_trips = pd.DataFrame()
+        trip_table_ok = False
+
+    if not trip_table_ok:
+        st.warning("⚠️ 출장관리 DB 테이블이 아직 없습니다. 아래 'Supabase SQL'을 먼저 실행해 주세요.")
+
+    emp_trip_res = supabase.table("employees").select("*").execute()
+    df_trip_emp = pd.DataFrame(emp_trip_res.data) if emp_trip_res.data else pd.DataFrame()
+
+    st.subheader("📝 출장 신청")
+    if df_trip_emp.empty:
+        st.info("직원 데이터가 없습니다.")
+    else:
+        emp_opts = {
+            f"{r.get('name','')} ({r.get('emp_id','')})": r
+            for _, r in df_trip_emp.iterrows()
+        }
+        trip_emp_key = st.selectbox("출장자", list(emp_opts.keys()), key="trip_emp")
+        trip_emp = emp_opts[trip_emp_key]
+
+        tc1, tc2, tc3 = st.columns(3)
+        with tc1:
+            st.text_input("성명", value=str(trip_emp.get("name","")), disabled=True)
+        with tc2:
+            st.text_input("직위", value=str(trip_emp.get("position","")), disabled=True)
+        with tc3:
+            st.text_input("부서", value=str(trip_emp.get("department","")), disabled=True)
+
+        trip_type = st.radio("출장 구분", ["일반출장", "교육·연수출장"], horizontal=True)
+        purpose = st.text_input("출장목적", placeholder="예: 장기요양기관 회계 교육 참석")
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            start_date = st.date_input("출장 시작일", key="trip_start_date")
+            start_time = st.time_input("시작시간", value=time(9,0), key="trip_start_time")
+        with dc2:
+            end_date = st.date_input("출장 종료일", key="trip_end_date")
+            end_time = st.time_input("종료시간", value=time(18,0), key="trip_end_time")
+
+        destination = st.text_input("출장지")
+        mv1, mv2, mv3 = st.columns(3)
+        with mv1:
+            transport = st.selectbox("이동수단", ["대중교통", "자차", "센터차량", "동승", "도보", "기타"])
+        with mv2:
+            distance_km = st.number_input("총 거리(km)", min_value=0.0, step=1.0)
+        with mv3:
+            fuel_type = st.selectbox("자차 유종", ["해당없음", "가솔린", "디젤", "LPG"], disabled=(transport != "자차"))
+
+        st.markdown("##### 💰 여비 기준 확인")
+        start_dt = datetime.combine(start_date, start_time)
+        end_dt = datetime.combine(end_date, end_time)
+        trip_hours = max(0, (end_dt - start_dt).total_seconds() / 3600)
+        if trip_hours >= 4:
+            base_trip_pay = 20000
+            rule_text = "출장여행시간 4시간 이상 → 20,000원"
+        elif trip_hours > 2:
+            base_trip_pay = 10000
+            rule_text = "출장여행시간 4시간 미만 → 10,000원"
+        else:
+            base_trip_pay = 0
+            rule_text = "2시간 이내/보행 가능 거리 → 실교통비 지급 가능"
+
+        if transport == "센터차량":
+            base_trip_pay = max(0, base_trip_pay - 10000)
+            rule_text += " / 센터차량 사용 → 기준금액에서 10,000원 감액"
+
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            st.info(rule_text)
+        with rc2:
+            st.metric("규정 기준 여비(참고)", f"{base_trip_pay:,}원")
+
+        st.caption("※ 자가차량 운임은 여비관리 세칙상 총거리×기준단가 방식입니다. 유류 기준가격 입력 없이 임의 계산하지 않고 정산 단계에서 증빙·기준단가를 확인하도록 설계했습니다.")
+        note = st.text_area("비고 / 출장 사전 특이사항")
+
+        if st.button("🚗 출장 신청 등록", type="primary", use_container_width=True):
+            if not trip_table_ok:
+                st.error("먼저 Supabase에 business_trips 테이블을 생성해 주세요.")
+            elif not purpose or not destination:
+                st.warning("출장목적과 출장지를 입력해 주세요.")
+            elif end_dt <= start_dt:
+                st.warning("출장 종료일시는 시작일시보다 늦어야 합니다.")
+            else:
+                payload = {
+                    "emp_id": str(trip_emp.get("emp_id","")),
+                    "emp_name": str(trip_emp.get("name","")),
+                    "department": str(trip_emp.get("department","")),
+                    "position": str(trip_emp.get("position","")),
+                    "trip_type": trip_type,
+                    "purpose": purpose,
+                    "start_at": start_dt.isoformat(),
+                    "end_at": end_dt.isoformat(),
+                    "destination": destination,
+                    "transport_type": transport,
+                    "distance_km": float(distance_km),
+                    "fuel_type": fuel_type,
+                    "rule_base_amount": int(base_trip_pay),
+                    "note": note,
+                    "apply_status": "신청",
+                    "report_status": "미작성",
+                    "settlement_status": "미정산"
+                }
+                supabase.table("business_trips").insert(payload).execute()
+                st.success("출장 신청이 등록되었습니다.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("📊 출장 현황 / 승인 관리")
+    if trip_table_ok and not df_trips.empty:
+        show_cols = [c for c in ["id","start_at","emp_name","position","purpose","destination","transport_type",
+                                 "distance_km","rule_base_amount","apply_status","report_status","settlement_status"]
+                     if c in df_trips.columns]
+        st.dataframe(df_trips[show_cols], use_container_width=True, hide_index=True)
+
+        trip_ids = df_trips["id"].tolist()
+        sel_trip_id = st.selectbox("처리할 출장 ID", trip_ids, key="trip_manage_id")
+        mc1, mc2, mc3 = st.columns(3)
+        with mc1:
+            if st.button("✅ 출장 승인(명령)", use_container_width=True):
+                supabase.table("business_trips").update({"apply_status":"승인"}).eq("id", sel_trip_id).execute()
+                st.success("출장명령/승인 처리했습니다.")
+                st.rerun()
+        with mc2:
+            if st.button("↩️ 반려", use_container_width=True):
+                supabase.table("business_trips").update({"apply_status":"반려"}).eq("id", sel_trip_id).execute()
+                st.rerun()
+        with mc3:
+            if st.button("❌ 출장 취소", use_container_width=True):
+                supabase.table("business_trips").update({"apply_status":"취소"}).eq("id", sel_trip_id).execute()
+                st.rerun()
+    elif trip_table_ok:
+        st.info("등록된 출장 내역이 없습니다.")
+
+# -------------------------------------------------------------------
+# TAB 11: 출장 복명·복무규정
+# -------------------------------------------------------------------
+with tab11:
+    st.header("📋 출장 복명 · 여비정산 · 복무규정")
+
+    try:
+        trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
+        df_trip2 = pd.DataFrame(trip_res2.data) if trip_res2.data else pd.DataFrame()
+    except Exception:
+        df_trip2 = pd.DataFrame()
+
+    if df_trip2.empty:
+        st.info("출장 신청 내역이 없습니다. 먼저 출장 신청을 등록해 주세요.")
+    else:
+        approved_trip = df_trip2[df_trip2["apply_status"] == "승인"] if "apply_status" in df_trip2.columns else df_trip2
+        if approved_trip.empty:
+            st.info("승인된 출장 건이 없습니다.")
+        else:
+            labels = {
+                int(r["id"]): f"#{int(r['id'])} | {r.get('emp_name','')} | {str(r.get('start_at',''))[:10]} | {r.get('destination','')}"
+                for _, r in approved_trip.iterrows()
+            }
+            rid = st.selectbox("복명할 출장 선택", list(labels.keys()), format_func=lambda x: labels[x])
+            rr = approved_trip[approved_trip["id"] == rid].iloc[0]
+
+            st.markdown("##### 📌 신청 내용 자동연계")
+            a,b,c,d = st.columns(4)
+            a.metric("출장자", str(rr.get("emp_name","")))
+            b.metric("출장지", str(rr.get("destination","")))
+            c.metric("이동수단", str(rr.get("transport_type","")))
+            d.metric("거리", f"{float(rr.get('distance_km',0) or 0):,.1f} km")
+            st.write("**출장목적:**", rr.get("purpose",""))
+            st.write("**출장시간:**", str(rr.get("start_at","")), "~", str(rr.get("end_at","")))
+
+            participants = st.text_input("참석자", value=str(rr.get("participants","") or ""))
+            default_report = """[참여 목적]
+
+[참여 내용]
+
+[주요 교육·업무 내용]
+
+[업무 적용 및 결과]
+"""
+            report_content = st.text_area(
+                "출장 보고 내용",
+                value=str(rr.get("report_content","") or default_report),
+                height=280
+            )
+
+            st.markdown("##### 💰 여비 정산")
+            e1,e2,e3,e4 = st.columns(4)
+            with e1:
+                transport_cost = st.number_input("교통비/자가차량 운임", min_value=0, step=1000, value=int(rr.get("transport_cost",0) or 0))
+            with e2:
+                toll_cost = st.number_input("통행료", min_value=0, step=1000, value=int(rr.get("toll_cost",0) or 0))
+            with e3:
+                lodging_cost = st.number_input("숙박비", min_value=0, step=1000, value=int(rr.get("lodging_cost",0) or 0))
+            with e4:
+                other_cost = st.number_input("기타 증빙경비", min_value=0, step=1000, value=int(rr.get("other_cost",0) or 0))
+
+            f1,f2 = st.columns(2)
+            with f1:
+                daily_cost = st.number_input("일비", min_value=0, step=1000, value=int(rr.get("daily_cost", rr.get("rule_base_amount",0)) or 0))
+            with f2:
+                meal_cost = st.number_input("식비", min_value=0, step=1000, value=int(rr.get("meal_cost",0) or 0))
+
+            total_trip_cost = int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
+            st.metric("정산 합계", f"{total_trip_cost:,}원")
+            st.caption("국내여비 기준표: 모든 직원 일비 25,000원/일, 식비 20,000원/일, 숙박료 실비(광역시 상한 80,000원, 그 밖의 지역 70,000원). 별도 단시간 출장여비 기준도 함께 적용되므로 담당자 확인 후 확정하도록 구성했습니다.")
+
+            if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True):
+                supabase.table("business_trips").update({
+                    "participants": participants,
+                    "report_content": report_content,
+                    "transport_cost": int(transport_cost),
+                    "toll_cost": int(toll_cost),
+                    "lodging_cost": int(lodging_cost),
+                    "other_cost": int(other_cost),
+                    "daily_cost": int(daily_cost),
+                    "meal_cost": int(meal_cost),
+                    "total_cost": total_trip_cost,
+                    "report_status": "완료",
+                    "settlement_status": "정산대기"
+                }).eq("id", rid).execute()
+                st.success("출장 복명 및 정산내용을 저장했습니다.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("📚 시스템에서 확인하는 출장·여비 규정")
+    reg_tab1, reg_tab2, reg_tab3 = st.tabs(["출장 복무규정", "여비관리 세칙", "교육·연수 결과보고"])
+    with reg_tab1:
+        st.markdown("""
+- **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
+- **제26조 출장 중 사정변경**: 목적지 변경·기간 연장 시 사전승인, 부득이한 경우 귀원 즉시 사후승인
+- **제27조 출장보고**: 귀원 후 지체 없이 출장보고서 제출
+- **제28조 출장여비**: 「여비관리 세칙」 적용
+        """)
+    with reg_tab2:
+        st.markdown("""
+**여비관리 세칙 주요 기준**
+- 여비는 출장 계획의 경로와 방법에 따라 계산
+- 다른 기관에서 여비가 지급되면 해당 금액만큼 감액
+- 센터 교통수단 또는 요금이 들지 않는 교통수단 이용 시 자동차운임 미지급
+- 출장여행시간 **4시간 이상 20,000원 / 4시간 미만 10,000원**
+- 보행 가능 거리나 **2시간 이내는 실교통비 지급 가능**
+- 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
+- 국내여비 기준표: 일비 **25,000원/일**, 식비 **20,000원/일**
+- 숙박료: 실비, 상한 **광역시 80,000원 / 그 밖의 지역 70,000원**
+- 자가차량 운임: **총거리(km) × 기준단가**, 유종별 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
+- 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
+        """)
+    with reg_tab3:
+        st.markdown("""
+**제90조 결과보고**
+- 위탁교육자는 **교육이수 후 5일 이내** 보고서를 제출
+- 교재·출석표·수료증 첨부
+- 소속부서장을 경유하여 센터장에게 제출
+- 정당한 사유 없이 기한 내 수료증·보고서를 제출하지 않으면 규정상 교육 미이수로 볼 수 있음
+        """)
+
+    st.info("📌 다음 단계에서 출장신청서·출장복명서 A4 인쇄, 사진/영수증 첨부, 월별 출장관리대장 Excel까지 연결합니다.")
+
