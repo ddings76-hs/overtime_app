@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v16"
+APP_VERSION = "v16.1.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -346,7 +346,7 @@ APPROVAL_STAGE_LABELS = {
 }
 
 def can_approve_stage(stage):
-    """v16 결재권한: admin은 전체, manager는 담당/대리, director role은 센터장."""
+    """v16.1 결재권한: admin은 전체, manager는 담당/대리, director role은 센터장."""
     if CURRENT_ROLE == "admin":
         return True
     if stage in ("staff", "deputy") and CURRENT_ROLE == "manager":
@@ -383,12 +383,37 @@ def set_approval_state(doc_type, doc_id, stage, decision, note=""):
         "note": note,
         "approved_at": datetime.now().isoformat(),
     }
-    supabase.table("approval_records").upsert(
-        payload, on_conflict="doc_type,doc_id,stage"
-    ).execute()
-    write_audit_log(f"{doc_type} {APPROVAL_STAGE_LABELS.get(stage,stage)} {decision}",
-                    doc_type, doc_id, note)
-    return True
+    try:
+        # 기존 행을 먼저 확인한 뒤 UPDATE/INSERT.
+        # DB에 unique constraint가 누락된 경우에도 결재가 동작하도록 upsert 의존성을 제거함.
+        existing = (
+            supabase.table("approval_records")
+            .select("id")
+            .eq("doc_type", doc_type)
+            .eq("doc_id", str(doc_id))
+            .eq("stage", stage)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            (
+                supabase.table("approval_records")
+                .update(payload)
+                .eq("id", existing.data[0]["id"])
+                .execute()
+            )
+        else:
+            supabase.table("approval_records").insert(payload).execute()
+
+        write_audit_log(
+            f"{doc_type} {APPROVAL_STAGE_LABELS.get(stage,stage)} {decision}",
+            doc_type, doc_id, note
+        )
+        return True
+    except Exception as e:
+        st.error("결재 저장에 실패했습니다. v16.1.1 DB 보정 SQL 적용 여부와 계정 권한을 확인해 주세요.")
+        st.caption(f"오류 유형: {type(e).__name__}")
+        return False
 
 def write_audit_log(action, target_type="", target_id="", detail=""):
     """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
