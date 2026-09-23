@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v19.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v19.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -325,77 +325,117 @@ with st.sidebar:
 # v19.3 공통 표/Excel 표시 규칙
 # -------------------------------------------------------------------
 COLUMN_KR = {
-    "id":"번호","emp_id":"사번","emp_name":"이름","name":"이름",
-    "dept":"부서","department":"부서","position":"직위",
-    "apply_dt":"신청일","created_at":"등록일시","updated_at":"수정일시",
-    "start_date":"시작일","end_date":"종료일","leave_type":"휴가종류",
-    "used_days":"사용일수","reason":"사유","status":"상태",
-    "work_date":"근무일","hours":"시간","actual_hours":"실적시간","work_hours":"근무시간",
+    # 공통
+    "id":"번호","emp_id":"사번","emp_name":"이름","name":"이름","birth_date":"생년월일",
+    "dept":"부서","department":"부서","position":"직위","pay_grade":"호봉",
+    "apply_dt":"신청일","created_at":"등록일시","updated_at":"수정일시","status":"상태",
+    "note":"비고","reason":"사유",
+    # 연차
+    "start_date":"시작일","end_date":"종료일","leave_type":"휴가종류","used_days":"사용일수",
+    "leave_days":"연차일수","day_count":"일수",
+    # 초과근무
+    "work_date":"근무일","ot_date":"초과근무일","work_type":"근무구분",
+    "start_time":"시작시간","end_time":"종료시간","duration_hours":"신청시간",
+    "estimated_pay":"예상수당","act_start_time":"실적시작시간","act_end_time":"실적종료시간",
+    "actual_hours":"실적시간","work_hours":"근무시간","hours":"시간",
+    "actual_pay":"실적수당","approved_pay":"승인수당",
+    # 출장
     "trip_type":"출장구분","purpose":"출장목적","start_at":"출장시작","end_at":"출장종료",
-    "destination":"출장지","transport_type":"교통수단","distance_km":"거리(km)",
-    "fuel_type":"유종","rule_base_amount":"기준금액","note":"비고",
-    "apply_status":"신청상태","report_status":"복명상태","settlement_status":"정산상태",
-    "participants":"동행자","report_content":"복명내용","transport_cost":"교통비",
-    "toll_cost":"통행료","lodging_cost":"숙박비","other_cost":"기타비용",
-    "daily_cost":"일비","meal_cost":"식비","total_cost":"출장비합계",
+    "destination":"출장지","transport_type":"교통수단","distance_km":"출장거리(km)",
+    "fuel_type":"유종","rule_base_amount":"기준금액","apply_status":"신청상태",
+    "report_status":"복명상태","settlement_status":"정산상태","participants":"동행자",
+    "report_content":"복명내용","transport_cost":"교통비","toll_cost":"통행료",
+    "lodging_cost":"숙박비","other_cost":"기타비용","daily_cost":"일비",
+    "meal_cost":"식비","total_cost":"출장비합계",
+    # 급여
+    "pay_month":"급여월","pay_run_no":"급여차수","pay_run_name":"급여명칭",
+    "base_salary":"기본급","ot_pay":"초과수당","overtime_pay":"초과수당",
+    "family_allowance":"가족수당","holiday_bonus":"명절상여","non_taxable":"비과세",
+    "other_allowance":"기타수당","national_pension":"국민연금","health_insurance":"건강보험",
+    "longterm_care":"장기요양보험","employment_insurance":"고용보험",
+    "income_tax":"소득세","local_tax":"지방소득세","other_deduction":"기타공제",
+    "ot_pay_overridden":"초과수당수정","gross_pay":"급여총액",
+    "employee_deductions":"근로자공제합계","net_pay":"실지급액",
+    "employer_insurance":"사업주부담보험","retirement_accrual":"퇴직적립금",
+    # 파일/변경
     "file_type":"파일구분","file_name":"파일명","change_type":"변경구분",
     "change_reason":"변경사유","new_destination":"변경출장지","approval_type":"승인구분",
-    "approval_status":"승인상태","approved_at":"승인일시",
-    "pay_month":"급여월","pay_run_no":"급여차수","pay_run_name":"급여명칭",
-    "base_salary":"기본급","overtime_pay":"초과수당","family_allowance":"가족수당",
-    "holiday_bonus":"명절상여","non_taxable":"비과세","other_allowance":"기타수당",
-    "gross_pay":"급여총액","employee_deductions":"근로자공제합계","net_pay":"실지급액",
-    "employer_insurance":"사업주부담보험","retirement_accrual":"퇴직적립금"
+    "approval_status":"승인상태","approved_at":"승인일시"
 }
-MONEY_HINTS = ("급여","수당","금액","비용","출장비","교통비","통행료","숙박비","식비","일비",
-               "보험","공제","지급액","적립금","기본급","상여","비과세")
+MONEY_HINTS=("급여","수당","금액","비용","출장비","교통비","통행료","숙박비","식비","일비",
+             "보험","연금","소득세","공제","지급액","적립금","기본급","상여","비과세")
+DECIMAL2_HINTS=("사용일수","연차일수","일수","시간","거리")
+
+def _kr_col(c):
+    return COLUMN_KR.get(c, c)
+
+def _normalize_table_view(df):
+    """화면/Excel 공통: 한글 제목, 출장 일시 형식, 소수점 규칙."""
+    if df is None: return pd.DataFrame()
+    view=df.copy()
+    # 출장 시작/종료: 초과근무처럼 날짜와 시간을 읽기 쉽게 표시
+    for c in ["start_at","end_at"]:
+        if c in view.columns:
+            dt=pd.to_datetime(view[c], errors="coerce")
+            view[c]=dt.dt.strftime("%Y-%m-%d %H:%M").where(dt.notna(), view[c])
+    view=view.rename(columns={c:_kr_col(c) for c in view.columns})
+    return view
 
 def display_table_kr(df, use_container_width=True, hide_index=True, **kwargs):
-    """화면 표: 영문 필드명을 한글로 표시하고 금액성 숫자는 천 단위 쉼표 적용."""
-    if df is None:
-        return st.dataframe(pd.DataFrame(), use_container_width=use_container_width, hide_index=hide_index, **kwargs)
-    view=df.copy()
-    view=view.rename(columns={c:COLUMN_KR.get(c,c) for c in view.columns})
+    """모든 조회 표 공통 표시."""
+    view=_normalize_table_view(df)
     fmt={}
     for c in view.columns:
-        if any(k in str(c) for k in MONEY_HINTS) and pd.api.types.is_numeric_dtype(view[c]):
-            fmt[c]="{:,.0f}"
-        elif pd.api.types.is_integer_dtype(view[c]):
-            fmt[c]="{:,}"
-        elif pd.api.types.is_float_dtype(view[c]) and not any(k in str(c) for k in ("일수","시간","거리")):
-            fmt[c]="{:,.2f}"
-    return st.dataframe(view.style.format(fmt, na_rep=""), use_container_width=use_container_width,
-                        hide_index=hide_index, **kwargs)
-
-def style_excel_sheet(ws):
-    """화면과 유사한 깔끔한 표 스타일/칸너비/천단위 숫자 서식을 Excel에 적용."""
-    header_fill=PatternFill("solid", fgColor="EAF2FF")
-    header_font=Font(bold=True, color="1F2937")
-    thin=Side(style="thin", color="D9E1EA")
-    for cell in ws[1]:
-        cell.fill=header_fill; cell.font=header_font
-        cell.alignment=Alignment(horizontal="center", vertical="center")
-        cell.border=Border(bottom=thin)
-    ws.freeze_panes="A2"
-    ws.auto_filter.ref=ws.dimensions
-    for col_cells in ws.columns:
-        letter=get_column_letter(col_cells[0].column)
-        vals=[str(c.value) if c.value is not None else "" for c in col_cells[:100]]
-        width=min(max(max((len(v) for v in vals), default=0)+2, 10), 32)
-        ws.column_dimensions[letter].width=width
-        header=str(col_cells[0].value or "")
-        for cell in col_cells[1:]:
-            cell.alignment=Alignment(vertical="center", wrap_text=True)
-            if isinstance(cell.value,(int,float)) and not isinstance(cell.value,bool):
-                if any(k in header for k in MONEY_HINTS) or isinstance(cell.value,int):
-                    cell.number_format='#,##0'
-                else:
-                    cell.number_format='#,##0.##'
-    ws.row_dimensions[1].height=24
+        if pd.api.types.is_numeric_dtype(view[c]):
+            if any(k in str(c) for k in DECIMAL2_HINTS):
+                fmt[c]="{:,.2f}"
+            elif any(k in str(c) for k in MONEY_HINTS) or pd.api.types.is_integer_dtype(view[c]):
+                fmt[c]="{:,.0f}"
+            else:
+                fmt[c]="{:,.2f}"
+    # 컬럼 제목은 중앙 정렬. 본문 숫자는 우측, 텍스트는 기본 표시.
+    sty=view.style.format(fmt, na_rep="").set_table_styles([
+        {"selector":"th","props":[("text-align","center")]},
+    ])
+    return st.dataframe(sty, use_container_width=use_container_width, hide_index=hide_index, **kwargs)
 
 def excel_view_df(df):
-    if df is None: return pd.DataFrame()
-    return df.copy().rename(columns={c:COLUMN_KR.get(c,c) for c in df.columns})
+    return _normalize_table_view(df)
+
+def style_excel_sheet(ws):
+    """화면과 같은 한글 제목/칸너비/전체 격자선/숫자 형식."""
+    header_fill=PatternFill("solid", fgColor="F3F6FA")
+    header_font=Font(name="맑은 고딕", size=10, bold=True, color="1F2937")
+    body_font=Font(name="맑은 고딕", size=10)
+    thin=Side(style="thin", color="D9DEE7")
+    grid=Border(left=thin,right=thin,top=thin,bottom=thin)
+    for cell in ws[1]:
+        cell.fill=header_fill; cell.font=header_font; cell.border=grid
+        cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.font=body_font; cell.border=grid
+            cell.alignment=Alignment(vertical="center",wrap_text=False)
+    ws.freeze_panes="A2"
+    if ws.max_row>=1 and ws.max_column>=1:
+        ws.auto_filter.ref=ws.dimensions
+    for col_cells in ws.columns:
+        letter=get_column_letter(col_cells[0].column)
+        header=str(col_cells[0].value or "")
+        vals=[str(c.value) if c.value is not None else "" for c in col_cells[:150]]
+        # 화면 가독성에 맞춘 폭. 긴 텍스트도 과도하게 넓어지지 않게 제한.
+        width=min(max(max((len(v) for v in vals),default=0)+3, 11), 28)
+        ws.column_dimensions[letter].width=width
+        for cell in col_cells[1:]:
+            if isinstance(cell.value,(int,float)) and not isinstance(cell.value,bool):
+                if any(k in header for k in DECIMAL2_HINTS):
+                    cell.number_format='#,##0.00'
+                elif any(k in header for k in MONEY_HINTS) or isinstance(cell.value,int):
+                    cell.number_format='#,##0'
+                else:
+                    cell.number_format='#,##0.00'
+    ws.row_dimensions[1].height=26
+    ws.sheet_view.showGridLines=False
 
 
 def current_emp_id():
@@ -1439,8 +1479,9 @@ if active_tab == 4:
 
         output_leave = io.BytesIO()
         with pd.ExcelWriter(output_leave, engine='openpyxl') as writer:
-            df_summary_all.to_excel(writer, index=False, sheet_name="전직원_연차_요약")
+            excel_view_df(df_summary_all).to_excel(writer, index=False, sheet_name="전직원_연차_요약")
             worksheet = writer.sheets["전직원_연차_요약"]
+            style_excel_sheet(worksheet)
 
             header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
             header_font = Font(name="맑은 고딕", size=11, bold=True)
@@ -1933,8 +1974,9 @@ if active_tab == 6:
 
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
+            excel_view_df(edited_payroll).to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
             worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
+            style_excel_sheet(worksheet)
             for col_idx, col_name in enumerate(edited_payroll.columns, 1):
                 if col_name in amount_columns:
                     for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
@@ -3231,7 +3273,7 @@ if active_tab == 11:
             lm1,lm2,lm3,lm4 = st.columns(4)
             lm1.metric("출장 건수", f"{len(ledger)}건")
             lm2.metric("복명 완료", f"{int((ledger['report_status']=='완료').sum()) if 'report_status' in ledger else 0}건")
-            lm3.metric("총 출장거리", f"{pd.to_numeric(ledger.get('distance_km',0),errors='coerce').fillna(0).sum():,.1f}km")
+            lm3.metric("총 출장거리", f"{pd.to_numeric(ledger.get('distance_km',0),errors='coerce').fillna(0).sum():,.2f}km")
             lm4.metric("총 출장비", f"{pd.to_numeric(ledger.get('total_cost',0),errors='coerce').fillna(0).sum():,.0f}원")
 
             trip_xlsx = io.BytesIO()
