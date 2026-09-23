@@ -436,6 +436,7 @@ MENU_GROUPS = {
         ("초과근무 실적", "실제 수행내역·승인·월별 급여 연계"),
     ],
     "💰 급여": [
+        ("관리자 통계·보고서", "연·월별 급여·연차·초과근무·출장 통합 통계 및 보고서"),
         ("통합 급여대장", "월 급여 계산·수정·확정 및 Excel"),
         ("급여명세서", "직원별 급여명세서 조회·인쇄"),
         ("급여대장 인쇄", "월별 통합 급여대장 인쇄"),
@@ -459,6 +460,7 @@ MENU_TO_TAB = {
 ROLE_ALLOWED_MENUS = {
     "admin": set(MENU_TO_TAB.keys()),
     "manager": {
+        "대시보드", "관리자 통계·보고서",
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
         "출장 신청·관리", "출장 복명·규정"
     },
@@ -3422,22 +3424,7 @@ if active_tab == 12:
 
 
 # -------------------------------------------------------------------
-# 모든 업무화면 공통 하단 회사 로고
-# 기존 상단 표시 크기 대비 약 80% 수준(136px)으로 축소
-# -------------------------------------------------------------------
-_footer_logo = load_company_logo_bytes()
-if _footer_logo:
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-    _fc1, _fc2, _fc3 = st.columns([4, 1, 4])
-    with _fc2:
-        st.image(_footer_logo, width=136)
-    st.markdown(
-        f"<div style='text-align:center;color:#98a2b3;font-size:.72rem;margin-top:3px;'>System Version {APP_VERSION}</div>",
-        unsafe_allow_html=True
-    )
-
-
-# TAB 13: v19 관리자 월별 통계·보고서
+# TAB 13: v19.2 관리자 월별 통계·보고서
 if active_tab == 13:
     st.subheader("📊 관리자 월별 통계·보고서")
     if not can_manage_all_records():
@@ -3510,3 +3497,17 @@ if active_tab == 13:
         except Exception as _e:
             st.caption(f"Excel 보고서 생성 확인 필요: {_e}")
 
+
+# 모든 업무화면 공통 하단 회사 로고
+# 기존 상단 표시 크기 대비 약 80% 수준(136px)으로 축소
+# -------------------------------------------------------------------
+_footer_logo = load_company_logo_bytes()
+if _footer_logo:
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    _fc1, _fc2, _fc3 = st.columns([4, 1, 4])
+    with _fc2:
+        st.image(_footer_logo, width=136)
+    st.markdown(
+        f"<div style='text-align:center;color:#98a2b3;font-size:.72rem;margin-top:3px;'>System Version {APP_VERSION}</div>",
+        unsafe_allow_html=True
+    )
