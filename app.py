@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v18.1"
+APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -453,6 +453,7 @@ MENU_TO_TAB = {
     "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
     "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
     "출장 신청·관리": 10, "출장 복명·규정": 11, "계정·권한 관리": 12,
+    "관리자 통계·보고서": 13
 }
 
 ROLE_ALLOWED_MENUS = {
@@ -543,7 +544,7 @@ st.markdown(
 )
 
 # -------------------------------------------------------------------
-# TAB 0: v18 직원 마이페이지 / 관리자 통합 대시보드
+# TAB 0: v19 직원 마이페이지 / 관리자 통합 대시보드
 # -------------------------------------------------------------------
 if active_tab == 0:
     if CURRENT_ROLE == "employee":
@@ -3434,3 +3435,78 @@ if _footer_logo:
         f"<div style='text-align:center;color:#98a2b3;font-size:.72rem;margin-top:3px;'>System Version {APP_VERSION}</div>",
         unsafe_allow_html=True
     )
+
+
+# TAB 13: v19 관리자 월별 통계·보고서
+if active_tab == 13:
+    st.subheader("📊 관리자 월별 통계·보고서")
+    if not can_manage_all_records():
+        st.warning("관리자 또는 담당자만 이용할 수 있습니다.")
+    else:
+        _now = datetime.now()
+        _years = list(range(_now.year - 3, _now.year + 2))
+        _c1, _c2 = st.columns(2)
+        _year = _c1.selectbox("연도", _years, index=_years.index(_now.year), key="v19_year")
+        _month = _c2.selectbox("월", range(1,13), index=_now.month-1, format_func=lambda x: f"{x}월", key="v19_month")
+        _ym = f"{_year:04d}-{_month:02d}"
+
+        def _v19_load(table):
+            try:
+                return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
+            except Exception:
+                return pd.DataFrame()
+
+        def _v19_month(df):
+            if df.empty:
+                return df
+            for col in ["pay_month","month","work_date","date","start_date","start_at","created_at","leave_date"]:
+                if col in df.columns:
+                    return df[df[col].astype(str).str[:7] == _ym].copy()
+            return df.iloc[0:0].copy()
+
+        def _v19_sum(df, cols):
+            if df.empty:
+                return 0.0
+            col = next((c for c in cols if c in df.columns), None)
+            return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum()) if col else 0.0
+
+        _pay = _v19_month(_v19_load("monthly_payroll_adjust"))
+        _leave = _v19_month(_v19_load("leave_records"))
+        _ot = _v19_month(_v19_load("overtime_records"))
+        _trip = _v19_month(_v19_load("business_trips"))
+
+        _pay_sum = _v19_sum(_pay, ["gross_pay","total_pay","pay_total","total_salary","net_pay"])
+        _leave_sum = _v19_sum(_leave, ["days","leave_days","used_days","day_count"])
+        _ot_sum = _v19_sum(_ot, ["hours","actual_hours","work_hours"])
+        _trip_sum = _v19_sum(_trip, ["total_cost"])
+
+        st.markdown(f"#### {_year}년 {_month}월 통합 현황")
+        _m1,_m2,_m3,_m4 = st.columns(4)
+        _m1.metric("급여", f"{int(_pay_sum):,}원" if _pay_sum else f"{len(_pay)}건")
+        _m2.metric("연차", f"{_leave_sum:g}일" if _leave_sum else f"{len(_leave)}건")
+        _m3.metric("초과근무", f"{_ot_sum:g}시간" if _ot_sum else f"{len(_ot)}건")
+        _m4.metric("출장비", f"{int(_trip_sum):,}원" if _trip_sum else f"{len(_trip)}건")
+
+        st.markdown("#### 월간 상세자료")
+        _t1,_t2,_t3,_t4 = st.tabs(["급여","연차","초과근무","출장"])
+        with _t1: st.dataframe(_pay, use_container_width=True, hide_index=True)
+        with _t2: st.dataframe(_leave, use_container_width=True, hide_index=True)
+        with _t3: st.dataframe(_ot, use_container_width=True, hide_index=True)
+        with _t4: st.dataframe(_trip, use_container_width=True, hide_index=True)
+
+        try:
+            from io import BytesIO
+            _bio = BytesIO()
+            with pd.ExcelWriter(_bio, engine="openpyxl") as _writer:
+                pd.DataFrame([{"기준월":_ym,"급여합계":_pay_sum,"연차사용":_leave_sum,
+                               "초과근무시간":_ot_sum,"출장비":_trip_sum}]).to_excel(_writer, sheet_name="월간요약", index=False)
+                _pay.to_excel(_writer, sheet_name="급여", index=False)
+                _leave.to_excel(_writer, sheet_name="연차", index=False)
+                _ot.to_excel(_writer, sheet_name="초과근무", index=False)
+                _trip.to_excel(_writer, sheet_name="출장", index=False)
+            st.download_button("📥 월간 통합보고서 Excel 다운로드", _bio.getvalue(),
+                               file_name=f"월간_통합업무보고서_{_ym}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as _e:
+            st.caption(f"Excel 보고서 생성 확인 필요: {_e}")
+
