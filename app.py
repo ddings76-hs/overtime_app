@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v17.2.1"
+APP_VERSION = "v18.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -543,7 +543,7 @@ st.markdown(
 )
 
 # -------------------------------------------------------------------
-# TAB 0: v17.2 직원 마이페이지 / 관리자 통합 대시보드
+# TAB 0: v18 직원 마이페이지 / 관리자 통합 대시보드
 # -------------------------------------------------------------------
 if active_tab == 0:
     if CURRENT_ROLE == "employee":
@@ -568,6 +568,17 @@ if active_tab == 0:
             _otm=int(_ot[_ot[_dc].astype(str).str.startswith(_month)].shape[0]) if _dc else 0
             c1,c2,c3=st.columns(3)
             c1.metric("누적 휴가 사용",f"{_used:g}일"); c2.metric("이번 달 초과근무",f"{_otm}건"); c3.metric("출장 기록",f"{len(_tr)}건")
+            _oth=0.0
+            if not _ot.empty:
+                _hc=next((c for c in ["hours","actual_hours","work_hours"] if c in _ot.columns),None)
+                if _hc: _oth=pd.to_numeric(_ot[_hc],errors="coerce").fillna(0).sum()
+            _tc=int(pd.to_numeric(_tr["total_cost"],errors="coerce").fillna(0).sum()) if (not _tr.empty and "total_cost" in _tr.columns) else 0
+            _pending=(int((~_ot["status"].astype(str).isin(["승인","반려"])).sum()) if (not _ot.empty and "status" in _ot.columns) else 0)
+            _pending+=(int((~_tr["apply_status"].astype(str).isin(["승인","반려","취소"])).sum()) if (not _tr.empty and "apply_status" in _tr.columns) else 0)
+            s1,s2,s3=st.columns(3)
+            s1.metric("초과근무 누적시간",f"{_oth:g}시간")
+            s2.metric("출장비 누계",f"{_tc:,}원")
+            s3.metric("미처리 업무",f"{_pending}건")
             st.divider()
             a,b=st.columns(2)
             with a:
@@ -599,6 +610,14 @@ if active_tab == 0:
         _trp=int((~_tr["apply_status"].astype(str).isin(["승인","반려","취소"])).sum()) if (not _tr.empty and "apply_status" in _tr) else 0
         c1,c2,c3,c4=st.columns(4)
         c1.metric("직원",f"{len(_em)}명"); c2.metric("휴가 신청",f"{len(_lv)}건"); c3.metric("초과근무 미처리",f"{_otp}건"); c4.metric("출장 미처리",f"{_trp}건")
+        _aoth=0.0
+        if not _ot.empty:
+            _hc=next((c for c in ["hours","actual_hours","work_hours"] if c in _ot.columns),None)
+            if _hc: _aoth=pd.to_numeric(_ot[_hc],errors="coerce").fillna(0).sum()
+        _atc=int(pd.to_numeric(_tr["total_cost"],errors="coerce").fillna(0).sum()) if (not _tr.empty and "total_cost" in _tr.columns) else 0
+        x1,x2=st.columns(2)
+        x1.metric("초과근무 누적시간",f"{_aoth:g}시간")
+        x2.metric("출장비 누계",f"{_atc:,}원")
         st.divider()
         a,b=st.columns(2)
         with a:
