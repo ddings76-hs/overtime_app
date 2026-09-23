@@ -131,26 +131,128 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
-# 탭 구성 (tab1 ~ tab11)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
-    "👥 직원 등록 및 정보 관리", 
-    "📝 초과/휴일근무 신청", 
-    "✅ 초과근무 수행 입력 & 요약표", 
-    "🌴 연차 관리 & 전 직원 요약표",
-    "🖨️ 연차 신청서 출력",
-    "📊 통합 급여대장 (수정 및 엑셀)", 
-    "📄 개별 급여명세서 인쇄",
-    "🖨️ 통합 급여대장 인쇄",
-    "📑 월별 급여대장 총괄표",
-    "🚗 출장 신청·관리",
-    "📋 출장 복명·복무규정"
-])
+# -------------------------------------------------------------------
+# 통합 업무 메뉴 / UI
+# -------------------------------------------------------------------
+st.markdown("""
+<style>
+/* 전체 화면 폭과 기본 타이포 */
+.block-container {max-width: 1500px; padding-top: 1.5rem; padding-bottom: 3rem;}
+html, body, [class*="css"] {font-family: "Pretendard","Noto Sans KR","Malgun Gothic",sans-serif;}
+h1,h2,h3 {letter-spacing:-0.035em; color:#172033;}
+h1 {font-size:1.75rem!important;} h2 {font-size:1.45rem!important;} h3 {font-size:1.15rem!important;}
+
+/* 입력창 */
+div[data-baseweb="input"] > div,
+div[data-baseweb="select"] > div,
+div[data-baseweb="textarea"] > div {
+    border-radius:10px!important; border-color:#d9e0e8!important; background:#fff!important;
+}
+div[data-testid="stDateInput"] input, div[data-testid="stTimeInput"] input {border-radius:10px!important;}
+
+/* 버튼 */
+.stButton > button, .stDownloadButton > button {
+    border-radius:10px!important; min-height:40px; font-weight:650;
+    border:1px solid #d8dee8; box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.stButton > button[kind="primary"] {
+    background:#315efb!important; border-color:#315efb!important;
+}
+
+/* 데이터 표 */
+div[data-testid="stDataFrame"] {
+    border:1px solid #e4e9f0; border-radius:12px; overflow:hidden;
+    box-shadow:0 2px 8px rgba(16,24,40,.035);
+}
+
+/* Metric */
+div[data-testid="stMetric"] {
+    background:#fff; border:1px solid #e4e9f0; border-radius:12px;
+    padding:14px 16px; box-shadow:0 2px 8px rgba(16,24,40,.035);
+}
+div[data-testid="stMetricLabel"] {font-weight:650; color:#667085;}
+div[data-testid="stMetricValue"] {font-size:1.65rem; color:#172033;}
+
+/* 안내창 */
+div[data-testid="stAlert"] {border-radius:10px;}
+
+/* 구분선 */
+hr {margin:1.5rem 0; border-color:#edf0f4;}
+
+/* 사이드바 */
+section[data-testid="stSidebar"] {border-right:1px solid #e8ecf2;}
+section[data-testid="stSidebar"] .stRadio label {padding:.18rem 0;}
+section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.15rem;}
+
+/* 카드 */
+.ui-card {
+    background:#fff; border:1px solid #e4e9f0; border-radius:14px;
+    padding:16px 18px; box-shadow:0 2px 10px rgba(16,24,40,.035); margin-bottom:12px;
+}
+.ui-eyebrow {font-size:.78rem; color:#667085; font-weight:700; margin-bottom:4px;}
+.ui-title {font-size:1.12rem; font-weight:750; color:#172033;}
+.ui-desc {font-size:.88rem; color:#667085; margin-top:5px; line-height:1.55;}
+</style>
+""", unsafe_allow_html=True)
+
+MENU_GROUPS = {
+    "👥 인사": [
+        ("직원 관리", "직원 등록·정보 수정 및 기본 인사정보"),
+        ("연차 관리", "연차 발생·사용·잔여 현황 및 전 직원 요약"),
+        ("연차 신청서", "연차 신청서 조회·인쇄"),
+    ],
+    "⏱️ 근태": [
+        ("초과근무 신청", "초과·휴일근무 사전 신청"),
+        ("초과근무 실적", "실제 수행내역·승인·월별 급여 연계"),
+    ],
+    "💰 급여": [
+        ("통합 급여대장", "월 급여 계산·수정·확정 및 Excel"),
+        ("급여명세서", "직원별 급여명세서 조회·인쇄"),
+        ("급여대장 인쇄", "월별 통합 급여대장 인쇄"),
+        ("연간 급여총괄", "12개월 누적 급여대장 요약"),
+    ],
+    "🚗 출장": [
+        ("출장 신청·관리", "출장신청·승인·현황 관리"),
+        ("출장 복명·규정", "복명·여비정산·증빙·복무규정"),
+    ],
+}
+
+MENU_TO_TAB = {
+    "직원 관리": 1, "초과근무 신청": 2, "초과근무 실적": 3,
+    "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
+    "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
+    "출장 신청·관리": 10, "출장 복명·규정": 11,
+}
+
+with st.sidebar:
+    st.markdown("## 🏢 업무관리")
+    st.caption("화성시장기요양지원센터")
+    st.divider()
+    menu_group = st.radio("업무 영역", list(MENU_GROUPS.keys()), label_visibility="collapsed")
+    choices = [x[0] for x in MENU_GROUPS[menu_group]]
+    menu = st.radio("세부 메뉴", choices, label_visibility="collapsed")
+    desc = dict(MENU_GROUPS[menu_group])[menu]
+    st.caption(desc)
+    st.divider()
+    st.caption("급여 · 근태 · 연차 · 출장 통합관리")
+
+active_tab = MENU_TO_TAB[menu]
+
+# 현재 위치 표시
+st.markdown(
+    f"""<div class="ui-card">
+    <div class="ui-eyebrow">{menu_group.replace('👥 ','').replace('⏱️ ','').replace('💰 ','').replace('🚗 ','')} · 업무관리</div>
+    <div class="ui-title">{menu}</div>
+    <div class="ui-desc">{desc}</div>
+    </div>""",
+    unsafe_allow_html=True
+)
 
 # -------------------------------------------------------------------
 # TAB 1: 직원 등록 및 정보 관리
 # -------------------------------------------------------------------
-with tab1:
-    st.header("1. 직원 데이터 조회 및 편집")
+if active_tab == 1:
+    st.header("👥 직원 관리")
     try:
         emp_res = supabase.table("employees").select("*").execute()
         df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
@@ -290,7 +392,7 @@ with tab1:
 # -------------------------------------------------------------------
 # TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
-with tab2:
+if active_tab == 2:
     st.header("1. 초과근무 / 휴일근무 사전 신청")
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
@@ -345,7 +447,7 @@ with tab2:
 # -------------------------------------------------------------------
 # TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계 (전월 25일~당월 24일 기준)
 # -------------------------------------------------------------------
-with tab3:
+if active_tab == 3:
     st.header("✅ 실제 초과/휴일근무 수행 내역 입력 & 급여 연계")
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
@@ -759,7 +861,7 @@ with tab3:
 # -------------------------------------------------------------------
 # TAB 4: 개인별 연차 관리 & 전 직원 연차 요약표
 # -------------------------------------------------------------------
-with tab4:
+if active_tab == 4:
     st.header("🌴 개인별 연차 관리 & 전 직원 연차 요약표")
     
     emp_res = supabase.table("employees").select("*").execute()
@@ -894,7 +996,7 @@ with tab4:
 # -------------------------------------------------------------------
 # TAB 5: 연차 신청서 독립 출력 탭
 # -------------------------------------------------------------------
-with tab5:
+if active_tab == 5:
     st.header("🖨️ 휴가 (연차) 신청서 인쇄")
     
     l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
@@ -968,7 +1070,7 @@ with tab5:
 # -------------------------------------------------------------------
 # TAB 6: 통합 급여대장 (수정 및 엑셀)
 # -------------------------------------------------------------------
-with tab6:
+if active_tab == 6:
     st.header("📊 통합 급여대장 (수정 및 엑셀)")
 
     run_col1, run_col2, run_col3 = st.columns([1, 1, 2])
@@ -1408,7 +1510,7 @@ with tab6:
 # -------------------------------------------------------------------
 # TAB 7: 개별 급여명세서 인쇄
 # -------------------------------------------------------------------
-with tab7:
+if active_tab == 7:
     st.header("📄 개별 급여명세서 인쇄")
     
     emp_res = supabase.table("employees").select("*").execute()
@@ -1622,7 +1724,7 @@ with tab7:
 # -------------------------------------------------------------------
 # TAB 8: 통합 급여대장 인쇄
 # -------------------------------------------------------------------
-with tab8:
+if active_tab == 8:
     st.header("🖨️ 통합 급여대장 인쇄")
 
     print_col1, print_col2 = st.columns(2)
@@ -1842,7 +1944,7 @@ with tab8:
 # -------------------------------------------------------------------
 # TAB 9: 월별 급여대장 총괄표
 # -------------------------------------------------------------------
-with tab9:
+if active_tab == 9:
     st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
     
     c_y9 = st.selectbox("조회 연도 선택", range(datetime.now().year - 2, datetime.now().year + 3), index=2, key="annual_summary_year")
@@ -2055,8 +2157,8 @@ with tab9:
 # -------------------------------------------------------------------
 # TAB 10: 출장 신청·관리
 # -------------------------------------------------------------------
-with tab10:
-    st.header("🚗 출장 신청 및 관리")
+if active_tab == 10:
+    st.header("🚗 출장 신청·관리")
     st.caption("복무규정 제25조~제28조 및 여비관리 세칙 기준")
 
     with st.expander("📖 출장 관련 복무규정 바로보기", expanded=False):
@@ -2215,8 +2317,8 @@ with tab10:
 # -------------------------------------------------------------------
 # TAB 11: 출장 복명·복무규정
 # -------------------------------------------------------------------
-with tab11:
-    st.header("📋 출장 복명 · 여비정산 · 복무규정")
+if active_tab == 11:
+    st.header("📋 출장 복명·여비정산")
 
     try:
         trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
