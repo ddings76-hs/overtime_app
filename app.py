@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v13"
+APP_VERSION = "v14"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -190,9 +190,10 @@ ROLE_PERMISSIONS = {
         "attendance_write", "leave_write", "trip_write", "trip_approve",
         "trip_settle", "file_upload", "print_export"
     },
-    "viewer": {
-        "print_export"
+    "employee": {
+        "attendance_write", "leave_write", "trip_write", "file_upload", "print_export"
     },
+    "viewer": {"print_export"},
 }
 
 def has_permission(permission):
@@ -315,6 +316,20 @@ with st.sidebar:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
 
+def current_emp_id():
+    return str(CURRENT_META.get("emp_id", "") or "").strip()
+
+def is_employee_scope():
+    return CURRENT_ROLE == "employee"
+
+def scope_dataframe_to_current_employee(df, emp_col="emp_id"):
+    if not is_employee_scope() or df is None or df.empty:
+        return df
+    eid = current_emp_id()
+    if not eid or emp_col not in df.columns:
+        return df.iloc[0:0].copy()
+    return df[df[emp_col].astype(str).str.strip() == eid].copy()
+
 def write_audit_log(action, target_type="", target_id="", detail=""):
     """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
     try:
@@ -430,10 +445,11 @@ ROLE_ALLOWED_MENUS = {
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
         "출장 신청·관리", "출장 복명·규정"
     },
-    "viewer": {
-        "연차 신청서", "급여명세서", "급여대장 인쇄", "연간 급여총괄",
-        "출장 복명·규정"
+    "employee": {
+        "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
+        "급여명세서", "출장 신청·관리", "출장 복명·규정"
     },
+    "viewer": {"연차 신청서", "급여명세서", "출장 복명·규정"},
 }
 
 with st.sidebar:
@@ -494,6 +510,12 @@ active_tab = MENU_TO_TAB[menu]
 
 # 현재 위치 표시
 st.markdown(f"### 🏢 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
+if CURRENT_ROLE == "employee":
+    if current_emp_id():
+        st.caption(f"👤 직원 전용 화면 · 사번 {current_emp_id()} · 본인 자료만 조회/신청")
+    else:
+        st.error("이 계정에 직원 사번이 연결되어 있지 않습니다. 관리자에게 계정 연결을 요청해 주세요.")
+
 
 st.markdown(
     f"""<div class="ui-card">
@@ -3083,6 +3105,7 @@ if active_tab == 12:
             "권한": _role_label(str(meta.get("role", "employee"))),
             "role_code": str(meta.get("role", "employee")),
             "최근로그인": str(_auth_field(u, "last_sign_in_at", "") or ""),
+            "계정상태": "중지" if str(_auth_field(u, "banned_until", "") or "") else "사용",
         })
     _account_df = pd.DataFrame(account_rows)
 
@@ -3091,17 +3114,25 @@ if active_tab == 12:
     m2.metric("관리자", f"{int((_account_df['role_code']=='admin').sum()) if not _account_df.empty else 0}명")
     m3.metric("일반 직원", f"{int((_account_df['role_code']=='employee').sum()) if not _account_df.empty else 0}명")
 
+    if not _emp_df.empty:
+        linked_ids = set(_account_df["사번"].astype(str)) if not _account_df.empty else set()
+        _emp_link = _emp_df.copy()
+        _emp_link["계정연결"] = _emp_link["emp_id"].astype(str).apply(lambda x: "연결됨" if x in linked_ids else "미연결")
+        with st.expander("🔗 직원 ↔ 로그인 계정 연결 현황"):
+            _cols = [c for c in ["emp_id","emp_name","dept","position","계정연결"] if c in _emp_link.columns]
+            st.dataframe(_emp_link[_cols], use_container_width=True, hide_index=True)
+
     st.subheader("👤 직원 계정 현황")
     if _account_df.empty:
         st.info("등록된 로그인 계정이 없습니다.")
     else:
         st.dataframe(
-            _account_df[["이메일","이름","사번","권한","최근로그인"]],
+            _account_df[["이메일","이름","사번","권한","계정상태","최근로그인"]],
             use_container_width=True, hide_index=True
         )
 
     st.divider()
-    create_tab, role_tab, pw_tab = st.tabs(["➕ 계정 생성", "🛡️ 권한 변경", "🔑 비밀번호 초기화"])
+    create_tab, role_tab, pw_tab, status_tab = st.tabs(["➕ 계정 생성", "🛡️ 권한 변경", "🔑 비밀번호 초기화", "⏯️ 계정 사용·중지"])
 
     with create_tab:
         if _emp_df.empty:
@@ -3121,7 +3152,11 @@ if active_tab == 12:
             role_map = {"직원":"employee", "담당자":"manager", "조회자":"viewer", "관리자":"admin"}
 
             if st.button("계정 생성", type="primary", use_container_width=True, key="admin_create_btn"):
-                if not new_email.strip() or len(new_pw) < 8:
+                selected_emp_id = str(selected_emp.get("emp_id","")).strip()
+                existing_emp_ids = set(_account_df["사번"].astype(str)) if not _account_df.empty else set()
+                if selected_emp_id in existing_emp_ids:
+                    st.warning("이 직원은 이미 로그인 계정과 연결되어 있습니다.")
+                elif not new_email.strip() or len(new_pw) < 8:
                     st.warning("이메일을 입력하고 초기 비밀번호는 8자 이상으로 설정해 주세요.")
                 else:
                     try:
@@ -3211,6 +3246,37 @@ if active_tab == 12:
                         st.success("비밀번호 재설정 이메일을 발송했습니다.")
                     except Exception as e:
                         st.error(f"재설정 이메일 발송 실패: {e}")
+    with status_tab:
+        if _account_df.empty:
+            st.info("관리할 계정이 없습니다.")
+        else:
+            status_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_status_email")
+            status_row = _account_df[_account_df["이메일"] == status_email].iloc[0]
+            status_uid = status_row["user_id"]
+            current_status = status_row["계정상태"]
+            st.write(f"현재 상태: **{current_status}**")
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                if st.button("⛔ 계정 중지", use_container_width=True, disabled=(current_status=="중지" or status_email==CURRENT_EMAIL)):
+                    try:
+                        supabase_admin.auth.admin.update_user_by_id(status_uid, {"ban_duration":"876000h"})
+                        write_audit_log("계정 중지", "auth.users", status_uid, status_email)
+                        st.success("계정 사용을 중지했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 중지 실패: {e}")
+            with sc2:
+                if st.button("▶️ 계정 사용", use_container_width=True, disabled=(current_status=="사용")):
+                    try:
+                        supabase_admin.auth.admin.update_user_by_id(status_uid, {"ban_duration":"none"})
+                        write_audit_log("계정 사용 재개", "auth.users", status_uid, status_email)
+                        st.success("계정을 다시 사용할 수 있습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 사용 재개 실패: {e}")
+            if status_email == CURRENT_EMAIL:
+                st.caption("현재 로그인 중인 관리자 본인 계정은 중지할 수 없도록 보호됩니다.")
+
 
 # -------------------------------------------------------------------
 # 모든 업무화면 공통 하단 회사 로고
