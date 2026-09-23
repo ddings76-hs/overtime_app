@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v17"
+APP_VERSION = "v17.1.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -543,7 +543,7 @@ st.markdown(
 )
 
 # -------------------------------------------------------------------
-# TAB 0: v17 직원 마이페이지 / 관리자 통합 대시보드
+# TAB 0: v17.1 직원 마이페이지 / 관리자 통합 대시보드
 # -------------------------------------------------------------------
 if active_tab == 0:
     if CURRENT_ROLE == "employee":
@@ -2574,6 +2574,7 @@ if active_tab == 10:
     emp_trip_res = supabase.table("employees").select("*").execute()
     df_trip_emp = pd.DataFrame(emp_trip_res.data) if emp_trip_res.data else pd.DataFrame()
 
+    df_trip_emp = scope_employee_master(df_trip_emp)
     st.subheader("📝 출장 신청")
     if df_trip_emp.empty:
         st.info("직원 데이터가 없습니다.")
