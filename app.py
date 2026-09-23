@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 from datetime import datetime, time, timedelta
@@ -118,7 +119,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 통합 급여·초과근무·연차 관리 시스템")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -137,10 +138,10 @@ with st.sidebar:
 st.markdown("""
 <style>
 /* 전체 화면 폭과 기본 타이포 */
-.block-container {max-width: 1500px; padding-top: 1.5rem; padding-bottom: 3rem;}
+.block-container {max-width: 1500px; padding-top: 4.5rem; padding-bottom: 3rem;}
 html, body, [class*="css"] {font-family: "Pretendard","Noto Sans KR","Malgun Gothic",sans-serif;}
 h1,h2,h3 {letter-spacing:-0.035em; color:#172033;}
-h1 {font-size:1.75rem!important;} h2 {font-size:1.45rem!important;} h3 {font-size:1.15rem!important;}
+h1 {font-size:1.75rem!important; line-height:1.35!important; margin-top:0!important; padding-top:.15rem!important;} h2 {font-size:1.45rem!important;} h3 {font-size:1.15rem!important;}
 
 /* 입력창 */
 div[data-baseweb="input"] > div,
@@ -2195,20 +2196,25 @@ if active_tab == 10:
     if df_trip_emp.empty:
         st.info("직원 데이터가 없습니다.")
     else:
+        # employees 실제 스키마(emp_name, dept)에 맞춰 출장자 연계
         emp_opts = {
-            f"{r.get('name','')} ({r.get('emp_id','')})": r
+            f"{str(r.get('emp_name','')).strip()} ({str(r.get('emp_id','')).strip()})": r
             for _, r in df_trip_emp.iterrows()
+            if str(r.get("emp_name","")).strip()
         }
+        if not emp_opts:
+            st.warning("직원 DB의 emp_name 컬럼에서 출장자를 찾지 못했습니다.")
+            st.stop()
         trip_emp_key = st.selectbox("출장자", list(emp_opts.keys()), key="trip_emp")
         trip_emp = emp_opts[trip_emp_key]
 
         tc1, tc2, tc3 = st.columns(3)
         with tc1:
-            st.text_input("성명", value=str(trip_emp.get("name","")), disabled=True)
+            st.text_input("성명", value=str(trip_emp.get("emp_name","")), disabled=True)
         with tc2:
             st.text_input("직위", value=str(trip_emp.get("position","")), disabled=True)
         with tc3:
-            st.text_input("부서", value=str(trip_emp.get("department","")), disabled=True)
+            st.text_input("부서", value=str(trip_emp.get("dept","")), disabled=True)
 
         trip_type = st.radio("출장 구분", ["일반출장", "교육·연수출장"], horizontal=True)
         purpose = st.text_input("출장목적", placeholder="예: 장기요양기관 회계 교육 참석")
@@ -2266,8 +2272,8 @@ if active_tab == 10:
             else:
                 payload = {
                     "emp_id": str(trip_emp.get("emp_id","")),
-                    "emp_name": str(trip_emp.get("name","")),
-                    "department": str(trip_emp.get("department","")),
+                    "emp_name": str(trip_emp.get("emp_name","")),
+                    "department": str(trip_emp.get("dept","")),
                     "position": str(trip_emp.get("position","")),
                     "trip_type": trip_type,
                     "purpose": purpose,
@@ -2288,6 +2294,22 @@ if active_tab == 10:
                 st.rerun()
 
     st.divider()
+    # 과거 출장자료의 빈 이름/부서는 emp_id 기준으로 화면에서 자동 보정
+    if trip_table_ok and not df_trips.empty and not df_trip_emp.empty and "emp_id" in df_trips.columns:
+        emp_lookup = df_trip_emp.set_index(df_trip_emp["emp_id"].astype(str))
+        for idx, tr in df_trips.iterrows():
+            eid = str(tr.get("emp_id",""))
+            if eid in emp_lookup.index:
+                er = emp_lookup.loc[eid]
+                if isinstance(er, pd.DataFrame):
+                    er = er.iloc[0]
+                if not str(tr.get("emp_name","") or "").strip():
+                    df_trips.at[idx, "emp_name"] = str(er.get("emp_name",""))
+                if not str(tr.get("department","") or "").strip():
+                    df_trips.at[idx, "department"] = str(er.get("dept",""))
+                if not str(tr.get("position","") or "").strip():
+                    df_trips.at[idx, "position"] = str(er.get("position",""))
+
     st.subheader("📊 출장 현황 / 승인 관리")
     if trip_table_ok and not df_trips.empty:
         show_cols = [c for c in ["id","start_at","emp_name","position","purpose","destination","transport_type",
@@ -2481,28 +2503,33 @@ if active_tab == 11:
         <div class="paper">
           <div style="font-size:11px;margin-bottom:4px;">[서식 제1호]</div>
           <table class="form-table">
-            <tr><td colspan="6" class="title">출장신청서</td></tr>
+            <tr><td colspan="7" class="title">출장신청서</td></tr>
             <tr>
               <td colspan="3" rowspan="2"></td>
               <td rowspan="2" class="label" style="width:7%;">결<br>재</td>
-              <td class="label">주임</td><td class="label">대리 / 센터장</td>
+              <td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td>
             </tr>
-            <tr><td style="height:42px;"></td><td></td></tr>
+            <tr><td style="height:42px;"></td><td></td><td></td></tr>
             <tr>
               <td class="label" style="width:16%;">성 명</td>
               <td class="center">{pr.get('emp_name','')}</td>
               <td class="label">직 위</td>
-              <td colspan="3" class="center">{pr.get('position','')}</td>
+              <td colspan="4" class="center">{pr.get('position','')}</td>
             </tr>
-            <tr><td class="label">출장목적</td><td colspan="5">{pr.get('purpose','')}</td></tr>
-            <tr><td class="label">출장시간</td><td colspan="5" class="center">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
-            <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">부 서</td><td colspan="2">{pr.get('department','')}</td></tr>
+            <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+            <tr><td class="label">출장시간</td><td colspan="6" class="center">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+            <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">부 서</td><td colspan="3">{pr.get('department','')}</td></tr>
             <tr>
               <td class="label">이동사항</td>
               <td colspan="2" class="center">{pr.get('transport_type','')}</td>
               <td class="label">거리구분</td>
-              <td colspan="2" class="center">{float(pr.get('distance_km',0) or 0):,.1f} km</td>
+              <td colspan="3" class="center">{float(pr.get('distance_km',0) or 0):,.1f} km</td>
             </tr>
+          <tr><td colspan="7" class="sign" style="text-align:center;line-height:1.8;padding:12px;">
+              위와 같이 출장을 신청합니다.<br>
+              {pd.to_datetime(pr.get('start_at')).strftime('%Y년 %m월 %d일') if pr.get('start_at') else ''}<br>
+              신청자 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)
+            </td></tr>
           </table>
           <div class="notice">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
         </div>
@@ -2529,18 +2556,18 @@ if active_tab == 11:
         <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장복명서 인쇄</button></div>
         <div class="paper">
         <table>
-          <tr><td colspan="6" class="title">출장복명서</td></tr>
-          <tr><td colspan="3" rowspan="2"></td><td rowspan="2" class="label">결<br>재</td><td class="label">주임</td><td class="label">대리 / 센터장</td></tr>
-          <tr><td style="height:36px"></td><td></td></tr>
-          <tr><td class="label">성 명</td><td>{pr.get('emp_name','')}</td><td class="label">직 위</td><td colspan="3">{pr.get('position','')}</td></tr>
-          <tr><td class="label">출장목적</td><td colspan="5">{pr.get('purpose','')}</td></tr>
-          <tr><td class="label">참 석 자</td><td colspan="5">{pr.get('participants','')}</td></tr>
-          <tr><td class="label">출장시간</td><td colspan="5">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
-          <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="2">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
-          <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="2">{pr.get('settlement_status','')}</td></tr>
-          <tr><td class="label">출장 보고<br>내용</td><td colspan="5" class="report">{report_text}</td></tr>
-          <tr><td class="label">출장 사진</td><td colspan="5" class="photo">첨부 사진 출력 영역</td></tr>
-          <tr><td colspan="6" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
+          <tr><td colspan="7" class="title">출장복명서</td></tr>
+          <tr><td colspan="3" rowspan="2"></td><td rowspan="2" class="label">결<br>재</td><td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td></tr>
+          <tr><td style="height:36px"></td><td></td><td></td></tr>
+          <tr><td class="label">성 명</td><td>{pr.get('emp_name','')}</td><td class="label">직 위</td><td colspan="4">{pr.get('position','')}</td></tr>
+          <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+          <tr><td class="label">참 석 자</td><td colspan="6">{pr.get('participants','')}</td></tr>
+          <tr><td class="label">출장시간</td><td colspan="6">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+          <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
+          <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
+          <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
+          <tr><td class="label">출장 사진</td><td colspan="6" class="photo">첨부 사진 출력 영역</td></tr>
+          <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
         </table>
         <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
         </div>
@@ -2587,6 +2614,7 @@ if active_tab == 11:
                         ok += 1
                     except Exception as e:
                         fail += 1
+                        st.error(f"'{uf.name}' 업로드 실패: {str(e)}")
                 if ok:
                     st.success(f"{ok}개 파일을 저장했습니다.")
                 if fail:
