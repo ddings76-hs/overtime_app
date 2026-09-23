@@ -2601,53 +2601,46 @@ if active_tab == 11:
             if not uploaded_trip_files:
                 st.warning("업로드할 파일을 선택해 주세요.")
             else:
-                # Storage 버킷이 실제 생성되어 있는지 먼저 확인
-                bucket_ready = False
-                try:
-                    buckets = supabase.storage.list_buckets()
-                    bucket_names = []
-                    for b in buckets:
-                        if isinstance(b, dict):
-                            bucket_names.append(str(b.get("name", "")))
-                        else:
-                            bucket_names.append(str(getattr(b, "name", "")))
-                    bucket_ready = TRIP_STORAGE_BUCKET in bucket_names
-                except Exception:
-                    # list_buckets 권한이 제한된 경우 실제 업로드에서 최종 확인
-                    bucket_ready = True
-
-                if not bucket_ready:
-                    st.error(
-                        f"Supabase Storage에 '{TRIP_STORAGE_BUCKET}' 버킷이 없습니다. "
-                        "Supabase → Storage → New bucket에서 동일한 이름으로 버킷을 먼저 생성해 주세요."
-                    )
-                    st.info("버킷명은 정확히 business-trip-files 입니다. SQL 테이블 생성만으로 Storage 버킷은 자동 생성되지 않습니다.")
-                else:
-                    ok, fail = 0, 0
-                    for uf in uploaded_trip_files:
-                        safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]", "_", uf.name)
-                        storage_path = f"{file_trip_id}/{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
-                        try:
-                            supabase.storage.from_(TRIP_STORAGE_BUCKET).upload(
-                                storage_path,
-                                uf.getvalue(),
-                                {"content-type": uf.type, "upsert": "false"}
+                # 버킷 목록 조회는 anon 권한에서 실제 버킷이 있어도 빈 목록이 반환될 수 있으므로
+                # 사전 존재검사를 하지 않고 실제 업로드 결과로 판단합니다.
+                ok, fail = 0, 0
+                for uf in uploaded_trip_files:
+                    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]", "_", uf.name)
+                    storage_path = f"{file_trip_id}/{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+                    try:
+                        supabase.storage.from_(TRIP_STORAGE_BUCKET).upload(
+                            storage_path,
+                            uf.getvalue(),
+                            {"content-type": uf.type, "upsert": "false"}
+                        )
+                        supabase.table("business_trip_files").insert({
+                            "trip_id": int(file_trip_id),
+                            "file_type": file_type,
+                            "file_name": uf.name,
+                            "storage_path": storage_path
+                        }).execute()
+                        ok += 1
+                    except Exception as e:
+                        fail += 1
+                        err = str(e)
+                        if "row-level security" in err.lower() or "unauthorized" in err.lower() or "403" in err:
+                            st.error(
+                                f"'{uf.name}' 업로드 실패: Storage 업로드 권한이 없습니다. "
+                                "Supabase의 storage.objects 정책을 적용해 주세요."
                             )
-                            supabase.table("business_trip_files").insert({
-                                "trip_id": int(file_trip_id),
-                                "file_type": file_type,
-                                "file_name": uf.name,
-                                "storage_path": storage_path
-                            }).execute()
-                            ok += 1
-                        except Exception as e:
-                            fail += 1
-                            st.error(f"'{uf.name}' 업로드 실패: {str(e)}")
-                    if ok:
-                        st.success(f"{ok}개 파일을 저장했습니다.")
-                    if fail:
-                        st.warning(f"{fail}개 파일은 저장하지 못했습니다. Storage 버킷/정책을 확인해 주세요.")
+                        elif "Bucket not found" in err or "404" in err:
+                            st.error(
+                                f"'{uf.name}' 업로드 실패: 앱이 연결된 Supabase 프로젝트에서 "
+                                f"'{TRIP_STORAGE_BUCKET}' 버킷을 찾지 못했습니다. "
+                                "현재 앱의 SUPABASE_URL과 버킷을 만든 프로젝트가 같은지 확인해 주세요."
+                            )
+                        else:
+                            st.error(f"'{uf.name}' 업로드 실패: {err}")
 
+                if ok:
+                    st.success(f"✅ {ok}개 출장 증빙파일을 저장했습니다.")
+                if fail:
+                    st.warning(f"⚠️ {fail}개 파일 업로드에 실패했습니다.")
         try:
             f_res = supabase.table("business_trip_files").select("*").eq("trip_id", int(file_trip_id)).order("id", desc=True).execute()
             df_files = pd.DataFrame(f_res.data) if f_res.data else pd.DataFrame()
