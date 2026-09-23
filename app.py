@@ -31,6 +31,102 @@ except Exception as e:
     st.error("Supabase 연결 실패! Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY가 정상 설정되었는지 확인이 필요하다.")
     st.stop()
 
+
+# -------------------------------------------------------------------
+# 로그인 / 사용자 권한 (Supabase Authentication)
+# -------------------------------------------------------------------
+def _auth_user_obj(response):
+    if response is None:
+        return None
+    if hasattr(response, "user"):
+        return response.user
+    if isinstance(response, dict):
+        return response.get("user")
+    return None
+
+def _user_value(user, key, default=""):
+    if user is None:
+        return default
+    if isinstance(user, dict):
+        return user.get(key, default)
+    return getattr(user, key, default)
+
+def _user_metadata(user):
+    meta = _user_value(user, "user_metadata", {})
+    return meta if isinstance(meta, dict) else {}
+
+def _role_label(role):
+    return {"admin":"관리자", "manager":"담당자", "viewer":"조회자"}.get(role, role or "사용자")
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "auth_role" not in st.session_state:
+    st.session_state.auth_role = "viewer"
+
+# Streamlit 재실행 시 Supabase Auth 세션 복구
+if st.session_state.auth_user is None:
+    try:
+        session_res = supabase.auth.get_session()
+        session = getattr(session_res, "session", session_res)
+        session_user = getattr(session, "user", None) if session else None
+        if session_user:
+            st.session_state.auth_user = session_user
+            st.session_state.auth_role = str(_user_metadata(session_user).get("role", "viewer"))
+    except Exception:
+        pass
+
+# 인증 전에는 업무화면/DB 내용을 표시하지 않음
+if st.session_state.auth_user is None:
+    st.markdown("""
+    <style>
+    .block-container {max-width:560px!important;padding-top:7vh!important;}
+    .login-brand{text-align:center;margin:0 0 24px;}
+    .login-brand h1{font-size:1.75rem!important;color:#172033;margin-bottom:5px;}
+    .login-brand p{color:#667085;margin:0;}
+    div[data-testid="stForm"]{
+      background:#fff;border:1px solid #e4e9f0;border-radius:16px;
+      padding:24px;box-shadow:0 8px 28px rgba(16,24,40,.07);
+    }
+    </style>
+    <div class="login-brand">
+      <h1>🏢 화성시장기요양지원센터</h1>
+      <p>통합 업무관리 시스템</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("login_form"):
+        st.subheader("로그인")
+        login_email = st.text_input("이메일", placeholder="name@example.com")
+        login_password = st.text_input("비밀번호", type="password")
+        submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
+
+    if submitted:
+        if not login_email.strip() or not login_password:
+            st.warning("이메일과 비밀번호를 입력해 주세요.")
+        else:
+            try:
+                result = supabase.auth.sign_in_with_password({
+                    "email": login_email.strip(),
+                    "password": login_password
+                })
+                user = _auth_user_obj(result)
+                if user is None:
+                    raise RuntimeError("사용자 정보 없음")
+                st.session_state.auth_user = user
+                st.session_state.auth_role = str(_user_metadata(user).get("role", "viewer"))
+                st.rerun()
+            except Exception:
+                st.error("로그인에 실패했습니다. 이메일 또는 비밀번호를 확인해 주세요.")
+
+    st.caption("계정 발급 및 권한 변경은 시스템 관리자가 처리합니다.")
+    st.stop()
+
+CURRENT_USER = st.session_state.auth_user
+CURRENT_EMAIL = str(_user_value(CURRENT_USER, "email", ""))
+CURRENT_META = _user_metadata(CURRENT_USER)
+CURRENT_ROLE = str(st.session_state.get("auth_role", CURRENT_META.get("role", "viewer")))
+CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
+
 def truncate_ten(value):
     return int(value // 10) * 10
 
@@ -236,6 +332,22 @@ MENU_TO_TAB = {
 with st.sidebar:
     st.markdown("## 🏢 업무관리")
     st.caption("화성시장기요양지원센터")
+    st.markdown(
+        f"""<div style="padding:10px 12px;background:#f7f9fc;border:1px solid #e6eaf0;border-radius:10px;margin:10px 0 12px;">
+        <div style="font-weight:700;">👤 {CURRENT_NAME}</div>
+        <div style="font-size:.78rem;color:#667085;margin-top:3px;">{CURRENT_EMAIL}</div>
+        <div style="font-size:.78rem;color:#315efb;margin-top:3px;">{_role_label(CURRENT_ROLE)}</div>
+        </div>""",
+        unsafe_allow_html=True
+    )
+    if st.button("🚪 로그아웃", use_container_width=True):
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+        st.session_state.auth_user = None
+        st.session_state.auth_role = "viewer"
+        st.rerun()
     st.divider()
     menu_group = st.radio("업무 영역", list(MENU_GROUPS.keys()), label_visibility="collapsed")
     choices = [x[0] for x in MENU_GROUPS[menu_group]]
