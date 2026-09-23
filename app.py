@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v16.1.1"
+APP_VERSION = "v17"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -63,7 +63,7 @@ def _user_metadata(user):
     return meta if isinstance(meta, dict) else {}
 
 def _role_label(role):
-    return {"admin":"관리자", "manager":"담당자", "director":"센터장", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
+    return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -182,18 +182,22 @@ def company_logo_data_uri():
 # 역할별 앱 권한
 ROLE_PERMISSIONS = {
     "admin": {
+        "대시보드",
         "employee_write", "attendance_write", "leave_write", "payroll_write",
         "payroll_confirm", "trip_write", "trip_approve", "trip_settle",
         "file_upload", "file_delete", "print_export"
     },
     "manager": {
+        "대시보드",
         "attendance_write", "leave_write", "trip_write", "trip_approve",
         "trip_settle", "file_upload", "print_export"
     },
     "employee": {
+        "대시보드",
         "attendance_write", "leave_write", "trip_write", "file_upload", "print_export"
     },
-    "viewer": {"print_export"},
+    "viewer": {
+        "대시보드","print_export"},
 }
 
 def has_permission(permission):
@@ -338,83 +342,6 @@ def scope_employee_master(df):
 def can_manage_all_records():
     return CURRENT_ROLE in ("admin", "manager")
 
-
-APPROVAL_STAGE_LABELS = {
-    "staff": "담당",
-    "deputy": "대리",
-    "director": "센터장",
-}
-
-def can_approve_stage(stage):
-    """v16.1 결재권한: admin은 전체, manager는 담당/대리, director role은 센터장."""
-    if CURRENT_ROLE == "admin":
-        return True
-    if stage in ("staff", "deputy") and CURRENT_ROLE == "manager":
-        return True
-    if stage == "director" and CURRENT_ROLE == "director":
-        return True
-    return False
-
-def approval_badge(value):
-    value = str(value or "대기")
-    return {"승인":"✅ 승인", "반려":"↩️ 반려", "대기":"⏳ 대기"}.get(value, value)
-
-
-def get_approval_state(doc_type, doc_id):
-    try:
-        res = supabase.table("approval_records").select("*").eq("doc_type", doc_type).eq("doc_id", str(doc_id)).execute()
-        rows = res.data or []
-        return {r["stage"]: r for r in rows}
-    except Exception:
-        return {}
-
-def set_approval_state(doc_type, doc_id, stage, decision, note=""):
-    if not can_approve_stage(stage):
-        st.warning("이 결재단계를 처리할 권한이 없습니다.")
-        return False
-    payload = {
-        "doc_type": doc_type,
-        "doc_id": str(doc_id),
-        "stage": stage,
-        "decision": decision,
-        "approver_id": str(_user_value(CURRENT_USER, "id", "")),
-        "approver_email": CURRENT_EMAIL,
-        "approver_name": CURRENT_NAME,
-        "note": note,
-        "approved_at": datetime.now().isoformat(),
-    }
-    try:
-        # 기존 행을 먼저 확인한 뒤 UPDATE/INSERT.
-        # DB에 unique constraint가 누락된 경우에도 결재가 동작하도록 upsert 의존성을 제거함.
-        existing = (
-            supabase.table("approval_records")
-            .select("id")
-            .eq("doc_type", doc_type)
-            .eq("doc_id", str(doc_id))
-            .eq("stage", stage)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            (
-                supabase.table("approval_records")
-                .update(payload)
-                .eq("id", existing.data[0]["id"])
-                .execute()
-            )
-        else:
-            supabase.table("approval_records").insert(payload).execute()
-
-        write_audit_log(
-            f"{doc_type} {APPROVAL_STAGE_LABELS.get(stage,stage)} {decision}",
-            doc_type, doc_id, note
-        )
-        return True
-    except Exception as e:
-        st.error("결재 저장에 실패했습니다. v16.1.1 DB 보정 SQL 적용 여부와 계정 권한을 확인해 주세요.")
-        st.caption(f"오류 유형: {type(e).__name__}")
-        return False
-
 def write_audit_log(action, target_type="", target_id="", detail=""):
     """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
     try:
@@ -495,6 +422,9 @@ section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.15rem;}
 """, unsafe_allow_html=True)
 
 MENU_GROUPS = {
+    "🏠 홈": [
+        ("대시보드", "나의 업무현황 또는 관리자 통합현황"),
+    ],
     "👥 인사": [
         ("직원 관리", "직원 등록·정보 수정 및 기본 인사정보"),
         ("연차 관리", "연차 발생·사용·잔여 현황 및 전 직원 요약"),
@@ -518,6 +448,7 @@ MENU_GROUPS = {
 }
 
 MENU_TO_TAB = {
+    "대시보드": 0,
     "직원 관리": 1, "초과근무 신청": 2, "초과근무 실적": 3,
     "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
     "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
@@ -533,10 +464,6 @@ ROLE_ALLOWED_MENUS = {
     "employee": {
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
         "급여명세서", "출장 신청·관리", "출장 복명·규정"
-    },
-    "director": {
-        "초과근무 실적", "연차 관리", "연차 신청서",
-        "출장 신청·관리", "출장 복명·규정"
     },
     "viewer": {"연차 신청서", "급여명세서", "출장 복명·규정"},
 }
@@ -608,12 +535,93 @@ if CURRENT_ROLE == "employee":
 
 st.markdown(
     f"""<div class="ui-card">
-    <div class="ui-eyebrow">{menu_group.replace('👥 ','').replace('⏱️ ','').replace('💰 ','').replace('🚗 ','')} · 업무관리</div>
+    <div class="ui-eyebrow">{menu_group.replace('👥 ','').replace('⏱️ ','').replace('💰 ','').replace('🚗 ','').replace('🏠 ','')} · 업무관리</div>
     <div class="ui-title">{menu}</div>
     <div class="ui-desc">{desc}</div>
     </div>""",
     unsafe_allow_html=True
 )
+
+# -------------------------------------------------------------------
+# TAB 0: v17 직원 마이페이지 / 관리자 통합 대시보드
+# -------------------------------------------------------------------
+if active_tab == 0:
+    if CURRENT_ROLE == "employee":
+        st.header("👤 나의 업무 현황")
+        _eid=current_emp_id()
+        if not _eid:
+            st.warning("로그인 계정과 직원 사번이 연결되어 있지 않습니다.")
+        else:
+            try:
+                _me=(supabase.table("employees").select("*").eq("emp_id",_eid).limit(1).execute().data or [{}])[0]
+            except Exception: _me={}
+            st.subheader(f"{_me.get('emp_name',CURRENT_NAME)} 님")
+            st.caption(f"{_me.get('dept','')} · {_me.get('position','')} · 사번 {_eid}")
+
+            def _my_df(table):
+                try: return pd.DataFrame(supabase.table(table).select("*").eq("emp_id",_eid).execute().data or [])
+                except Exception: return pd.DataFrame()
+            _lv=_my_df("leave_records"); _ot=_my_df("overtime_records"); _tr=_my_df("business_trips")
+            _used=pd.to_numeric(_lv["used_days"],errors="coerce").fillna(0).sum() if (not _lv.empty and "used_days" in _lv) else 0
+            _month=datetime.now().strftime("%Y-%m")
+            _dc=next((c for c in ["work_date","ot_date","date"] if c in _ot.columns),None)
+            _otm=int(_ot[_ot[_dc].astype(str).str.startswith(_month)].shape[0]) if _dc else 0
+            c1,c2,c3=st.columns(3)
+            c1.metric("누적 휴가 사용",f"{_used:g}일"); c2.metric("이번 달 초과근무",f"{_otm}건"); c3.metric("출장 기록",f"{len(_tr)}건")
+            st.divider()
+            a,b=st.columns(2)
+            with a:
+                st.subheader("🌴 최근 휴가")
+                if _lv.empty: st.info("휴가 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["start_date","end_date","leave_type","used_days"] if c in _lv.columns]
+                    st.dataframe((_lv.sort_values("id",ascending=False).head(5) if "id" in _lv else _lv.tail(5))[cs],use_container_width=True,hide_index=True)
+                st.subheader("⏱️ 최근 초과근무")
+                if _ot.empty: st.info("초과근무 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["work_date","ot_date","hours","status"] if c in _ot.columns]
+                    st.dataframe((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
+            with b:
+                st.subheader("🚗 최근 출장")
+                if _tr.empty: st.info("출장 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["start_at","end_at","destination","purpose","apply_status"] if c in _tr.columns]
+                    st.dataframe((_tr.sort_values("id",ascending=False).head(5) if "id" in _tr else _tr.tail(5))[cs],use_container_width=True,hide_index=True)
+                st.subheader("💰 급여")
+                st.info("좌측 ‘급여명세서’ 메뉴에서 본인 급여명세서를 확인하세요.")
+    else:
+        st.header("📊 관리자 통합 대시보드")
+        def _all_df(table):
+            try: return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
+            except Exception: return pd.DataFrame()
+        _em=_all_df("employees"); _lv=_all_df("leave_records"); _ot=_all_df("overtime_records"); _tr=_all_df("business_trips")
+        _otp=int((~_ot["status"].astype(str).isin(["승인","반려"])).sum()) if (not _ot.empty and "status" in _ot) else 0
+        _trp=int((~_tr["apply_status"].astype(str).isin(["승인","반려","취소"])).sum()) if (not _tr.empty and "apply_status" in _tr) else 0
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("직원",f"{len(_em)}명"); c2.metric("휴가 신청",f"{len(_lv)}건"); c3.metric("초과근무 미처리",f"{_otp}건"); c4.metric("출장 미처리",f"{_trp}건")
+        st.divider()
+        a,b=st.columns(2)
+        with a:
+            st.subheader("🌴 최근 휴가")
+            if not _lv.empty:
+                cs=[c for c in ["emp_name","start_date","end_date","leave_type","used_days"] if c in _lv.columns]
+                st.dataframe((_lv.sort_values("id",ascending=False).head(8) if "id" in _lv else _lv.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("휴가 신청이 없습니다.")
+            st.subheader("⏱️ 최근 초과근무")
+            if not _ot.empty:
+                cs=[c for c in ["emp_name","work_date","ot_date","hours","status"] if c in _ot.columns]
+                st.dataframe((_ot.sort_values("id",ascending=False).head(8) if "id" in _ot else _ot.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("초과근무가 없습니다.")
+        with b:
+            st.subheader("🚗 최근 출장")
+            if not _tr.empty:
+                cs=[c for c in ["emp_name","destination","start_at","end_at","apply_status"] if c in _tr.columns]
+                st.dataframe((_tr.sort_values("id",ascending=False).head(8) if "id" in _tr else _tr.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("출장 내역이 없습니다.")
+            st.subheader("👥 부서별 인원")
+            if not _em.empty and "dept" in _em.columns:
+                st.dataframe(_em.groupby("dept").size().reset_index(name="인원"),use_container_width=True,hide_index=True)
+            else: st.info("직원 데이터가 없습니다.")
 
 # -------------------------------------------------------------------
 # TAB 1: 직원 등록 및 정보 관리
@@ -923,9 +931,7 @@ if active_tab == 3:
                         <th style="width: 65px;">센터장</th>
                     </tr>
                     <tr style="height: 50px;">
-                        <td>{_staff_ap.get("approver_name","")}<br>{_staff_ap.get("decision","")}</td>
-                        <td>{_deputy_ap.get("approver_name","")}<br>{_deputy_ap.get("decision","")}</td>
-                        <td>{_director_ap.get("approver_name","")}<br>{_director_ap.get("decision","")}</td>
+                        <td></td><td></td><td></td>
                     </tr>
                 </table>
             </div>
@@ -1375,8 +1381,6 @@ if active_tab == 5:
     
     l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
     df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
-    # 직원 계정은 본인의 휴가 신청서만 조회/인쇄
-    df_leave_records = scope_dataframe_to_current_employee(df_leave_records)
 
     if df_leave_records.empty:
         st.info("등록된 연차/휴가 신청 내역이 없다.")
@@ -1384,10 +1388,6 @@ if active_tab == 5:
         leave_options = [f"[{r['start_date']}] {r['emp_name']} {r['position']} - {r['leave_type']}" for _, r in df_leave_records.iterrows()]
         selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
         target_l = df_leave_records.iloc[selected_l_index]
-        _leave_approvals = get_approval_state("leave", target_l["id"])
-        _staff_ap = _leave_approvals.get("staff", {})
-        _deputy_ap = _leave_approvals.get("deputy", {})
-        _director_ap = _leave_approvals.get("director", {})
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
@@ -1446,26 +1446,6 @@ if active_tab == 5:
         </div>
         """
         st.components.v1.html(leave_template, height=560, scrolling=True)
-        if CURRENT_ROLE in ("admin", "manager", "director"):
-            st.subheader("전자결재")
-            apc1, apc2, apc3 = st.columns(3)
-            for _col, _stage in zip((apc1, apc2, apc3), ("staff","deputy","director")):
-                with _col:
-                    _r = _leave_approvals.get(_stage, {})
-                    st.markdown(f"**{APPROVAL_STAGE_LABELS[_stage]}**")
-                    st.caption(f"현재: {approval_badge(_r.get('decision','대기'))}")
-                    if can_approve_stage(_stage):
-                        _note = st.text_input("의견", key=f"leave_note_{target_l['id']}_{_stage}")
-                        b1, b2 = st.columns(2)
-                        with b1:
-                            if st.button("승인", key=f"leave_ok_{target_l['id']}_{_stage}", use_container_width=True):
-                                set_approval_state("leave", target_l["id"], _stage, "승인", _note)
-                                st.rerun()
-                        with b2:
-                            if st.button("반려", key=f"leave_no_{target_l['id']}_{_stage}", use_container_width=True):
-                                set_approval_state("leave", target_l["id"], _stage, "반려", _note)
-                                st.rerun()
-
 
 # -------------------------------------------------------------------
 # TAB 6: 통합 급여대장 (수정 및 엑셀)
@@ -3271,8 +3251,8 @@ if active_tab == 12:
             new_email = st.text_input("로그인 이메일", key="admin_create_email")
             new_pw = st.text_input("초기 비밀번호", type="password", key="admin_create_pw",
                                    help="직원에게 전달할 임시 비밀번호입니다. 8자 이상을 권장합니다.")
-            new_role_label = st.selectbox("권한", ["직원", "담당자", "센터장", "조회자", "관리자"], key="admin_create_role")
-            role_map = {"직원":"employee", "담당자":"manager", "센터장":"director", "조회자":"viewer", "관리자":"admin"}
+            new_role_label = st.selectbox("권한", ["직원", "담당자", "조회자", "관리자"], key="admin_create_role")
+            role_map = {"직원":"employee", "담당자":"manager", "조회자":"viewer", "관리자":"admin"}
 
             if st.button("계정 생성", type="primary", use_container_width=True, key="admin_create_btn"):
                 selected_emp_id = str(selected_emp.get("emp_id","")).strip()
@@ -3313,7 +3293,7 @@ if active_tab == 12:
             role_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_role_email")
             row = _account_df[_account_df["이메일"] == role_email].iloc[0]
             target_uid = row["user_id"]
-            role_label_map = {"employee":"직원","manager":"담당자","director":"센터장","viewer":"조회자","admin":"관리자"}
+            role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
             labels = ["직원","담당자","조회자","관리자"]
             current_label = role_label_map.get(row["role_code"], "직원")
             new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
