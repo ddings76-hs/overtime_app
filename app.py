@@ -1,4 +1,6 @@
 import re
+from pathlib import Path
+import uuid
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
@@ -2605,18 +2607,31 @@ if active_tab == 11:
                 # 사전 존재검사를 하지 않고 실제 업로드 결과로 판단합니다.
                 ok, fail = 0, 0
                 for uf in uploaded_trip_files:
-                    safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]", "_", uf.name)
-                    storage_path = f"{file_trip_id}/{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{safe_name}"
+                    # Supabase Storage object key는 ASCII 기반으로 생성.
+                    # 한글 원본 파일명은 DB file_name에 그대로 보존합니다.
+                    original_name = str(uf.name)
+                    ext = Path(original_name).suffix.lower()
+                    if not re.fullmatch(r"\.[a-z0-9]{1,10}", ext):
+                        mime_ext = {
+                            "image/jpeg": ".jpg",
+                            "image/png": ".png",
+                            "application/pdf": ".pdf",
+                        }
+                        ext = mime_ext.get(str(uf.type).lower(), ".bin")
+
+                    object_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uuid.uuid4().hex[:10]}{ext}"
+                    storage_path = f"trip-{int(file_trip_id)}/{object_name}"
+
                     try:
                         supabase.storage.from_(TRIP_STORAGE_BUCKET).upload(
                             storage_path,
                             uf.getvalue(),
-                            {"content-type": uf.type, "upsert": "false"}
+                            {"content-type": uf.type or "application/octet-stream", "upsert": "false"}
                         )
                         supabase.table("business_trip_files").insert({
                             "trip_id": int(file_trip_id),
                             "file_type": file_type,
-                            "file_name": uf.name,
+                            "file_name": original_name,
                             "storage_path": storage_path
                         }).execute()
                         ok += 1
@@ -2633,6 +2648,11 @@ if active_tab == 11:
                                 f"'{uf.name}' 업로드 실패: 앱이 연결된 Supabase 프로젝트에서 "
                                 f"'{TRIP_STORAGE_BUCKET}' 버킷을 찾지 못했습니다. "
                                 "현재 앱의 SUPABASE_URL과 버킷을 만든 프로젝트가 같은지 확인해 주세요."
+                            )
+                        elif "InvalidKey" in err or "Invalid key" in err:
+                            st.error(
+                                f"'{uf.name}' 업로드 실패: Storage 객체 경로가 유효하지 않습니다. "
+                                "v9에서는 원본 한글 파일명 대신 안전한 영문 객체키를 자동 생성합니다."
                             )
                         else:
                             st.error(f"'{uf.name}' 업로드 실패: {err}")
