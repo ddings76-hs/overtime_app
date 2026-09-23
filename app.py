@@ -1183,14 +1183,156 @@ with tab6:
         </tr>
         """
 
+        # 화면의 '월 급여 확정 및 회계자료' 급여대장과 동일한 3단 헤더/합계행/선/간격으로 엑셀 생성
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
-            worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
-            for col_idx, col_name in enumerate(edited_payroll.columns, 1):
-                if col_name in amount_columns:
-                    for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
-                        cell[0].number_format = '#,##0'
+            sheet_name = f"{pay_month}_{pay_run_no}차"
+            pd.DataFrame().to_excel(writer, index=False, header=False, sheet_name=sheet_name)
+            worksheet = writer.sheets[sheet_name]
+
+            # 화면 표는 A:Y(25열) 구성
+            # No/이름/생년월일/호봉 + 지급내역 5 + 급여총액 + 본인부담 7 + 실지급액
+            # + 사업자부담 6 + 퇴직적립금
+            headers = {
+                "A1": "No", "B1": "이름", "C1": "생년월일", "D1": "호봉",
+                "E1": "지급 내역", "J1": "급여총액",
+                "K1": "근로자 본인 부담금", "R1": "실지급액",
+                "S1": "사업자 부담 사회보험금", "Y1": "사업주부담\n퇴직적립금",
+                "E2": "기본급", "F2": "초과수당", "G2": "가족수당", "H2": "명절상여", "I2": "비과세",
+                "K2": "국민", "L2": "건강", "M2": "장기요양", "N2": "고용", "O2": "소득세", "P2": "지방세", "Q2": "공제합계",
+                "S2": "국민", "T2": "건강", "U2": "장기요양", "V2": "고용", "W2": "산재", "X2": "사업자합계",
+                "K3": "4.75%", "L3": "3.595%", "M3": "12.95%", "N3": "0.90%", "O3": "간이세액", "P3": "10%",
+                "S3": "4.75%", "T3": "3.595%", "U3": "12.95%", "V3": "1.15%", "W3": "7.26%"
+            }
+            for addr, value in headers.items():
+                worksheet[addr] = value
+
+            # 화면 HTML의 rowspan/colspan 그대로 병합
+            for merge_range in [
+                "A1:A3", "B1:B3", "C1:C3", "D1:D3",
+                "E1:I1", "J1:J3", "K1:Q1", "R1:R3", "S1:X1", "Y1:Y3",
+                "E2:E3", "F2:F3", "G2:G3", "H2:H3", "I2:I3", "Q2:Q3", "X2:X3"
+            ]:
+                worksheet.merge_cells(merge_range)
+
+            # 합계행(화면과 동일하게 본문보다 먼저 배치)
+            total_row = 4
+            worksheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+            worksheet.cell(total_row, 1, "합 계")
+            total_values = [
+                sum_base, sum_ot, sum_family, sum_holiday, sum_nontax, sum_gross,
+                sum_nat, sum_hea, sum_long, sum_emp, sum_inc, sum_loc, sum_deduct_tot,
+                sum_net, sum_b_nat, sum_b_hea, sum_b_long, sum_b_emp, sum_b_ind, sum_b_tot, sum_retire
+            ]
+            for col_idx, value in enumerate(total_values, start=5):
+                worksheet.cell(total_row, col_idx, safe_int(value))
+
+            # 직원별 본문
+            start_data_row = 5
+            for excel_row, (_, row) in enumerate(edited_payroll.iterrows(), start=start_data_row):
+                total_gross = (
+                    safe_int(row['기본급']) + safe_int(row['초과수당(승인)']) +
+                    safe_int(row['가족수당']) + safe_int(row['명절상여']) +
+                    safe_int(row['비과세']) + safe_int(row['기타수당'])
+                )
+                emp_deduction_total = (
+                    safe_int(row['국민연금(본인)']) + safe_int(row['건강보험(본인)']) +
+                    safe_int(row['장기요양(본인)']) + safe_int(row['고용보험(본인)']) +
+                    safe_int(row['소득세']) + safe_int(row['지방소득세']) + safe_int(row['기타공제'])
+                )
+                net_pay = total_gross - emp_deduction_total
+                biz_total = (
+                    safe_int(row['국민연금(사업자)']) + safe_int(row['건강보험(사업자)']) +
+                    safe_int(row['장기요양(사업자)']) + safe_int(row['고용보험(사업자)']) +
+                    safe_int(row['산재보험(사업자)'])
+                )
+                values = [
+                    safe_int(row['No']), str(row['이름']), str(row['생년월일']), str(row['호봉']),
+                    safe_int(row['기본급']), safe_int(row['초과수당(승인)']), safe_int(row['가족수당']),
+                    safe_int(row['명절상여']), safe_int(row['비과세']), total_gross,
+                    safe_int(row['국민연금(본인)']), safe_int(row['건강보험(본인)']),
+                    safe_int(row['장기요양(본인)']), safe_int(row['고용보험(본인)']),
+                    safe_int(row['소득세']), safe_int(row['지방소득세']), emp_deduction_total, net_pay,
+                    safe_int(row['국민연금(사업자)']), safe_int(row['건강보험(사업자)']),
+                    safe_int(row['장기요양(사업자)']), safe_int(row['고용보험(사업자)']),
+                    safe_int(row['산재보험(사업자)']), biz_total, safe_int(row['퇴직적립금'])
+                ]
+                for col_idx, value in enumerate(values, start=1):
+                    worksheet.cell(excel_row, col_idx, value)
+
+            # 화면 색상/선/글꼴/정렬
+            header_fill = PatternFill("solid", fgColor="FFFFCC")
+            total_fill = PatternFill("solid", fgColor="E6F2FF")
+            net_fill = PatternFill("solid", fgColor="FFF2CC")
+            net_total_fill = PatternFill("solid", fgColor="FFE680")
+            thin = Side(style="thin", color="000000")
+            table_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            header_font = Font(name="맑은 고딕", size=9, bold=True)
+            body_font = Font(name="맑은 고딕", size=9)
+            total_font = Font(name="맑은 고딕", size=9, bold=True)
+            center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            right = Alignment(horizontal="right", vertical="center")
+
+            last_row = start_data_row + len(edited_payroll) - 1
+            for row_cells in worksheet.iter_rows(min_row=1, max_row=max(last_row, total_row), min_col=1, max_col=25):
+                for cell in row_cells:
+                    cell.border = table_border
+                    if cell.row <= 3:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = center
+                    elif cell.row == total_row:
+                        cell.fill = total_fill
+                        cell.font = total_font
+                        cell.alignment = center if cell.column <= 4 else right
+                    else:
+                        cell.font = body_font
+                        cell.alignment = center if cell.column <= 4 else right
+
+            # 실지급액 열은 화면처럼 연노랑 강조
+            for r in range(1, max(last_row, total_row) + 1):
+                if r == total_row:
+                    worksheet.cell(r, 18).fill = net_total_fill
+                elif r >= start_data_row:
+                    worksheet.cell(r, 18).fill = net_fill
+
+            # 금액 표시 및 화면과 유사한 촘촘한 간격
+            for row_cells in worksheet.iter_rows(min_row=total_row, max_row=max(last_row, total_row), min_col=5, max_col=25):
+                for cell in row_cells:
+                    cell.number_format = '#,##0'
+
+            widths = {
+                "A": 4.5, "B": 8.0, "C": 10.5, "D": 7.0,
+                "E": 10.5, "F": 10.5, "G": 10.0, "H": 10.0, "I": 9.0,
+                "J": 11.5, "K": 9.5, "L": 9.5, "M": 9.5, "N": 9.5,
+                "O": 10.0, "P": 9.5, "Q": 11.0, "R": 11.5,
+                "S": 9.5, "T": 9.5, "U": 9.5, "V": 9.5, "W": 9.5,
+                "X": 11.0, "Y": 11.5
+            }
+            for col_letter, width in widths.items():
+                worksheet.column_dimensions[col_letter].width = width
+            worksheet.row_dimensions[1].height = 20
+            worksheet.row_dimensions[2].height = 20
+            worksheet.row_dimensions[3].height = 20
+            worksheet.row_dimensions[4].height = 20
+            for r in range(start_data_row, last_row + 1):
+                worksheet.row_dimensions[r].height = 22
+
+            # 인쇄 시에도 화면 비율이 유지되도록 설정
+            worksheet.freeze_panes = "A4"
+            worksheet.sheet_view.showGridLines = False
+            worksheet.print_title_rows = "1:3"
+            worksheet.print_area = f"A1:Y{max(last_row, total_row)}"
+            worksheet.page_setup.orientation = "landscape"
+            worksheet.page_setup.fitToWidth = 1
+            worksheet.page_setup.fitToHeight = 0
+            worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+            worksheet.page_margins.left = 0.2
+            worksheet.page_margins.right = 0.2
+            worksheet.page_margins.top = 0.35
+            worksheet.page_margins.bottom = 0.35
+            worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+
         excel_data = output.getvalue()
 
         st.download_button(
