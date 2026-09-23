@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v17.1.1"
+APP_VERSION = "v17.2.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -543,7 +543,7 @@ st.markdown(
 )
 
 # -------------------------------------------------------------------
-# TAB 0: v17.1 직원 마이페이지 / 관리자 통합 대시보드
+# TAB 0: v17.2 직원 마이페이지 / 관리자 통합 대시보드
 # -------------------------------------------------------------------
 if active_tab == 0:
     if CURRENT_ROLE == "employee":
@@ -774,6 +774,7 @@ if active_tab == 2:
     st.header("1. 초과근무 / 휴일근무 사전 신청")
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = scope_employee_master(df_emp)
 
     df_emp = scope_employee_master(df_emp)
     if df_emp.empty:
@@ -832,6 +833,7 @@ if active_tab == 3:
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
+    df_ot = scope_dataframe_to_current_employee(df_ot)
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
@@ -850,6 +852,7 @@ if active_tab == 3:
 
         emp_s_res = supabase.table("employees").select("*").eq("emp_id", target_ot['emp_id']).execute()
         df_emp_single = pd.DataFrame(emp_s_res.data) if emp_s_res.data else pd.DataFrame()
+        df_emp_single = scope_employee_master(df_emp_single)
         hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
 
         act_s_val = target_ot.get('act_start_time', target_ot['start_time'])
@@ -1245,6 +1248,7 @@ if active_tab == 4:
     
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = scope_employee_master(df_emp)
 
     df_emp = scope_employee_master(df_emp)
     if df_emp.empty:
@@ -1382,6 +1386,7 @@ if active_tab == 5:
     l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
     df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
 
+    df_leave_records = scope_dataframe_to_current_employee(df_leave_records)
     if df_leave_records.empty:
         st.info("등록된 연차/휴가 신청 내역이 없다.")
     else:
@@ -1466,15 +1471,18 @@ if active_tab == 6:
 
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = scope_employee_master(df_emp)
 
     df_emp = scope_employee_master(df_emp)
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_employee_master(df_ot)
 
     multi_run_ready = True
     try:
         adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
         df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+        df_adjust = scope_employee_master(df_adjust)
     except Exception:
         multi_run_ready = False
         df_adjust = pd.DataFrame()
@@ -1896,10 +1904,12 @@ if active_tab == 7:
     
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = scope_employee_master(df_emp)
 
     df_emp = scope_employee_master(df_emp)
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_employee_master(df_ot)
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -2118,13 +2128,16 @@ if active_tab == 8:
 
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = scope_employee_master(df_emp)
 
     df_emp = scope_employee_master(df_emp)
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_employee_master(df_ot)
 
     adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_print).eq("pay_run_no", print_run_no).execute()
     df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+    df_adjust = scope_employee_master(df_adjust)
 
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
@@ -2334,12 +2347,15 @@ if active_tab == 9:
     
     emp_all_res = supabase.table("employees").select("*").execute()
     df_emp_all = pd.DataFrame(emp_all_res.data) if emp_all_res.data else pd.DataFrame()
+    df_emp_all = scope_employee_master(df_emp_all)
 
     ot_all_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot_all = pd.DataFrame(ot_all_res.data) if ot_all_res.data else pd.DataFrame()
+    df_ot_all = scope_employee_master(df_ot_all)
 
     adj_all_res = supabase.table("monthly_payroll_adjust").select("*").execute()
     df_adj_all = pd.DataFrame(adj_all_res.data) if adj_all_res.data else pd.DataFrame()
+    df_adj_all = scope_employee_master(df_adj_all)
 
     if df_emp_all.empty:
         st.warning("등록된 직원 정보가 없다.")
@@ -2563,6 +2579,7 @@ if active_tab == 10:
     try:
         trip_res = supabase.table("business_trips").select("*").order("id", desc=True).execute()
         df_trips = pd.DataFrame(trip_res.data) if trip_res.data else pd.DataFrame()
+        df_trips = scope_dataframe_to_current_employee(df_trips)
         trip_table_ok = True
     except Exception:
         df_trips = pd.DataFrame()
@@ -2573,6 +2590,7 @@ if active_tab == 10:
 
     emp_trip_res = supabase.table("employees").select("*").execute()
     df_trip_emp = pd.DataFrame(emp_trip_res.data) if emp_trip_res.data else pd.DataFrame()
+    df_trip_emp = scope_employee_master(df_trip_emp)
 
     df_trip_emp = scope_employee_master(df_trip_emp)
     st.subheader("📝 출장 신청")
@@ -2731,6 +2749,7 @@ if active_tab == 11:
     try:
         trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
         df_trip2 = pd.DataFrame(trip_res2.data) if trip_res2.data else pd.DataFrame()
+        df_trip2 = scope_dataframe_to_current_employee(df_trip2)
     except Exception:
         df_trip2 = pd.DataFrame()
 
