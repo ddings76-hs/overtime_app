@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v19.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -320,6 +320,84 @@ with st.sidebar:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
 
+
+# -------------------------------------------------------------------
+# v19.3 공통 표/Excel 표시 규칙
+# -------------------------------------------------------------------
+COLUMN_KR = {
+    "id":"번호","emp_id":"사번","emp_name":"이름","name":"이름",
+    "dept":"부서","department":"부서","position":"직위",
+    "apply_dt":"신청일","created_at":"등록일시","updated_at":"수정일시",
+    "start_date":"시작일","end_date":"종료일","leave_type":"휴가종류",
+    "used_days":"사용일수","reason":"사유","status":"상태",
+    "work_date":"근무일","hours":"시간","actual_hours":"실적시간","work_hours":"근무시간",
+    "trip_type":"출장구분","purpose":"출장목적","start_at":"출장시작","end_at":"출장종료",
+    "destination":"출장지","transport_type":"교통수단","distance_km":"거리(km)",
+    "fuel_type":"유종","rule_base_amount":"기준금액","note":"비고",
+    "apply_status":"신청상태","report_status":"복명상태","settlement_status":"정산상태",
+    "participants":"동행자","report_content":"복명내용","transport_cost":"교통비",
+    "toll_cost":"통행료","lodging_cost":"숙박비","other_cost":"기타비용",
+    "daily_cost":"일비","meal_cost":"식비","total_cost":"출장비합계",
+    "file_type":"파일구분","file_name":"파일명","change_type":"변경구분",
+    "change_reason":"변경사유","new_destination":"변경출장지","approval_type":"승인구분",
+    "approval_status":"승인상태","approved_at":"승인일시",
+    "pay_month":"급여월","pay_run_no":"급여차수","pay_run_name":"급여명칭",
+    "base_salary":"기본급","overtime_pay":"초과수당","family_allowance":"가족수당",
+    "holiday_bonus":"명절상여","non_taxable":"비과세","other_allowance":"기타수당",
+    "gross_pay":"급여총액","employee_deductions":"근로자공제합계","net_pay":"실지급액",
+    "employer_insurance":"사업주부담보험","retirement_accrual":"퇴직적립금"
+}
+MONEY_HINTS = ("급여","수당","금액","비용","출장비","교통비","통행료","숙박비","식비","일비",
+               "보험","공제","지급액","적립금","기본급","상여","비과세")
+
+def display_table_kr(df, use_container_width=True, hide_index=True, **kwargs):
+    """화면 표: 영문 필드명을 한글로 표시하고 금액성 숫자는 천 단위 쉼표 적용."""
+    if df is None:
+        return st.dataframe(pd.DataFrame(), use_container_width=use_container_width, hide_index=hide_index, **kwargs)
+    view=df.copy()
+    view=view.rename(columns={c:COLUMN_KR.get(c,c) for c in view.columns})
+    fmt={}
+    for c in view.columns:
+        if any(k in str(c) for k in MONEY_HINTS) and pd.api.types.is_numeric_dtype(view[c]):
+            fmt[c]="{:,.0f}"
+        elif pd.api.types.is_integer_dtype(view[c]):
+            fmt[c]="{:,}"
+        elif pd.api.types.is_float_dtype(view[c]) and not any(k in str(c) for k in ("일수","시간","거리")):
+            fmt[c]="{:,.2f}"
+    return st.dataframe(view.style.format(fmt, na_rep=""), use_container_width=use_container_width,
+                        hide_index=hide_index, **kwargs)
+
+def style_excel_sheet(ws):
+    """화면과 유사한 깔끔한 표 스타일/칸너비/천단위 숫자 서식을 Excel에 적용."""
+    header_fill=PatternFill("solid", fgColor="EAF2FF")
+    header_font=Font(bold=True, color="1F2937")
+    thin=Side(style="thin", color="D9E1EA")
+    for cell in ws[1]:
+        cell.fill=header_fill; cell.font=header_font
+        cell.alignment=Alignment(horizontal="center", vertical="center")
+        cell.border=Border(bottom=thin)
+    ws.freeze_panes="A2"
+    ws.auto_filter.ref=ws.dimensions
+    for col_cells in ws.columns:
+        letter=get_column_letter(col_cells[0].column)
+        vals=[str(c.value) if c.value is not None else "" for c in col_cells[:100]]
+        width=min(max(max((len(v) for v in vals), default=0)+2, 10), 32)
+        ws.column_dimensions[letter].width=width
+        header=str(col_cells[0].value or "")
+        for cell in col_cells[1:]:
+            cell.alignment=Alignment(vertical="center", wrap_text=True)
+            if isinstance(cell.value,(int,float)) and not isinstance(cell.value,bool):
+                if any(k in header for k in MONEY_HINTS) or isinstance(cell.value,int):
+                    cell.number_format='#,##0'
+                else:
+                    cell.number_format='#,##0.##'
+    ws.row_dimensions[1].height=24
+
+def excel_view_df(df):
+    if df is None: return pd.DataFrame()
+    return df.copy().rename(columns={c:COLUMN_KR.get(c,c) for c in df.columns})
+
+
 def current_emp_id():
     return str(CURRENT_META.get("emp_id", "") or "").strip()
 
@@ -589,18 +667,18 @@ if active_tab == 0:
                 if _lv.empty: st.info("휴가 내역이 없습니다.")
                 else:
                     cs=[c for c in ["start_date","end_date","leave_type","used_days"] if c in _lv.columns]
-                    st.dataframe((_lv.sort_values("id",ascending=False).head(5) if "id" in _lv else _lv.tail(5))[cs],use_container_width=True,hide_index=True)
+                    display_table_kr((_lv.sort_values("id",ascending=False).head(5) if "id" in _lv else _lv.tail(5))[cs],use_container_width=True,hide_index=True)
                 st.subheader("⏱️ 최근 초과근무")
                 if _ot.empty: st.info("초과근무 내역이 없습니다.")
                 else:
                     cs=[c for c in ["work_date","ot_date","hours","status"] if c in _ot.columns]
-                    st.dataframe((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
+                    display_table_kr((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
             with b:
                 st.subheader("🚗 최근 출장")
                 if _tr.empty: st.info("출장 내역이 없습니다.")
                 else:
                     cs=[c for c in ["start_at","end_at","destination","purpose","apply_status"] if c in _tr.columns]
-                    st.dataframe((_tr.sort_values("id",ascending=False).head(5) if "id" in _tr else _tr.tail(5))[cs],use_container_width=True,hide_index=True)
+                    display_table_kr((_tr.sort_values("id",ascending=False).head(5) if "id" in _tr else _tr.tail(5))[cs],use_container_width=True,hide_index=True)
                 st.subheader("💰 급여")
                 st.info("좌측 ‘급여명세서’ 메뉴에서 본인 급여명세서를 확인하세요.")
     else:
@@ -627,22 +705,22 @@ if active_tab == 0:
             st.subheader("🌴 최근 휴가")
             if not _lv.empty:
                 cs=[c for c in ["emp_name","start_date","end_date","leave_type","used_days"] if c in _lv.columns]
-                st.dataframe((_lv.sort_values("id",ascending=False).head(8) if "id" in _lv else _lv.tail(8))[cs],use_container_width=True,hide_index=True)
+                display_table_kr((_lv.sort_values("id",ascending=False).head(8) if "id" in _lv else _lv.tail(8))[cs],use_container_width=True,hide_index=True)
             else: st.info("휴가 신청이 없습니다.")
             st.subheader("⏱️ 최근 초과근무")
             if not _ot.empty:
                 cs=[c for c in ["emp_name","work_date","ot_date","hours","status"] if c in _ot.columns]
-                st.dataframe((_ot.sort_values("id",ascending=False).head(8) if "id" in _ot else _ot.tail(8))[cs],use_container_width=True,hide_index=True)
+                display_table_kr((_ot.sort_values("id",ascending=False).head(8) if "id" in _ot else _ot.tail(8))[cs],use_container_width=True,hide_index=True)
             else: st.info("초과근무가 없습니다.")
         with b:
             st.subheader("🚗 최근 출장")
             if not _tr.empty:
                 cs=[c for c in ["emp_name","destination","start_at","end_at","apply_status"] if c in _tr.columns]
-                st.dataframe((_tr.sort_values("id",ascending=False).head(8) if "id" in _tr else _tr.tail(8))[cs],use_container_width=True,hide_index=True)
+                display_table_kr((_tr.sort_values("id",ascending=False).head(8) if "id" in _tr else _tr.tail(8))[cs],use_container_width=True,hide_index=True)
             else: st.info("출장 내역이 없습니다.")
             st.subheader("👥 부서별 인원")
             if not _em.empty and "dept" in _em.columns:
-                st.dataframe(_em.groupby("dept").size().reset_index(name="인원"),use_container_width=True,hide_index=True)
+                display_table_kr(_em.groupby("dept").size().reset_index(name="인원"),use_container_width=True,hide_index=True)
             else: st.info("직원 데이터가 없습니다.")
 
 # -------------------------------------------------------------------
@@ -1042,7 +1120,7 @@ if active_tab == 3:
 
             st.write(f"**[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(display_ot_df)}건)**")
             
-            st.dataframe(
+            display_table_kr(
                 display_ot_df, 
                 use_container_width=True, 
                 hide_index=True,
@@ -1325,7 +1403,7 @@ if active_tab == 4:
 
             st.write(f"**[{l_emp_info['emp_name']}] 개인 신청 이력**")
             if not df_leave_all.empty:
-                st.dataframe(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
+                display_table_kr(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
 
                 st.divider()
                 st.write("**🗑️ 연차 신청 내역 삭제**")
@@ -1397,7 +1475,7 @@ if active_tab == 4:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.dataframe(df_summary_all, use_container_width=True)
+        display_table_kr(df_summary_all, use_container_width=True)
 
 # -------------------------------------------------------------------
 # TAB 5: 연차 신청서 독립 출력 탭
@@ -2738,7 +2816,7 @@ if active_tab == 10:
         show_cols = [c for c in ["id","start_at","emp_name","position","purpose","destination","transport_type",
                                  "distance_km","rule_base_amount","apply_status","report_status","settlement_status"]
                      if c in df_trips.columns]
-        st.dataframe(df_trips[show_cols], use_container_width=True, hide_index=True)
+        display_table_kr(df_trips[show_cols], use_container_width=True, hide_index=True)
 
         trip_ids = df_trips["id"].tolist()
         sel_trip_id = st.selectbox("처리할 출장 ID", trip_ids, key="trip_manage_id")
@@ -3084,7 +3162,7 @@ if active_tab == 11:
             f_res = supabase.table("business_trip_files").select("*").eq("trip_id", int(file_trip_id)).order("id", desc=True).execute()
             df_files = pd.DataFrame(f_res.data) if f_res.data else pd.DataFrame()
             if not df_files.empty:
-                st.dataframe(df_files[[c for c in ["file_type","file_name","created_at"] if c in df_files.columns]], use_container_width=True, hide_index=True)
+                display_table_kr(df_files[[c for c in ["file_type","file_name","created_at"] if c in df_files.columns]], use_container_width=True, hide_index=True)
         except Exception:
             pass
 
@@ -3118,7 +3196,7 @@ if active_tab == 11:
             ch_res = supabase.table("business_trip_changes").select("*").eq("trip_id", int(change_trip_id)).order("id", desc=True).execute()
             df_ch = pd.DataFrame(ch_res.data) if ch_res.data else pd.DataFrame()
             if not df_ch.empty:
-                st.dataframe(df_ch, use_container_width=True, hide_index=True)
+                display_table_kr(df_ch, use_container_width=True, hide_index=True)
                 pending = df_ch[df_ch["approval_status"]=="신청"] if "approval_status" in df_ch.columns else pd.DataFrame()
                 if not pending.empty:
                     ch_id = st.selectbox("승인 처리할 변경 ID", pending["id"].tolist(), key="trip_change_approve_id")
@@ -3148,7 +3226,7 @@ if active_tab == 11:
                 ledger_month = st.selectbox("조회 월", list(range(1,13)), index=datetime.now().month-1, key="trip_ledger_month")
             ledger = tmp[(tmp["_start"].dt.year==ledger_year)&(tmp["_start"].dt.month==ledger_month)].copy()
             ledger_cols = [c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","total_cost","apply_status","report_status","settlement_status"] if c in ledger.columns]
-            st.dataframe(ledger[ledger_cols], use_container_width=True, hide_index=True)
+            display_table_kr(ledger[ledger_cols], use_container_width=True, hide_index=True)
 
             lm1,lm2,lm3,lm4 = st.columns(4)
             lm1.metric("출장 건수", f"{len(ledger)}건")
@@ -3265,13 +3343,13 @@ if active_tab == 12:
         _emp_link["계정연결"] = _emp_link["emp_id"].astype(str).apply(lambda x: "연결됨" if x in linked_ids else "미연결")
         with st.expander("🔗 직원 ↔ 로그인 계정 연결 현황"):
             _cols = [c for c in ["emp_id","emp_name","dept","position","계정연결"] if c in _emp_link.columns]
-            st.dataframe(_emp_link[_cols], use_container_width=True, hide_index=True)
+            display_table_kr(_emp_link[_cols], use_container_width=True, hide_index=True)
 
     st.subheader("👤 직원 계정 현황")
     if _account_df.empty:
         st.info("등록된 로그인 계정이 없습니다.")
     else:
-        st.dataframe(
+        display_table_kr(
             _account_df[["이메일","이름","사번","권한","계정상태","최근로그인"]],
             use_container_width=True, hide_index=True
         )
@@ -3476,10 +3554,10 @@ if active_tab == 13:
 
         st.markdown("#### 월간 상세자료")
         _t1,_t2,_t3,_t4 = st.tabs(["급여","연차","초과근무","출장"])
-        with _t1: st.dataframe(_pay, use_container_width=True, hide_index=True)
-        with _t2: st.dataframe(_leave, use_container_width=True, hide_index=True)
-        with _t3: st.dataframe(_ot, use_container_width=True, hide_index=True)
-        with _t4: st.dataframe(_trip, use_container_width=True, hide_index=True)
+        with _t1: display_table_kr(_pay, use_container_width=True, hide_index=True)
+        with _t2: display_table_kr(_leave, use_container_width=True, hide_index=True)
+        with _t3: display_table_kr(_ot, use_container_width=True, hide_index=True)
+        with _t4: display_table_kr(_trip, use_container_width=True, hide_index=True)
 
         try:
             from io import BytesIO
@@ -3487,10 +3565,12 @@ if active_tab == 13:
             with pd.ExcelWriter(_bio, engine="openpyxl") as _writer:
                 pd.DataFrame([{"기준월":_ym,"급여합계":_pay_sum,"연차사용":_leave_sum,
                                "초과근무시간":_ot_sum,"출장비":_trip_sum}]).to_excel(_writer, sheet_name="월간요약", index=False)
-                _pay.to_excel(_writer, sheet_name="급여", index=False)
-                _leave.to_excel(_writer, sheet_name="연차", index=False)
-                _ot.to_excel(_writer, sheet_name="초과근무", index=False)
-                _trip.to_excel(_writer, sheet_name="출장", index=False)
+                excel_view_df(_pay).to_excel(_writer, sheet_name="급여", index=False)
+                excel_view_df(_leave).to_excel(_writer, sheet_name="연차", index=False)
+                excel_view_df(_ot).to_excel(_writer, sheet_name="초과근무", index=False)
+                excel_view_df(_trip).to_excel(_writer, sheet_name="출장", index=False)
+                for _ws in _writer.book.worksheets:
+                    style_excel_sheet(_ws)
             st.download_button("📥 월간 통합보고서 Excel 다운로드", _bio.getvalue(),
                                file_name=f"월간_통합업무보고서_{_ym}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
