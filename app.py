@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v15"
+APP_VERSION = "v16"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -63,7 +63,7 @@ def _user_metadata(user):
     return meta if isinstance(meta, dict) else {}
 
 def _role_label(role):
-    return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
+    return {"admin":"관리자", "manager":"담당자", "director":"센터장", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -338,6 +338,58 @@ def scope_employee_master(df):
 def can_manage_all_records():
     return CURRENT_ROLE in ("admin", "manager")
 
+
+APPROVAL_STAGE_LABELS = {
+    "staff": "담당",
+    "deputy": "대리",
+    "director": "센터장",
+}
+
+def can_approve_stage(stage):
+    """v16 결재권한: admin은 전체, manager는 담당/대리, director role은 센터장."""
+    if CURRENT_ROLE == "admin":
+        return True
+    if stage in ("staff", "deputy") and CURRENT_ROLE == "manager":
+        return True
+    if stage == "director" and CURRENT_ROLE == "director":
+        return True
+    return False
+
+def approval_badge(value):
+    value = str(value or "대기")
+    return {"승인":"✅ 승인", "반려":"↩️ 반려", "대기":"⏳ 대기"}.get(value, value)
+
+
+def get_approval_state(doc_type, doc_id):
+    try:
+        res = supabase.table("approval_records").select("*").eq("doc_type", doc_type).eq("doc_id", str(doc_id)).execute()
+        rows = res.data or []
+        return {r["stage"]: r for r in rows}
+    except Exception:
+        return {}
+
+def set_approval_state(doc_type, doc_id, stage, decision, note=""):
+    if not can_approve_stage(stage):
+        st.warning("이 결재단계를 처리할 권한이 없습니다.")
+        return False
+    payload = {
+        "doc_type": doc_type,
+        "doc_id": str(doc_id),
+        "stage": stage,
+        "decision": decision,
+        "approver_id": str(_user_value(CURRENT_USER, "id", "")),
+        "approver_email": CURRENT_EMAIL,
+        "approver_name": CURRENT_NAME,
+        "note": note,
+        "approved_at": datetime.now().isoformat(),
+    }
+    supabase.table("approval_records").upsert(
+        payload, on_conflict="doc_type,doc_id,stage"
+    ).execute()
+    write_audit_log(f"{doc_type} {APPROVAL_STAGE_LABELS.get(stage,stage)} {decision}",
+                    doc_type, doc_id, note)
+    return True
+
 def write_audit_log(action, target_type="", target_id="", detail=""):
     """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
     try:
@@ -456,6 +508,10 @@ ROLE_ALLOWED_MENUS = {
     "employee": {
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
         "급여명세서", "출장 신청·관리", "출장 복명·규정"
+    },
+    "director": {
+        "초과근무 실적", "연차 관리", "연차 신청서",
+        "출장 신청·관리", "출장 복명·규정"
     },
     "viewer": {"연차 신청서", "급여명세서", "출장 복명·규정"},
 }
@@ -842,7 +898,9 @@ if active_tab == 3:
                         <th style="width: 65px;">센터장</th>
                     </tr>
                     <tr style="height: 50px;">
-                        <td></td><td></td><td></td>
+                        <td>{_staff_ap.get("approver_name","")}<br>{_staff_ap.get("decision","")}</td>
+                        <td>{_deputy_ap.get("approver_name","")}<br>{_deputy_ap.get("decision","")}</td>
+                        <td>{_director_ap.get("approver_name","")}<br>{_director_ap.get("decision","")}</td>
                     </tr>
                 </table>
             </div>
@@ -1292,6 +1350,8 @@ if active_tab == 5:
     
     l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
     df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
+    # 직원 계정은 본인의 휴가 신청서만 조회/인쇄
+    df_leave_records = scope_dataframe_to_current_employee(df_leave_records)
 
     if df_leave_records.empty:
         st.info("등록된 연차/휴가 신청 내역이 없다.")
@@ -1299,6 +1359,10 @@ if active_tab == 5:
         leave_options = [f"[{r['start_date']}] {r['emp_name']} {r['position']} - {r['leave_type']}" for _, r in df_leave_records.iterrows()]
         selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
         target_l = df_leave_records.iloc[selected_l_index]
+        _leave_approvals = get_approval_state("leave", target_l["id"])
+        _staff_ap = _leave_approvals.get("staff", {})
+        _deputy_ap = _leave_approvals.get("deputy", {})
+        _director_ap = _leave_approvals.get("director", {})
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
@@ -1357,6 +1421,26 @@ if active_tab == 5:
         </div>
         """
         st.components.v1.html(leave_template, height=560, scrolling=True)
+        if CURRENT_ROLE in ("admin", "manager", "director"):
+            st.subheader("전자결재")
+            apc1, apc2, apc3 = st.columns(3)
+            for _col, _stage in zip((apc1, apc2, apc3), ("staff","deputy","director")):
+                with _col:
+                    _r = _leave_approvals.get(_stage, {})
+                    st.markdown(f"**{APPROVAL_STAGE_LABELS[_stage]}**")
+                    st.caption(f"현재: {approval_badge(_r.get('decision','대기'))}")
+                    if can_approve_stage(_stage):
+                        _note = st.text_input("의견", key=f"leave_note_{target_l['id']}_{_stage}")
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("승인", key=f"leave_ok_{target_l['id']}_{_stage}", use_container_width=True):
+                                set_approval_state("leave", target_l["id"], _stage, "승인", _note)
+                                st.rerun()
+                        with b2:
+                            if st.button("반려", key=f"leave_no_{target_l['id']}_{_stage}", use_container_width=True):
+                                set_approval_state("leave", target_l["id"], _stage, "반려", _note)
+                                st.rerun()
+
 
 # -------------------------------------------------------------------
 # TAB 6: 통합 급여대장 (수정 및 엑셀)
@@ -3162,8 +3246,8 @@ if active_tab == 12:
             new_email = st.text_input("로그인 이메일", key="admin_create_email")
             new_pw = st.text_input("초기 비밀번호", type="password", key="admin_create_pw",
                                    help="직원에게 전달할 임시 비밀번호입니다. 8자 이상을 권장합니다.")
-            new_role_label = st.selectbox("권한", ["직원", "담당자", "조회자", "관리자"], key="admin_create_role")
-            role_map = {"직원":"employee", "담당자":"manager", "조회자":"viewer", "관리자":"admin"}
+            new_role_label = st.selectbox("권한", ["직원", "담당자", "센터장", "조회자", "관리자"], key="admin_create_role")
+            role_map = {"직원":"employee", "담당자":"manager", "센터장":"director", "조회자":"viewer", "관리자":"admin"}
 
             if st.button("계정 생성", type="primary", use_container_width=True, key="admin_create_btn"):
                 selected_emp_id = str(selected_emp.get("emp_id","")).strip()
@@ -3204,7 +3288,7 @@ if active_tab == 12:
             role_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_role_email")
             row = _account_df[_account_df["이메일"] == role_email].iloc[0]
             target_uid = row["user_id"]
-            role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
+            role_label_map = {"employee":"직원","manager":"담당자","director":"센터장","viewer":"조회자","admin":"관리자"}
             labels = ["직원","담당자","조회자","관리자"]
             current_label = role_label_map.get(row["role_code"], "직원")
             new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
