@@ -127,6 +127,32 @@ CURRENT_META = _user_metadata(CURRENT_USER)
 CURRENT_ROLE = str(st.session_state.get("auth_role", CURRENT_META.get("role", "viewer")))
 CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
 
+# 역할별 앱 권한
+ROLE_PERMISSIONS = {
+    "admin": {
+        "employee_write", "attendance_write", "leave_write", "payroll_write",
+        "payroll_confirm", "trip_write", "trip_approve", "trip_settle",
+        "file_upload", "file_delete", "print_export"
+    },
+    "manager": {
+        "attendance_write", "leave_write", "trip_write", "trip_approve",
+        "trip_settle", "file_upload", "print_export"
+    },
+    "viewer": {
+        "print_export"
+    },
+}
+
+def has_permission(permission):
+    return permission in ROLE_PERMISSIONS.get(CURRENT_ROLE, ROLE_PERMISSIONS["viewer"])
+
+def require_permission(permission, message="이 작업을 수행할 권한이 없습니다."):
+    if not has_permission(permission):
+        st.warning(f"🔒 {message}")
+        return False
+    return True
+
+
 def truncate_ten(value):
     return int(value // 10) * 10
 
@@ -236,6 +262,22 @@ with st.sidebar:
     elif st.session_state.logo_b64:
         st.info("💡 기존에 등록된 로고가 적용 중이다.")
 
+
+def write_audit_log(action, target_type="", target_id="", detail=""):
+    """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
+    try:
+        supabase.table("audit_logs").insert({
+            "user_id": str(_user_value(CURRENT_USER, "id", "")),
+            "user_email": CURRENT_EMAIL,
+            "user_role": CURRENT_ROLE,
+            "action": action,
+            "target_type": target_type,
+            "target_id": str(target_id),
+            "detail": str(detail)[:2000],
+        }).execute()
+    except Exception:
+        pass
+
 # -------------------------------------------------------------------
 # 통합 업무 메뉴 / UI
 # -------------------------------------------------------------------
@@ -329,6 +371,18 @@ MENU_TO_TAB = {
     "출장 신청·관리": 10, "출장 복명·규정": 11,
 }
 
+ROLE_ALLOWED_MENUS = {
+    "admin": set(MENU_TO_TAB.keys()),
+    "manager": {
+        "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
+        "출장 신청·관리", "출장 복명·규정"
+    },
+    "viewer": {
+        "연차 신청서", "급여명세서", "급여대장 인쇄", "연간 급여총괄",
+        "출장 복명·규정"
+    },
+}
+
 with st.sidebar:
     st.markdown("## 🏢 업무관리")
     st.caption("화성시장기요양지원센터")
@@ -349,8 +403,14 @@ with st.sidebar:
         st.session_state.auth_role = "viewer"
         st.rerun()
     st.divider()
-    menu_group = st.radio("업무 영역", list(MENU_GROUPS.keys()), label_visibility="collapsed")
-    choices = [x[0] for x in MENU_GROUPS[menu_group]]
+    allowed_menus = ROLE_ALLOWED_MENUS.get(CURRENT_ROLE, ROLE_ALLOWED_MENUS["viewer"])
+    visible_groups = [g for g, items in MENU_GROUPS.items() if any(name in allowed_menus for name, _ in items)]
+    menu_group = st.radio("업무 영역", visible_groups, label_visibility="collapsed")
+    allowed_menus = ROLE_ALLOWED_MENUS.get(CURRENT_ROLE, ROLE_ALLOWED_MENUS["viewer"])
+    choices = [x[0] for x in MENU_GROUPS[menu_group] if x[0] in allowed_menus]
+    if not choices:
+        st.info("현재 권한에서 사용할 수 있는 메뉴가 없습니다.")
+        st.stop()
     menu = st.radio("세부 메뉴", choices, label_visibility="collapsed")
     desc = dict(MENU_GROUPS[menu_group])[menu]
     st.caption(desc)
@@ -374,6 +434,8 @@ st.markdown(
 # -------------------------------------------------------------------
 if active_tab == 1:
     st.header("👥 직원 관리")
+    if not has_permission("employee_write"):
+        st.info("🔒 현재 계정은 직원정보 조회만 가능합니다. 등록·수정·삭제는 관리자 권한이 필요합니다.")
     try:
         emp_res = supabase.table("employees").select("*").execute()
         df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
@@ -2382,7 +2444,7 @@ if active_tab == 10:
         st.caption("※ 자가차량 운임은 여비관리 세칙상 총거리×기준단가 방식입니다. 유류 기준가격 입력 없이 임의 계산하지 않고 정산 단계에서 증빙·기준단가를 확인하도록 설계했습니다.")
         note = st.text_area("비고 / 출장 사전 특이사항")
 
-        if st.button("🚗 출장 신청 등록", type="primary", use_container_width=True):
+        if st.button("🚗 출장 신청 등록", type="primary", use_container_width=True, disabled=not has_permission("trip_write")):
             if not trip_table_ok:
                 st.error("먼저 Supabase에 business_trips 테이블을 생성해 주세요.")
             elif not purpose or not destination:
@@ -2441,17 +2503,20 @@ if active_tab == 10:
         sel_trip_id = st.selectbox("처리할 출장 ID", trip_ids, key="trip_manage_id")
         mc1, mc2, mc3 = st.columns(3)
         with mc1:
-            if st.button("✅ 출장 승인(명령)", use_container_width=True):
+            if st.button("✅ 출장 승인(명령)", use_container_width=True, disabled=not has_permission("trip_approve")):
                 supabase.table("business_trips").update({"apply_status":"승인"}).eq("id", sel_trip_id).execute()
+                write_audit_log("출장 승인", "business_trips", sel_trip_id)
                 st.success("출장명령/승인 처리했습니다.")
                 st.rerun()
         with mc2:
-            if st.button("↩️ 반려", use_container_width=True):
+            if st.button("↩️ 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
                 supabase.table("business_trips").update({"apply_status":"반려"}).eq("id", sel_trip_id).execute()
+                write_audit_log("출장 반려", "business_trips", sel_trip_id)
                 st.rerun()
         with mc3:
-            if st.button("❌ 출장 취소", use_container_width=True):
+            if st.button("❌ 출장 취소", use_container_width=True, disabled=not has_permission("trip_approve")):
                 supabase.table("business_trips").update({"apply_status":"취소"}).eq("id", sel_trip_id).execute()
+                write_audit_log("출장 취소", "business_trips", sel_trip_id)
                 st.rerun()
     elif trip_table_ok:
         st.info("등록된 출장 내역이 없습니다.")
@@ -2527,7 +2592,7 @@ if active_tab == 11:
             st.metric("정산 합계", f"{total_trip_cost:,}원")
             st.caption("국내여비 기준표: 모든 직원 일비 25,000원/일, 식비 20,000원/일, 숙박료 실비(광역시 상한 80,000원, 그 밖의 지역 70,000원). 별도 단시간 출장여비 기준도 함께 적용되므로 담당자 확인 후 확정하도록 구성했습니다.")
 
-            if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True):
+            if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True, disabled=not has_permission("trip_settle")):
                 supabase.table("business_trips").update({
                     "participants": participants,
                     "report_content": report_content,
@@ -2711,7 +2776,7 @@ if active_tab == 11:
             accept_multiple_files=True,
             key="trip_files"
         )
-        if st.button("📤 출장 증빙 업로드", use_container_width=True):
+        if st.button("📤 출장 증빙 업로드", use_container_width=True, disabled=not has_permission("file_upload")):
             if not uploaded_trip_files:
                 st.warning("업로드할 파일을 선택해 주세요.")
             else:
@@ -2817,11 +2882,11 @@ if active_tab == 11:
                     ch_id = st.selectbox("승인 처리할 변경 ID", pending["id"].tolist(), key="trip_change_approve_id")
                     ca1,ca2 = st.columns(2)
                     with ca1:
-                        if st.button("✅ 변경 승인", use_container_width=True):
+                        if st.button("✅ 변경 승인", use_container_width=True, disabled=not has_permission("trip_approve")):
                             supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
                             st.rerun()
                     with ca2:
-                        if st.button("↩️ 변경 반려", use_container_width=True):
+                        if st.button("↩️ 변경 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
                             supabase.table("business_trip_changes").update({"approval_status":"반려","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
                             st.rerun()
         except Exception:
