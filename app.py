@@ -19,7 +19,7 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v12"
+APP_VERSION = "v13"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="통합 급여·초과근무·연차 관리 시스템 V1.7.0", layout="wide")
 
@@ -30,6 +30,10 @@ try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
+    # 관리자 계정 생성/권한/비밀번호 초기화 전용 Secret Key.
+    # 반드시 Streamlit Secrets에만 저장하고 사용자 화면/코드에 직접 노출하지 않습니다.
+    admin_secret = st.secrets.get("SUPABASE_SECRET_KEY", "")
+    supabase_admin: Client | None = create_client(url, admin_secret) if admin_secret else None
 except Exception as e:
     st.error("Supabase 연결 실패! Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY가 정상 설정되었는지 확인이 필요하다.")
     st.stop()
@@ -59,7 +63,7 @@ def _user_metadata(user):
     return meta if isinstance(meta, dict) else {}
 
 def _role_label(role):
-    return {"admin":"관리자", "manager":"담당자", "viewer":"조회자"}.get(role, role or "사용자")
+    return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -395,6 +399,7 @@ MENU_GROUPS = {
         ("직원 관리", "직원 등록·정보 수정 및 기본 인사정보"),
         ("연차 관리", "연차 발생·사용·잔여 현황 및 전 직원 요약"),
         ("연차 신청서", "연차 신청서 조회·인쇄"),
+        ("계정·권한 관리", "직원 계정 생성·권한 부여·비밀번호 초기화"),
     ],
     "⏱️ 근태": [
         ("초과근무 신청", "초과·휴일근무 사전 신청"),
@@ -416,7 +421,7 @@ MENU_TO_TAB = {
     "직원 관리": 1, "초과근무 신청": 2, "초과근무 실적": 3,
     "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
     "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
-    "출장 신청·관리": 10, "출장 복명·규정": 11,
+    "출장 신청·관리": 10, "출장 복명·규정": 11, "계정·권한 관리": 12,
 }
 
 ROLE_ALLOWED_MENUS = {
@@ -432,9 +437,6 @@ ROLE_ALLOWED_MENUS = {
 }
 
 with st.sidebar:
-    _logo_bytes = load_company_logo_bytes()
-    if _logo_bytes:
-        st.image(_logo_bytes, width=170)
     st.markdown("## 🏢 업무관리")
     st.caption(f"화성시장기요양지원센터 · {APP_VERSION}")
     st.markdown(
@@ -491,15 +493,7 @@ with st.sidebar:
 active_tab = MENU_TO_TAB[menu]
 
 # 현재 위치 표시
-_main_logo = load_company_logo_bytes()
-if _main_logo:
-    hc1, hc2 = st.columns([1, 8])
-    with hc1:
-        st.image(_main_logo, width=110)
-    with hc2:
-        st.markdown(f"### 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
-else:
-    st.markdown(f"### 🏢 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
+st.markdown(f"### 🏢 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
 
 st.markdown(
     f"""<div class="ui-card">
@@ -3034,3 +3028,201 @@ if active_tab == 11:
             st.download_button("📥 월별 출장관리대장 Excel 다운로드",trip_xlsx.getvalue(),file_name=f"{ledger_year}-{ledger_month:02d}_출장관리대장.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 
 
+
+
+
+
+# -------------------------------------------------------------------
+# TAB 12: 계정 · 권한 관리 (관리자 전용)
+# -------------------------------------------------------------------
+if active_tab == 12:
+    st.header("🔐 계정·권한 관리")
+    st.caption("관리자 전용 · 직원 계정 생성, 역할 변경, 비밀번호 초기화")
+
+    if CURRENT_ROLE != "admin":
+        st.error("관리자만 접근할 수 있습니다.")
+        st.stop()
+
+    if supabase_admin is None:
+        st.error("관리자 기능을 사용하려면 Streamlit Secrets에 SUPABASE_SECRET_KEY를 등록해야 합니다.")
+        st.code('SUPABASE_SECRET_KEY = "Supabase Secret/Service Role Key"', language="toml")
+        st.stop()
+
+    st.info("관리자 Secret Key는 계정 생성·비밀번호 변경 같은 Auth Admin 작업에만 사용하며 화면에는 노출하지 않습니다.")
+
+    # 직원 DB
+    try:
+        _emp_res = supabase.table("employees").select("*").order("emp_name").execute()
+        _emp_df = pd.DataFrame(_emp_res.data) if _emp_res.data else pd.DataFrame()
+    except Exception:
+        _emp_df = pd.DataFrame()
+
+    # Auth 사용자
+    try:
+        _users_res = supabase_admin.auth.admin.list_users(page=1, per_page=1000)
+        _users = getattr(_users_res, "users", _users_res)
+        if not isinstance(_users, list):
+            _users = []
+    except Exception as e:
+        _users = []
+        st.error(f"Auth 사용자 목록 조회 실패: {e}")
+
+    def _auth_field(u, name, default=""):
+        if isinstance(u, dict):
+            return u.get(name, default)
+        return getattr(u, name, default)
+
+    account_rows = []
+    for u in _users:
+        meta = _auth_field(u, "user_metadata", {}) or {}
+        account_rows.append({
+            "user_id": str(_auth_field(u, "id", "")),
+            "이메일": str(_auth_field(u, "email", "")),
+            "이름": str(meta.get("name", "")),
+            "사번": str(meta.get("emp_id", "")),
+            "권한": _role_label(str(meta.get("role", "employee"))),
+            "role_code": str(meta.get("role", "employee")),
+            "최근로그인": str(_auth_field(u, "last_sign_in_at", "") or ""),
+        })
+    _account_df = pd.DataFrame(account_rows)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("전체 계정", f"{len(_account_df)}명")
+    m2.metric("관리자", f"{int((_account_df['role_code']=='admin').sum()) if not _account_df.empty else 0}명")
+    m3.metric("일반 직원", f"{int((_account_df['role_code']=='employee').sum()) if not _account_df.empty else 0}명")
+
+    st.subheader("👤 직원 계정 현황")
+    if _account_df.empty:
+        st.info("등록된 로그인 계정이 없습니다.")
+    else:
+        st.dataframe(
+            _account_df[["이메일","이름","사번","권한","최근로그인"]],
+            use_container_width=True, hide_index=True
+        )
+
+    st.divider()
+    create_tab, role_tab, pw_tab = st.tabs(["➕ 계정 생성", "🛡️ 권한 변경", "🔑 비밀번호 초기화"])
+
+    with create_tab:
+        if _emp_df.empty:
+            st.warning("직원 DB가 없어 계정을 생성할 수 없습니다.")
+        else:
+            emp_map = {
+                f"{str(r.get('emp_name','')).strip()} ({str(r.get('emp_id','')).strip()})": r
+                for _, r in _emp_df.iterrows()
+                if str(r.get("emp_name","")).strip()
+            }
+            selected_emp_label = st.selectbox("계정을 만들 직원", list(emp_map.keys()), key="admin_create_emp")
+            selected_emp = emp_map[selected_emp_label]
+            new_email = st.text_input("로그인 이메일", key="admin_create_email")
+            new_pw = st.text_input("초기 비밀번호", type="password", key="admin_create_pw",
+                                   help="직원에게 전달할 임시 비밀번호입니다. 8자 이상을 권장합니다.")
+            new_role_label = st.selectbox("권한", ["직원", "담당자", "조회자", "관리자"], key="admin_create_role")
+            role_map = {"직원":"employee", "담당자":"manager", "조회자":"viewer", "관리자":"admin"}
+
+            if st.button("계정 생성", type="primary", use_container_width=True, key="admin_create_btn"):
+                if not new_email.strip() or len(new_pw) < 8:
+                    st.warning("이메일을 입력하고 초기 비밀번호는 8자 이상으로 설정해 주세요.")
+                else:
+                    try:
+                        result = supabase_admin.auth.admin.create_user({
+                            "email": new_email.strip(),
+                            "password": new_pw,
+                            "email_confirm": True,
+                            "user_metadata": {
+                                "name": str(selected_emp.get("emp_name","")),
+                                "emp_id": str(selected_emp.get("emp_id","")),
+                                "dept": str(selected_emp.get("dept","")),
+                                "position": str(selected_emp.get("position","")),
+                                "role": role_map[new_role_label],
+                            }
+                        })
+                        created = _auth_user_obj(result)
+                        write_audit_log(
+                            "계정 생성", "auth.users",
+                            str(_user_value(created, "id", "")),
+                            f"{new_email.strip()} / {new_role_label}"
+                        )
+                        st.success(f"{selected_emp.get('emp_name','')} 직원의 계정을 생성했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 생성 실패: {e}")
+
+    with role_tab:
+        if _account_df.empty:
+            st.info("권한을 변경할 계정이 없습니다.")
+        else:
+            role_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_role_email")
+            row = _account_df[_account_df["이메일"] == role_email].iloc[0]
+            target_uid = row["user_id"]
+            role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
+            labels = ["직원","담당자","조회자","관리자"]
+            current_label = role_label_map.get(row["role_code"], "직원")
+            new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
+            role_code_map = {"직원":"employee","담당자":"manager","조회자":"viewer","관리자":"admin"}
+
+            if st.button("권한 저장", type="primary", use_container_width=True, key="admin_role_save"):
+                try:
+                    # 기존 user_metadata를 유지하면서 role만 변경
+                    target_user = next((u for u in _users if str(_auth_field(u,"id","")) == target_uid), None)
+                    meta = dict(_auth_field(target_user, "user_metadata", {}) or {})
+                    meta["role"] = role_code_map[new_role2]
+                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"user_metadata": meta})
+                    write_audit_log("계정 권한 변경", "auth.users", target_uid, f"{role_email}: {new_role2}")
+                    st.success("권한을 변경했습니다. 해당 사용자는 다음 로그인부터 변경된 권한이 적용됩니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"권한 변경 실패: {e}")
+
+    with pw_tab:
+        if _account_df.empty:
+            st.info("비밀번호를 초기화할 계정이 없습니다.")
+        else:
+            pw_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_pw_email")
+            pw_row = _account_df[_account_df["이메일"] == pw_email].iloc[0]
+            pw_uid = pw_row["user_id"]
+            reset_mode = st.radio(
+                "초기화 방식",
+                ["관리자가 임시 비밀번호 설정", "비밀번호 재설정 이메일 발송"],
+                horizontal=True
+            )
+
+            if reset_mode == "관리자가 임시 비밀번호 설정":
+                temp_pw = st.text_input("새 임시 비밀번호", type="password", key="admin_temp_pw")
+                confirm_pw = st.text_input("새 임시 비밀번호 확인", type="password", key="admin_temp_pw2")
+                if st.button("비밀번호 초기화", type="primary", use_container_width=True, key="admin_pw_reset"):
+                    if len(temp_pw) < 8:
+                        st.warning("임시 비밀번호는 8자 이상으로 설정해 주세요.")
+                    elif temp_pw != confirm_pw:
+                        st.warning("비밀번호 확인이 일치하지 않습니다.")
+                    else:
+                        try:
+                            supabase_admin.auth.admin.update_user_by_id(pw_uid, {"password": temp_pw})
+                            write_audit_log("비밀번호 관리자 초기화", "auth.users", pw_uid, pw_email)
+                            st.success("임시 비밀번호로 초기화했습니다.")
+                        except Exception as e:
+                            st.error(f"비밀번호 초기화 실패: {e}")
+            else:
+                st.caption("직원의 로그인 이메일로 Supabase 비밀번호 재설정 메일을 발송합니다.")
+                if st.button("재설정 이메일 발송", type="primary", use_container_width=True, key="admin_pw_mail"):
+                    try:
+                        supabase.auth.reset_password_for_email(pw_email)
+                        write_audit_log("비밀번호 재설정 메일", "auth.users", pw_uid, pw_email)
+                        st.success("비밀번호 재설정 이메일을 발송했습니다.")
+                    except Exception as e:
+                        st.error(f"재설정 이메일 발송 실패: {e}")
+
+# -------------------------------------------------------------------
+# 모든 업무화면 공통 하단 회사 로고
+# 기존 상단 표시 크기 대비 약 80% 수준(136px)으로 축소
+# -------------------------------------------------------------------
+_footer_logo = load_company_logo_bytes()
+if _footer_logo:
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    _fc1, _fc2, _fc3 = st.columns([4, 1, 4])
+    with _fc2:
+        st.image(_footer_logo, width=136)
+    st.markdown(
+        f"<div style='text-align:center;color:#98a2b3;font-size:.72rem;margin-top:3px;'>System Version {APP_VERSION}</div>",
+        unsafe_allow_html=True
+    )
