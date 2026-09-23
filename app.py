@@ -428,7 +428,11 @@ with tab3:
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
         act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
 
-        ot_confirm_template = f"""
+        ot_confirm_template = f"""<style>
+        * {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}}
+        @media print {{ body, div, table, tr, th, td {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}} }}
+        </style>
+        
         <div style="text-align: right; margin-bottom: 10px;">
             <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
         </div>
@@ -541,6 +545,153 @@ with tab3:
             )
 
             approved_df = df_ot_month[df_ot_month['status'] == '승인']
+
+            # 월별 초과/휴일근무 목록 엑셀 다운로드
+            ot_export = display_ot_df.copy()
+            ot_export["인정시간(h)"] = pd.to_numeric(ot_export["인정시간(h)"], errors="coerce").fillna(0.0)
+            ot_export["계산수당(원)"] = pd.to_numeric(ot_export["계산수당(원)"], errors="coerce").fillna(0).astype(int)
+
+            ot_excel = io.BytesIO()
+            from openpyxl import Workbook
+            wb_ot = Workbook()
+            ws_ot = wb_ot.active
+            ws_ot.title = f"{filter_month}_초과휴일근무"
+
+            ot_thin = Side(style="thin", color="D9DDE3")
+            ot_border = Border(left=ot_thin, right=ot_thin, top=ot_thin, bottom=ot_thin)
+            ot_center = Alignment(horizontal="center", vertical="center")
+            ot_left = Alignment(horizontal="left", vertical="center")
+            ot_right = Alignment(horizontal="right", vertical="center")
+            ot_title_fill = PatternFill("solid", fgColor="D9EAF7")
+            ot_header_fill = PatternFill("solid", fgColor="F2F4F7")
+            ot_approved_fill = PatternFill("solid", fgColor="E2F0D9")
+            ot_metric_fill = PatternFill("solid", fgColor="FFF2CC")
+
+            ws_ot.merge_cells("A1:L1")
+            ws_ot["A1"] = "월별 초과/휴일근무 일자별 내역 및 급여 연계"
+            ws_ot["A1"].font = Font(name="맑은 고딕", size=16, bold=True)
+            ws_ot["A1"].fill = ot_title_fill
+            ws_ot["A1"].alignment = ot_left
+            ws_ot.row_dimensions[1].height = 30
+
+            ws_ot.merge_cells("A2:L2")
+            ws_ot["A2"] = f"[{filter_month} 급여 산정 기간] {period_start} ~ {period_end} (전월 25일 ~ 당월 24일)"
+            ws_ot["A2"].font = Font(name="맑은 고딕", size=10)
+            ws_ot["A2"].alignment = ot_left
+
+            ws_ot.merge_cells("A4:L4")
+            ws_ot["A4"] = f"[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(ot_export)}건)"
+            ws_ot["A4"].font = Font(name="맑은 고딕", size=11, bold=True)
+
+            for ci, name in enumerate(ot_export.columns, 1):
+                c = ws_ot.cell(5, ci, name)
+                c.font = Font(name="맑은 고딕", size=10, bold=True)
+                c.fill = ot_header_fill
+                c.alignment = ot_center
+                c.border = ot_border
+
+            for ri, (_, r) in enumerate(ot_export.iterrows(), 6):
+                for ci, name in enumerate(ot_export.columns, 1):
+                    value = r[name]
+                    if name == "인정시간(h)": value = float(value)
+                    if name == "계산수당(원)": value = int(value)
+                    c = ws_ot.cell(ri, ci, value)
+                    c.font = Font(name="맑은 고딕", size=10)
+                    c.border = ot_border
+                    if str(r["승인상태"]) == "승인":
+                        c.fill = ot_approved_fill
+                    c.alignment = ot_left if name in ["이름","부서","직위","근무구분"] else (ot_right if name in ["인정시간(h)","계산수당(원)"] else ot_center)
+                    if name == "인정시간(h)": c.number_format = '0.0" 시간"'
+                    if name == "계산수당(원)": c.number_format = '#,##0" 원"'
+
+            mr = 7 + len(ot_export)
+            metrics = [
+                ("기간 내 전체 신청 건수", len(df_ot_month), '0" 건"', 1, 4),
+                ("최종 승인 건수", len(approved_df), '0" 건"', 5, 8),
+                ("승인 총 수당 합계", int(approved_df["actual_pay"].sum()), '#,##0" 원"', 9, 12)
+            ]
+            for label, value, fmt, sc, ec in metrics:
+                ws_ot.merge_cells(start_row=mr, start_column=sc, end_row=mr, end_column=ec)
+                ws_ot.merge_cells(start_row=mr+1, start_column=sc, end_row=mr+1, end_column=ec)
+                ws_ot.cell(mr, sc, label)
+                ws_ot.cell(mr+1, sc, value)
+                for rr in [mr, mr+1]:
+                    for cc in range(sc, ec+1):
+                        ws_ot.cell(rr, cc).fill = ot_metric_fill
+                        ws_ot.cell(rr, cc).border = ot_border
+                        ws_ot.cell(rr, cc).alignment = ot_center
+                ws_ot.cell(mr, sc).font = Font(name="맑은 고딕", size=10, bold=True)
+                ws_ot.cell(mr+1, sc).font = Font(name="맑은 고딕", size=16, bold=True)
+                ws_ot.cell(mr+1, sc).number_format = fmt
+
+            for i, w in enumerate([8,14,10,12,27,12,29,13,13,14,16,12], 1):
+                ws_ot.column_dimensions[get_column_letter(i)].width = w
+            ws_ot.freeze_panes = "A6"
+            ws_ot.sheet_view.showGridLines = False
+            ws_ot.page_setup.orientation = "landscape"
+            ws_ot.page_setup.paperSize = ws_ot.PAPERSIZE_A4
+            ws_ot.page_setup.fitToWidth = 1
+            ws_ot.page_setup.fitToHeight = 0
+            ws_ot.sheet_properties.pageSetUpPr.fitToPage = True
+            ws_ot.print_area = f"A1:L{mr+1}"
+            wb_ot.save(ot_excel)
+
+            ot_b1, ot_b2 = st.columns(2)
+            with ot_b1:
+                st.download_button(
+                    "📥 해당월 목록 엑셀 다운로드 (.xlsx)",
+                    ot_excel.getvalue(),
+                    file_name=f"{filter_month}_초과휴일근무_일자별내역.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            ot_print_rows = ""
+            for _, r in ot_export.iterrows():
+                approved_style = "background:#f3faef !important;" if str(r["승인상태"]) == "승인" else ""
+                ot_print_rows += f"""<tr style="{approved_style}">
+                <td>{r['ID']}</td><td>{r['근무일자']}</td><td>{r['사번']}</td><td>{r['이름']}</td>
+                <td style="text-align:left">{r['부서']}</td><td>{r['직위']}</td><td style="text-align:left">{r['근무구분']}</td>
+                <td>{r['시작시간']}</td><td>{r['종료시간']}</td><td style="text-align:right">{float(r['인정시간(h)']):.1f} 시간</td>
+                <td style="text-align:right">{int(r['계산수당(원)']):,} 원</td><td>{r['승인상태']}</td></tr>"""
+
+            ot_print_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#1f2937;margin:0;}}
+            .pbtn {{width:100%;padding:9px;background:#fff;border:1px solid #d1d5db;border-radius:7px;cursor:pointer;font-weight:bold;}}
+            .sheet {{padding:8px 2px;background:#fff;}}
+            h2 {{font-size:19px;margin:0 0 14px;}}
+            .period {{font-size:10px;color:#6b7280;margin-bottom:16px;}}
+            .ttl {{font-size:11px;font-weight:bold;margin-bottom:8px;}}
+            table {{width:100%;border-collapse:collapse;font-size:8px;}}
+            th {{background:#f2f4f7 !important;color:#6b7280;padding:6px 3px;border:1px solid #dfe3e8;white-space:nowrap;}}
+            td {{padding:6px 3px;border:1px solid #e5e7eb;text-align:center;white-space:nowrap;}}
+            .metrics {{display:flex;gap:12px;margin-top:15px;}}
+            .metric {{flex:1;background:#fff2cc !important;border:1px solid #eadf9c;padding:9px;border-radius:5px;}}
+            .mv {{font-size:20px;margin-top:6px;}}
+            @page {{size:A4 landscape;margin:7mm;}}
+            @media print {{
+              .no-print {{display:none !important;}}
+              *,body,div,table,tr,th,td {{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}}
+              .sheet {{padding:0;}}
+            }}
+            </style>
+            <div class="no-print"><button class="pbtn" onclick="window.print()">🖨️ 해당월 목록 인쇄</button></div>
+            <div class="sheet">
+            <h2>📊 월별 초과/휴일근무 일자별 내역 및 급여 연계</h2>
+            <div class="period">📅 [{filter_month} 급여 산정 기간]: {period_start} ~ {period_end} (전월 25일 ~ 당월 24일)</div>
+            <div class="ttl">[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(ot_export)}건)</div>
+            <table><thead><tr>{''.join(f'<th>{c}</th>' for c in ot_export.columns)}</tr></thead><tbody>{ot_print_rows}</tbody></table>
+            <div class="metrics">
+              <div class="metric">기간 내 전체 신청 건수<div class="mv">{len(df_ot_month)} 건</div></div>
+              <div class="metric">최종 승인 건수<div class="mv">{len(approved_df)} 건</div></div>
+              <div class="metric">승인 총 수당 합계<div class="mv">{int(approved_df['actual_pay'].sum()):,} 원</div></div>
+            </div></div>
+            """
+            with ot_b2:
+                st.components.v1.html(ot_print_html, height=55, scrolling=False)
+
             
             col_stat1, col_stat2, col_stat3 = st.columns(3)
             col_stat1.metric("기간 내 전체 신청 건수", f"{len(df_ot_month)} 건")
@@ -756,7 +907,11 @@ with tab5:
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
-        leave_template = f"""
+        leave_template = f"""<style>
+        * {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}}
+        @media print {{ body, div, table, tr, th, td {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}} }}
+        </style>
+        
         <div style="text-align: right; margin-bottom: 10px;">
             <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
         </div>
@@ -1183,156 +1338,14 @@ with tab6:
         </tr>
         """
 
-        # 화면의 '월 급여 확정 및 회계자료' 급여대장과 동일한 3단 헤더/합계행/선/간격으로 엑셀 생성
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            sheet_name = f"{pay_month}_{pay_run_no}차"
-            pd.DataFrame().to_excel(writer, index=False, header=False, sheet_name=sheet_name)
-            worksheet = writer.sheets[sheet_name]
-
-            # 화면 표는 A:Y(25열) 구성
-            # No/이름/생년월일/호봉 + 지급내역 5 + 급여총액 + 본인부담 7 + 실지급액
-            # + 사업자부담 6 + 퇴직적립금
-            headers = {
-                "A1": "No", "B1": "이름", "C1": "생년월일", "D1": "호봉",
-                "E1": "지급 내역", "J1": "급여총액",
-                "K1": "근로자 본인 부담금", "R1": "실지급액",
-                "S1": "사업자 부담 사회보험금", "Y1": "사업주부담\n퇴직적립금",
-                "E2": "기본급", "F2": "초과수당", "G2": "가족수당", "H2": "명절상여", "I2": "비과세",
-                "K2": "국민", "L2": "건강", "M2": "장기요양", "N2": "고용", "O2": "소득세", "P2": "지방세", "Q2": "공제합계",
-                "S2": "국민", "T2": "건강", "U2": "장기요양", "V2": "고용", "W2": "산재", "X2": "사업자합계",
-                "K3": "4.75%", "L3": "3.595%", "M3": "12.95%", "N3": "0.90%", "O3": "간이세액", "P3": "10%",
-                "S3": "4.75%", "T3": "3.595%", "U3": "12.95%", "V3": "1.15%", "W3": "7.26%"
-            }
-            for addr, value in headers.items():
-                worksheet[addr] = value
-
-            # 화면 HTML의 rowspan/colspan 그대로 병합
-            for merge_range in [
-                "A1:A3", "B1:B3", "C1:C3", "D1:D3",
-                "E1:I1", "J1:J3", "K1:Q1", "R1:R3", "S1:X1", "Y1:Y3",
-                "E2:E3", "F2:F3", "G2:G3", "H2:H3", "I2:I3", "Q2:Q3", "X2:X3"
-            ]:
-                worksheet.merge_cells(merge_range)
-
-            # 합계행(화면과 동일하게 본문보다 먼저 배치)
-            total_row = 4
-            worksheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
-            worksheet.cell(total_row, 1, "합 계")
-            total_values = [
-                sum_base, sum_ot, sum_family, sum_holiday, sum_nontax, sum_gross,
-                sum_nat, sum_hea, sum_long, sum_emp, sum_inc, sum_loc, sum_deduct_tot,
-                sum_net, sum_b_nat, sum_b_hea, sum_b_long, sum_b_emp, sum_b_ind, sum_b_tot, sum_retire
-            ]
-            for col_idx, value in enumerate(total_values, start=5):
-                worksheet.cell(total_row, col_idx, safe_int(value))
-
-            # 직원별 본문
-            start_data_row = 5
-            for excel_row, (_, row) in enumerate(edited_payroll.iterrows(), start=start_data_row):
-                total_gross = (
-                    safe_int(row['기본급']) + safe_int(row['초과수당(승인)']) +
-                    safe_int(row['가족수당']) + safe_int(row['명절상여']) +
-                    safe_int(row['비과세']) + safe_int(row['기타수당'])
-                )
-                emp_deduction_total = (
-                    safe_int(row['국민연금(본인)']) + safe_int(row['건강보험(본인)']) +
-                    safe_int(row['장기요양(본인)']) + safe_int(row['고용보험(본인)']) +
-                    safe_int(row['소득세']) + safe_int(row['지방소득세']) + safe_int(row['기타공제'])
-                )
-                net_pay = total_gross - emp_deduction_total
-                biz_total = (
-                    safe_int(row['국민연금(사업자)']) + safe_int(row['건강보험(사업자)']) +
-                    safe_int(row['장기요양(사업자)']) + safe_int(row['고용보험(사업자)']) +
-                    safe_int(row['산재보험(사업자)'])
-                )
-                values = [
-                    safe_int(row['No']), str(row['이름']), str(row['생년월일']), str(row['호봉']),
-                    safe_int(row['기본급']), safe_int(row['초과수당(승인)']), safe_int(row['가족수당']),
-                    safe_int(row['명절상여']), safe_int(row['비과세']), total_gross,
-                    safe_int(row['국민연금(본인)']), safe_int(row['건강보험(본인)']),
-                    safe_int(row['장기요양(본인)']), safe_int(row['고용보험(본인)']),
-                    safe_int(row['소득세']), safe_int(row['지방소득세']), emp_deduction_total, net_pay,
-                    safe_int(row['국민연금(사업자)']), safe_int(row['건강보험(사업자)']),
-                    safe_int(row['장기요양(사업자)']), safe_int(row['고용보험(사업자)']),
-                    safe_int(row['산재보험(사업자)']), biz_total, safe_int(row['퇴직적립금'])
-                ]
-                for col_idx, value in enumerate(values, start=1):
-                    worksheet.cell(excel_row, col_idx, value)
-
-            # 화면 색상/선/글꼴/정렬
-            header_fill = PatternFill("solid", fgColor="FFFFCC")
-            total_fill = PatternFill("solid", fgColor="E6F2FF")
-            net_fill = PatternFill("solid", fgColor="FFF2CC")
-            net_total_fill = PatternFill("solid", fgColor="FFE680")
-            thin = Side(style="thin", color="000000")
-            table_border = Border(left=thin, right=thin, top=thin, bottom=thin)
-            header_font = Font(name="맑은 고딕", size=9, bold=True)
-            body_font = Font(name="맑은 고딕", size=9)
-            total_font = Font(name="맑은 고딕", size=9, bold=True)
-            center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            right = Alignment(horizontal="right", vertical="center")
-
-            last_row = start_data_row + len(edited_payroll) - 1
-            for row_cells in worksheet.iter_rows(min_row=1, max_row=max(last_row, total_row), min_col=1, max_col=25):
-                for cell in row_cells:
-                    cell.border = table_border
-                    if cell.row <= 3:
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = center
-                    elif cell.row == total_row:
-                        cell.fill = total_fill
-                        cell.font = total_font
-                        cell.alignment = center if cell.column <= 4 else right
-                    else:
-                        cell.font = body_font
-                        cell.alignment = center if cell.column <= 4 else right
-
-            # 실지급액 열은 화면처럼 연노랑 강조
-            for r in range(1, max(last_row, total_row) + 1):
-                if r == total_row:
-                    worksheet.cell(r, 18).fill = net_total_fill
-                elif r >= start_data_row:
-                    worksheet.cell(r, 18).fill = net_fill
-
-            # 금액 표시 및 화면과 유사한 촘촘한 간격
-            for row_cells in worksheet.iter_rows(min_row=total_row, max_row=max(last_row, total_row), min_col=5, max_col=25):
-                for cell in row_cells:
-                    cell.number_format = '#,##0'
-
-            widths = {
-                "A": 4.5, "B": 8.0, "C": 10.5, "D": 7.0,
-                "E": 10.5, "F": 10.5, "G": 10.0, "H": 10.0, "I": 9.0,
-                "J": 11.5, "K": 9.5, "L": 9.5, "M": 9.5, "N": 9.5,
-                "O": 10.0, "P": 9.5, "Q": 11.0, "R": 11.5,
-                "S": 9.5, "T": 9.5, "U": 9.5, "V": 9.5, "W": 9.5,
-                "X": 11.0, "Y": 11.5
-            }
-            for col_letter, width in widths.items():
-                worksheet.column_dimensions[col_letter].width = width
-            worksheet.row_dimensions[1].height = 20
-            worksheet.row_dimensions[2].height = 20
-            worksheet.row_dimensions[3].height = 20
-            worksheet.row_dimensions[4].height = 20
-            for r in range(start_data_row, last_row + 1):
-                worksheet.row_dimensions[r].height = 22
-
-            # 인쇄 시에도 화면 비율이 유지되도록 설정
-            worksheet.freeze_panes = "A4"
-            worksheet.sheet_view.showGridLines = False
-            worksheet.print_title_rows = "1:3"
-            worksheet.print_area = f"A1:Y{max(last_row, total_row)}"
-            worksheet.page_setup.orientation = "landscape"
-            worksheet.page_setup.fitToWidth = 1
-            worksheet.page_setup.fitToHeight = 0
-            worksheet.sheet_properties.pageSetUpPr.fitToPage = True
-            worksheet.page_margins.left = 0.2
-            worksheet.page_margins.right = 0.2
-            worksheet.page_margins.top = 0.35
-            worksheet.page_margins.bottom = 0.35
-            worksheet.sheet_properties.pageSetUpPr.fitToPage = True
-
+            edited_payroll.to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
+            worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
+            for col_idx, col_name in enumerate(edited_payroll.columns, 1):
+                if col_name in amount_columns:
+                    for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
+                        cell[0].number_format = '#,##0'
         excel_data = output.getvalue()
 
         st.download_button(
