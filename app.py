@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v24.2"
+APP_VERSION = "v24.2.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.2.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.2.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1491,7 +1491,17 @@ window.addEventListener("load", function(){
                 _issue_day=datetime.now().date()
                 _hire=str(_er.get("hire_date","") or "")
                 _ret=str(_er.get("retire_date","") or "")
-                _period=f"{_hire} ~ {_ret if _ret else '현재'}"
+                _period=f"{_hire} ~ {_ret if _ret else '재직중'}"
+                _birth_date="-"
+                try:
+                    _priv=(supabase.table("employee_private_info").select("resident_no").eq("emp_id",_eid).limit(1).execute().data or [{}])[0]
+                    _rrn=re.sub(r"[^0-9]","",str(_priv.get("resident_no","") or ""))
+                    if len(_rrn)>=7:
+                        _yy=int(_rrn[:2]); _mm=_rrn[2:4]; _dd=_rrn[4:6]; _g=_rrn[6]
+                        _century="19" if _g in "1256" else "20" if _g in "3478" else ""
+                        if _century: _birth_date=f"{_century}{_yy:02d}.{_mm}.{_dd}."
+                except Exception:
+                    pass
 
                 # 발급번호는 실제 발급 저장 시 DB identity를 기준으로 확정
                 _preview_no=f"미발급-{_issue_day.strftime('%Y%m%d')}"
@@ -1502,14 +1512,14 @@ window.addEventListener("load", function(){
                   <div class="cert-no">발급번호: {_preview_no}</div>
                   <h1>{_ct}</h1>
                   <table>
-                    <tr><th>성명</th><td>{_er.get('emp_name','')}</td><th>사번</th><td>{_eid}</td></tr>
+                    <tr><th>성명</th><td>{_er.get('emp_name','')}</td><th>생년월일</th><td>{_birth_date}</td></tr>
                     <tr><th>부서</th><td>{_er.get('dept','')}</td><th>직위</th><td>{_er.get('position','')}</td></tr>
                     <tr><th>재직기간</th><td colspan="3">{_period}</td></tr>
                     <tr><th>용도</th><td colspan="3">{_purpose}</td></tr>
                   </table>
-                  <p class="cert-text">위와 같이 {_ct.replace('증명서','')} 사실을 증명합니다.</p>
-                  <p class="cert-date">{_issue_day.isoformat()}</p>
-                  <p class="cert-org">화성시장기요양지원센터</p>
+                  <p class="cert-text">상기와 같이 재직하였음을 증명합니다.</p>
+                  <p class="cert-date">{_issue_day.strftime('%Y. %m. %d.')}</p>
+                  <p class="cert-org">화성시장기요양지원센터장 <span style="font-size:14px;font-weight:400">(직인)</span></p>
                 </div>
                 <style>
                 .v241-cert{{max-width:760px;margin:20px auto;padding:45px;border:1px solid #aaa;background:#fff;color:#000}}
@@ -1631,7 +1641,19 @@ window.addEventListener("load", function(){
                                 _ed={}
                             _rh=str(_ed.get("hire_date","") or "")
                             _rrt=str(_ed.get("retire_date","") or "")
-                            _rperiod=f"{_rh} ~ {_rrt if _rrt else '현재'}"
+                            _rperiod=f"{_rh} ~ {_rrt if _rrt else '재직중'}"
+                            _rbirth="-"
+                            try:
+                                _rp=(supabase.table("employee_private_info").select("resident_no").eq("emp_id",_r_eid).limit(1).execute().data or [{}])[0]
+                                _rn=re.sub(r"[^0-9]","",str(_rp.get("resident_no","") or ""))
+                                if len(_rn)>=7:
+                                    _ry=int(_rn[:2]); _rm=_rn[2:4]; _rd=_rn[4:6]; _rg=_rn[6]
+                                    _rc="19" if _rg in "1256" else "20" if _rg in "3478" else ""
+                                    if _rc: _rbirth=f"{_rc}{_ry:02d}.{_rm}.{_rd}."
+                            except Exception:
+                                pass
+                            try: _rdate_fmt=pd.to_datetime(_r_date).strftime("%Y. %m. %d.")
+                            except Exception: _rdate_fmt=_r_date
                             _rdoc=f"""<!doctype html><html><head><meta charset="utf-8"><title>{_r_type}</title>
                             <style>@page{{size:A4 portrait;margin:15mm}}body{{font-family:"Malgun Gothic",sans-serif;color:#000}}
                             .c{{width:180mm;margin:0 auto;padding:18mm 12mm;box-sizing:border-box}}.n{{text-align:right;font-size:11pt}}
@@ -1640,11 +1662,11 @@ window.addEventListener("load", function(){
                             th{{width:18%;background:#f4f4f4}}.txt{{text-align:center;margin-top:25mm;font-size:14pt}}
                             .dt{{text-align:center;margin-top:22mm}}.org{{text-align:center;margin-top:12mm;font-size:17pt;font-weight:700}}</style>
                             </head><body><div class="c"><div class="n">발급번호: {_r_no}</div><h1>{_r_type}</h1>
-                            <table><tr><th>성명</th><td>{_r_emp}</td><th>사번</th><td>{_r_eid}</td></tr>
+                            <table><tr><th>성명</th><td>{_r_emp}</td><th>생년월일</th><td>{_rbirth}</td></tr>
                             <tr><th>부서</th><td>{_ed.get('dept','')}</td><th>직위</th><td>{_ed.get('position','')}</td></tr>
                             <tr><th>재직기간</th><td colspan="3">{_rperiod}</td></tr><tr><th>용도</th><td colspan="3">{_r_purpose}</td></tr></table>
-                            <p class="txt">위와 같이 {_r_type.replace('증명서','')} 사실을 증명합니다.</p><p class="dt">{_r_date}</p>
-                            <p class="org">화성시장기요양지원센터</p></div>
+                            <p class="txt">상기와 같이 재직하였음을 증명합니다.</p><p class="dt">{_rdate_fmt}</p>
+                            <p class="org">화성시장기요양지원센터장 <span style="font-size:10pt;font-weight:400">(직인)</span></p></div>
                             <script>window.addEventListener("load",function(){{setTimeout(function(){{window.focus();window.print();}},400);}});</script>
                             </body></html>"""
                             st.components.v1.html(_rdoc,height=1050,scrolling=False)
