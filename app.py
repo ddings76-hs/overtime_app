@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.6"
+APP_VERSION = "v28.7"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.6", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.7", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.6")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.7")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4580,6 +4580,10 @@ if active_tab == 11:
                 for _ch in _chg_rows:
                     _txt=f"{str(_ch.get('change_type','변경'))} · {str(_ch.get('approval_type','') or '')} {str(_ch.get('approval_status','') or '')}"
                     if _ch.get("new_destination"): _txt+=f" · 변경행선지: {_ch.get('new_destination')}"
+                    if _ch.get("new_start_at") or _ch.get("new_end_at"):
+                        _ns=pd.to_datetime(_ch.get("new_start_at"),errors="coerce")
+                        _ne=pd.to_datetime(_ch.get("new_end_at"),errors="coerce")
+                        if pd.notna(_ns) and pd.notna(_ne): _txt+=f" · 변경시간: {_ns.strftime('%Y-%m-%d %H:%M')} ~ {_ne.strftime('%Y-%m-%d %H:%M')}"
                     if _ch.get("change_reason"): _txt+=f" · 사유: {_ch.get('change_reason')}"
                     _chg_items.append(f"<div style='margin:2px 0;'>• {_txt}</div>")
                 _trip_change_html="<div style='margin-top:8px;padding:7px;border:1px solid #aaa;'><b>[출장 변경·승인 이력]</b>"+"".join(_chg_items)+"</div>"
@@ -4792,15 +4796,36 @@ if active_tab == 11:
             new_destination = st.text_input("변경 출장지(해당 시)", key="trip_new_dest")
         with cc2:
             approval_type = st.radio("승인 구분", ["사전승인","사후승인"], horizontal=True, key="trip_approval_type")
+        _ctr = df_trip2[df_trip2["id"] == change_trip_id].iloc[0]
+        _os = pd.to_datetime(_ctr.get("start_at"), errors="coerce")
+        _oe = pd.to_datetime(_ctr.get("end_at"), errors="coerce")
+        _change_time_enabled = st.checkbox("출장기간/시간 변경", value=(change_type=="출장기간 변경"), key="trip_change_time_enabled")
+        _new_start_at = _new_end_at = None
+        if _change_time_enabled:
+            st.caption(f"현재 출장시간: {_os.strftime('%Y-%m-%d %H:%M') if pd.notna(_os) else '-'} ~ {_oe.strftime('%Y-%m-%d %H:%M') if pd.notna(_oe) else '-'}")
+            tc1,tc2=st.columns(2)
+            with tc1:
+                _nsd=st.date_input("변경 시작일",_os.date() if pd.notna(_os) else datetime.now().date(),key="trip_new_start_date")
+                _nst=st.time_input("변경 시작시간",_os.time() if pd.notna(_os) else time(9,0),key="trip_new_start_time")
+            with tc2:
+                _ned=st.date_input("변경 종료일",_oe.date() if pd.notna(_oe) else datetime.now().date(),key="trip_new_end_date")
+                _net=st.time_input("변경 종료시간",_oe.time() if pd.notna(_oe) else time(18,0),key="trip_new_end_time")
+            _new_start_at=datetime.combine(_nsd,_nst)
+            _new_end_at=datetime.combine(_ned,_net)
+            if _new_end_at <= _new_start_at: st.error("변경 종료일시는 시작일시보다 늦어야 합니다.")
         if st.button("📝 출장 변경 신청 기록", use_container_width=True):
             if not change_reason:
                 st.warning("변경 사유를 입력해 주세요.")
+            elif _change_time_enabled and (_new_start_at is None or _new_end_at is None or _new_end_at <= _new_start_at):
+                st.warning("올바른 변경 시작·종료일시를 입력해 주세요.")
             else:
                 supabase.table("business_trip_changes").insert({
                     "trip_id": int(change_trip_id),
                     "change_type": change_type,
                     "change_reason": change_reason,
                     "new_destination": new_destination,
+                    "new_start_at": _new_start_at.isoformat() if _new_start_at else None,
+                    "new_end_at": _new_end_at.isoformat() if _new_end_at else None,
                     "approval_type": approval_type,
                     "approval_status": "신청"
                 }).execute()
@@ -4818,7 +4843,17 @@ if active_tab == 11:
                     ca1,ca2 = st.columns(2)
                     with ca1:
                         if st.button("✅ 변경 승인", use_container_width=True, disabled=not has_permission("trip_approve")):
-                            supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
+                            _ch_target=pending[pending["id"]==ch_id].iloc[0]
+                            supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id",ch_id).execute()
+                            _tu={}
+                            if pd.notna(_ch_target.get("new_destination")) and str(_ch_target.get("new_destination")).strip(): _tu["destination"]=str(_ch_target.get("new_destination")).strip()
+                            if pd.notna(_ch_target.get("new_start_at")) and _ch_target.get("new_start_at"): _tu["start_at"]=str(_ch_target.get("new_start_at"))
+                            if pd.notna(_ch_target.get("new_end_at")) and _ch_target.get("new_end_at"): _tu["end_at"]=str(_ch_target.get("new_end_at"))
+                            if _tu:
+                                _tu["updated_at"]=datetime.now().isoformat()
+                                supabase.table("business_trips").update(_tu).eq("id",int(_ch_target["trip_id"])).execute()
+                            write_audit_log("출장 변경 승인","business_trip_changes",ch_id)
+                            st.success("변경 승인 및 원 출장 현재정보 반영을 완료했습니다.")
                             st.rerun()
                     with ca2:
                         if st.button("↩️ 변경 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
