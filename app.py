@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.7"
+APP_VERSION = "v23.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.7", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.7")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -950,7 +950,7 @@ if active_tab == 1:
 
     df_emp=_emp_load()
     if CURRENT_ROLE=="admin":
-        with st.expander("🔎 v21.5 로그인·RLS 세션 진단",expanded=False):
+        with st.expander("🔎 로그인·RLS 세션 진단",expanded=False):
             _ad=auth_diagnostic()
             c1,c2,c3=st.columns(3)
             c1.metric("앱 권한",str(CURRENT_ROLE))
@@ -964,8 +964,8 @@ if active_tab == 1:
             else:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
-    tab_list, tab_card, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
-        ["직원 목록","통합 인사기록카드","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
+    tab_list, tab_card,tab_summary, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
+        ["직원 목록","통합 인사기록카드","직원 종합현황","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
     )
 
     with tab_list:
@@ -1362,13 +1362,13 @@ body { font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
 .top-grid { display:grid; grid-template-columns:1fr 34mm; gap:4mm; align-items:start; }
 .photo-box { width:32mm !important; height:42mm !important; border:1px solid #000; object-fit:cover; display:flex; align-items:center; justify-content:center; font-size:11px; }
 table { width:100%; border-collapse:collapse; table-layout:fixed; margin:0 0 3mm; }
-th,td { border:1px solid #000; padding:2.2mm 1.5mm; font-size:10px; text-align:center; vertical-align:middle; word-break:break-word; }
+th,td { border:1px solid #000; padding:2.6mm 1.7mm; font-size:11.5px; text-align:center; vertical-align:middle; word-break:break-word; }
 th { font-weight:700; background:#f2f2f2; }
 .info-table th { width:15%; }
 .info-table td { text-align:left; }
-.section-title { font-size:12px; font-weight:700; text-align:center; border:1px solid #000; border-bottom:0; padding:1.7mm; margin-top:3mm; letter-spacing:2px; }
+.section-title { font-size:13.5px; font-weight:700; text-align:center; border:1px solid #000; border-bottom:0; padding:1.7mm; margin-top:3mm; letter-spacing:2px; }
 .empty { height:9mm; color:#555; }
-.print-footer { font-size:8px; text-align:right; margin-top:3mm; }
+.print-footer { font-size:9px; text-align:right; margin-top:3mm; }
 @media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
 </style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
             if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
@@ -1381,6 +1381,75 @@ window.addEventListener("load", function(){
 </script></body></html>"""
                 )
                 st.components.v1.html(_print_component, height=1120, scrolling=False)
+
+    with tab_summary:
+        st.markdown("#### 👤 직원별 종합 인사현황")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _sum_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _sum_sel=st.selectbox("직원 선택",list(_sum_opts.keys()),key="v234_summary_emp")
+            _sr=_sum_opts[_sum_sel]
+            _seid=str(_sr.get("emp_id",""))
+
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("성명",str(_sr.get("emp_name","") or "-"))
+            c2.metric("부서",str(_sr.get("dept","") or "-"))
+            c3.metric("직위",str(_sr.get("position","") or "-"))
+            c4.metric("재직상태",str(_sr.get("employment_status","") or "재직"))
+
+            st.markdown("##### 📌 기본 인사정보")
+            _basic=pd.DataFrame([{
+                "사번":_seid,"성명":_sr.get("emp_name",""),"부서":_sr.get("dept",""),
+                "직위":_sr.get("position",""),"입사일":_sr.get("hire_date",""),
+                "퇴사일":_sr.get("retire_date",""),"연락처":_sr.get("phone",""),
+                "이메일":_sr.get("email",""),"주소":_sr.get("address","")
+            }])
+            st.dataframe(_basic,use_container_width=True,hide_index=True)
+
+            def _v234_emp_table(name):
+                try:
+                    return pd.DataFrame(supabase.table(name).select("*").eq("emp_id",_seid).execute().data or [])
+                except Exception:
+                    return pd.DataFrame()
+
+            _sum_leave=_v234_emp_table("leave_records")
+            _sum_ot=_v234_emp_table("overtime_records")
+            _sum_trip=_v234_emp_table("business_trips")
+            _sum_career=_v234_emp_table("employee_careers")
+            _sum_license=_v234_emp_table("employee_licenses")
+            _sum_docs=_v234_emp_table("employee_documents")
+            _sum_hist=_v234_emp_table("employee_history")
+
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("연차 기록",f"{len(_sum_leave):,}건")
+            c2.metric("초과근무",f"{len(_sum_ot):,}건")
+            c3.metric("출장",f"{len(_sum_trip):,}건")
+            c4.metric("인사이력",f"{len(_sum_hist):,}건")
+
+            _s1,_s2,_s3,_s4,_s5,_s6=st.tabs(["연차","초과근무","출장","경력·자격","인사서류","인사이력"])
+            with _s1:
+                if _sum_leave.empty: st.caption("연차 기록이 없습니다.")
+                else: display_table_kr(_sum_leave,use_container_width=True,hide_index=True)
+            with _s2:
+                if _sum_ot.empty: st.caption("초과근무 기록이 없습니다.")
+                else: display_table_kr(_sum_ot,use_container_width=True,hide_index=True)
+            with _s3:
+                if _sum_trip.empty: st.caption("출장 기록이 없습니다.")
+                else: display_table_kr(_sum_trip,use_container_width=True,hide_index=True)
+            with _s4:
+                st.markdown("**경력사항**")
+                if _sum_career.empty: st.caption("경력사항이 없습니다.")
+                else: display_table_kr(_sum_career,use_container_width=True,hide_index=True)
+                st.markdown("**면허·자격**")
+                if _sum_license.empty: st.caption("면허·자격이 없습니다.")
+                else: display_table_kr(_sum_license,use_container_width=True,hide_index=True)
+            with _s5:
+                if _sum_docs.empty: st.caption("등록된 인사서류가 없습니다.")
+                else: display_table_kr(_sum_docs,use_container_width=True,hide_index=True)
+            with _s6:
+                if _sum_hist.empty: st.caption("인사이력이 없습니다.")
+                else: display_table_kr(_sum_hist,use_container_width=True,hide_index=True)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
