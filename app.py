@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v20.5"
+APP_VERSION = "v21.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v20.5", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -306,7 +306,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v20.5")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -876,147 +876,190 @@ if active_tab == 0:
 # TAB 1: 직원 등록 및 정보 관리
 # -------------------------------------------------------------------
 if active_tab == 1:
-    st.header("👥 직원 관리")
+    st.header("👥 직원 인사카드 관리")
     if not has_permission("employee_write"):
-        st.info("🔒 현재 계정은 직원정보 조회만 가능합니다. 등록·수정·삭제는 관리자 권한이 필요합니다.")
-    try:
-        emp_res = supabase.table("employees").select("*").execute()
-        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-        df_emp = scope_employee_master(df_emp)
-    except Exception as e:
-        st.warning("⚠️ Supabase에서 직원 데이터를 불러오지 못했다. Secrets의 API Key 설정 또는 DB 상태를 확인해 주어야 한다.")
-        df_emp = pd.DataFrame()
-    
-    if not df_emp.empty:
-        employee_column_labels = {
-            "emp_id": "사번", "emp_name": "이름", "birth_date": "생년월일",
-            "dept": "부서", "position": "직위", "hobong": "호봉",
-            "base_salary": "기본급", "hourly_wage": "통상시급",
-            "family_allowance": "가족수당", "non_taxable": "비과세",
-            "other_allowance": "기타수당", "other_deduction": "기타공제",
-            "holiday_bonus": "명절상여",
-            "national_pension": "국민연금(본인)", "health_insurance": "건강보험(본인)",
-            "longterm_care": "장기요양(본인)", "employment_insurance": "고용보험(본인)",
-            "income_tax": "소득세", "local_tax": "지방소득세",
-            "employer_national_pension": "국민연금(회사)",
-            "employer_health_insurance": "건강보험(회사)",
-            "employer_longterm_care": "장기요양(회사)",
-            "employer_employment_insurance": "고용보험(회사)",
-            "employer_industrial_insurance": "산재보험(회사)",
-            "retirement_accrual": "퇴직적립금",
-            "is_national": "국민연금 가입", "is_health": "건강보험 가입",
-            "is_employment": "고용보험 가입", "is_industrial": "산재보험 가입",
-            "total_annual_leave": "연간 연차일수", "created_at": "등록일시", "updated_at": "수정일시",
-            "id": "DB번호"
-        }
-        display_emp = df_emp.rename(columns=employee_column_labels)
-        employee_money_columns = [
-            "기본급", "통상시급", "가족수당", "명절상여", "비과세", "기타수당", "기타공제",
-            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)", "소득세", "지방소득세",
-            "국민연금(회사)", "건강보험(회사)",
-            "장기요양(회사)", "고용보험(회사)", "산재보험(회사)", "퇴직적립금"
-        ]
-        employee_config = {
-            col: st.column_config.NumberColumn(col, min_value=0, step=10, format="localized", width="medium")
-            for col in employee_money_columns if col in display_emp.columns
-        }
-        for col in ["국민연금 가입", "건강보험 가입", "고용보험 가입", "산재보험 가입"]:
-            if col in display_emp.columns:
-                display_emp[col] = display_emp[col].astype(bool)
-                employee_config[col] = st.column_config.CheckboxColumn(col)
-        edited_display_df = st.data_editor(
-            display_emp, use_container_width=True, num_rows="dynamic", hide_index=True,
-            column_config=employee_config
-        )
-        edited_df = edited_display_df.rename(columns={v: k for k, v in employee_column_labels.items()})
-        if st.button("수정 데이터 DB 저장"):
-            for _, row in edited_df.iterrows():
-                save_row = row.to_dict()
-                for col in ["is_national", "is_health", "is_employment", "is_industrial"]:
-                    if col in save_row:
-                        save_row[col] = 1 if bool(save_row[col]) else 0
-                supabase.table("employees").upsert(save_row).execute()
-            st.success("직원 데이터 수정사항이 Supabase DB에 반영되었다.")
-            st.rerun()
+        st.info("🔒 현재 계정은 직원정보 조회만 가능합니다. 등록·수정은 관리자 권한이 필요합니다.")
 
-    st.divider()
+    def _emp_load():
+        try:
+            data=supabase.table("employees").select("*").order("emp_id").execute().data or []
+            return scope_employee_master(pd.DataFrame(data))
+        except Exception as e:
+            st.warning("직원 데이터를 불러오지 못했습니다.")
+            return pd.DataFrame()
 
-    st.header("2. 신규 직원 등록")
-    with st.form("employee_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            emp_id = st.text_input("사번")
-            emp_name = st.text_input("이름")
-            birth_date = st.text_input("생년월일 (예: 1980-01-01)", value="1980-01-01")
-            dept = st.text_input("부서")
-            position = st.text_input("직위", value="주임")
-            hobong = st.text_input("호봉", value="1호봉")
-            total_leave = st.number_input("연간 총 연차 부여일수", min_value=0.0, value=15.0, step=0.1, format="%.1f")
-        with col2:
-            base_salary = st.number_input("기본급 (원)", min_value=0, value=2500000, step=100000)
-            hourly_wage = st.number_input("통상시급 (원)", min_value=0, value=12000, step=500)
-            family_allowance = st.number_input("가족수당 (원)", min_value=0, value=50000, step=10000)
-            non_taxable = st.number_input("비과세 (원)", min_value=0, value=100000, step=10000)
-            other_allowance = st.number_input("기타수당 (원)", min_value=0, value=0, step=10000)
-            other_deduction = st.number_input("기타공제 (원)", min_value=0, value=0, step=10000)
-            holiday_bonus = st.number_input("명절상여 기본액 (원)", min_value=0, value=0, step=10000)
+    def _safe_table(name, emp_id=None):
+        try:
+            q=supabase.table(name).select("*")
+            if emp_id is not None: q=q.eq("emp_id",str(emp_id))
+            return pd.DataFrame(q.order("created_at",desc=True).execute().data or [])
+        except Exception:
+            return pd.DataFrame()
 
-            st.write("**보험 가입 여부**")
-            is_national = st.checkbox("국민연금 가입", value=True)
-            is_health = st.checkbox("건강/장기요양보험 가입", value=True)
-            is_employment = st.checkbox("고용보험 가입", value=True)
-            is_industrial = st.checkbox("산재보험 가입", value=True)
+    df_emp=_emp_load()
+    tab_list, tab_card, tab_history, tab_secure = st.tabs(
+        ["직원 목록","인사카드 등록·수정","인사이력","급여·계좌정보"]
+    )
 
-        st.markdown("**직원 부담 보험료·세금 및 회사 부담금 기본값**")
-        d1, d2, d3 = st.columns(3)
-        with d1:
-            national_pension = st.number_input("국민연금 본인부담", min_value=0, value=0, step=10)
-            health_insurance = st.number_input("건강보험 본인부담", min_value=0, value=0, step=10)
-            longterm_care = st.number_input("장기요양 본인부담", min_value=0, value=0, step=10)
-            employment_insurance = st.number_input("고용보험 본인부담", min_value=0, value=0, step=10)
-        with d2:
-            income_tax = st.number_input("소득세 본인부담", min_value=0, value=0, step=10)
-            local_tax = st.number_input("지방소득세 본인부담", min_value=0, value=0, step=10)
-            employer_national_pension = st.number_input("국민연금 회사부담", min_value=0, value=0, step=10)
-            employer_health_insurance = st.number_input("건강보험 회사부담", min_value=0, value=0, step=10)
-        with d3:
-            employer_longterm_care = st.number_input("장기요양 회사부담", min_value=0, value=0, step=10)
-            employer_employment_insurance = st.number_input("고용보험 회사부담", min_value=0, value=0, step=10)
-            employer_industrial_insurance = st.number_input("산재보험 회사부담", min_value=0, value=0, step=10)
-            retirement_accrual = st.number_input("퇴직적립금", min_value=0, value=0, step=10)
-            
-        submit_emp = st.form_submit_button("직원 DB 등록")
-        
-        if submit_emp:
-            if emp_id and emp_name:
-                emp_data = {
-                    "emp_id": emp_id, "emp_name": emp_name, "birth_date": birth_date, "dept": dept,
-                    "position": position, "hobong": hobong, "base_salary": base_salary,
-                    "hourly_wage": hourly_wage, "family_allowance": family_allowance,
-                    "non_taxable": non_taxable, "other_allowance": other_allowance, "holiday_bonus": holiday_bonus,
-                    "other_deduction": other_deduction,
-                    "national_pension": national_pension, "health_insurance": health_insurance,
-                    "longterm_care": longterm_care, "employment_insurance": employment_insurance,
-                    "income_tax": income_tax, "local_tax": local_tax,
-                    "employer_national_pension": employer_national_pension,
-                    "employer_health_insurance": employer_health_insurance,
-                    "employer_longterm_care": employer_longterm_care,
-                    "employer_employment_insurance": employer_employment_insurance,
-                    "employer_industrial_insurance": employer_industrial_insurance,
-                    "retirement_accrual": retirement_accrual,
-                    "is_national": 1 if is_national else 0, "is_health": 1 if is_health else 0,
-                    "is_employment": 1 if is_employment else 0, "is_industrial": 1 if is_industrial else 0,
-                    "total_annual_leave": total_leave
-                }
-                res = supabase.table("employees").insert(emp_data).execute()
-                if res.data:
-                    st.success(f"{emp_name} ({position}) 직원이 Supabase DB에 정상 등록되었다.")
-                else:
-                    st.error("직원 등록 중 오류가 발생했거나 이미 존재하는 사번이다.")
+    with tab_list:
+        st.markdown("#### 📋 재직 직원 현황")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            list_cols=[c for c in ["emp_id","emp_name","dept","position","hire_date","employment_status","retire_date"] if c in df_emp.columns]
+            display_table_kr(df_emp[list_cols] if list_cols else df_emp, use_container_width=True, hide_index=True)
+            st.caption("상세 수정은 '인사카드 등록·수정' 탭에서 직원을 선택하여 처리합니다.")
+
+    with tab_card:
+        st.markdown("#### 🪪 신규등록 / 기존직원 수정")
+        mode=st.radio("작업 구분",["신규 직원 등록","기존 직원 수정"],horizontal=True,key="v21_emp_mode")
+        selected_row={}
+        selected_emp_id=None
+        if mode=="기존 직원 수정":
+            if df_emp.empty:
+                st.info("수정할 직원이 없습니다.")
             else:
-                st.error("사번과 이름을 모두 입력해야 한다.")
+                opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+                selected=st.selectbox("수정할 직원",list(opts.keys()),key="v21_emp_select")
+                selected_row=opts[selected]
+                selected_emp_id=str(selected_row.get("emp_id",""))
 
-# -------------------------------------------------------------------
+        def _v(k,default=""):
+            v=selected_row.get(k,default)
+            return default if pd.isna(v) else v
+        def _datev(k):
+            try: return pd.to_datetime(_v(k)).date()
+            except Exception: return None
+
+        if mode=="신규 직원 등록" or selected_emp_id:
+            with st.form("v21_employee_card_form"):
+                st.markdown("##### 기본 인사정보")
+                c1,c2,c3=st.columns(3)
+                emp_id=c1.text_input("사번",value=str(_v("emp_id","")),disabled=(mode=="기존 직원 수정"))
+                emp_name=c2.text_input("성명",value=str(_v("emp_name","")))
+                birth_date=c3.date_input("생년월일",value=_datev("birth_date"),format="YYYY-MM-DD")
+                c1,c2,c3=st.columns(3)
+                dept=c1.text_input("부서",value=str(_v("dept","")))
+                position=c2.text_input("직위",value=str(_v("position","")))
+                hobong=c3.text_input("호봉",value=str(_v("hobong","")))
+                c1,c2,c3=st.columns(3)
+                hire_date=c1.date_input("입사일",value=_datev("hire_date"),format="YYYY-MM-DD")
+                employment_status=c2.selectbox("재직상태",["재직","휴직","퇴직"],
+                    index=["재직","휴직","퇴직"].index(str(_v("employment_status","재직"))) if str(_v("employment_status","재직")) in ["재직","휴직","퇴직"] else 0)
+                retire_date=c3.date_input("퇴사일",value=_datev("retire_date"),format="YYYY-MM-DD")
+                c1,c2=st.columns(2)
+                phone=c1.text_input("연락처",value=str(_v("phone","")))
+                email=c2.text_input("이메일",value=str(_v("email","")))
+                address=st.text_input("주소",value=str(_v("address","")))
+
+                st.markdown("##### 급여·근무 기준")
+                c1,c2,c3=st.columns(3)
+                base_salary=c1.number_input("기본급",min_value=0,value=int(float(_v("base_salary",0) or 0)),step=10000)
+                hourly_wage=c2.number_input("통상시급",min_value=0,value=int(float(_v("hourly_wage",0) or 0)),step=100)
+                total_leave=c3.number_input("연간 총 연차",min_value=0.0,value=float(_v("total_annual_leave",15) or 0),step=0.5,format="%.2f")
+                c1,c2,c3=st.columns(3)
+                family_allowance=c1.number_input("가족수당",min_value=0,value=int(float(_v("family_allowance",0) or 0)),step=10000)
+                non_taxable=c2.number_input("비과세",min_value=0,value=int(float(_v("non_taxable",0) or 0)),step=10000)
+                other_allowance=c3.number_input("기타수당",min_value=0,value=int(float(_v("other_allowance",0) or 0)),step=10000)
+
+                st.markdown("##### 4대보험 가입")
+                c1,c2,c3,c4=st.columns(4)
+                is_national=c1.checkbox("국민연금",value=bool(_v("is_national",1)))
+                is_health=c2.checkbox("건강/장기요양",value=bool(_v("is_health",1)))
+                is_employment=c3.checkbox("고용보험",value=bool(_v("is_employment",1)))
+                is_industrial=c4.checkbox("산재보험",value=bool(_v("is_industrial",1)))
+
+                save=st.form_submit_button("💾 직원정보 등록" if mode=="신규 직원 등록" else "💾 직원정보 수정 저장",use_container_width=True)
+                if save and has_permission("employee_write"):
+                    payload={
+                        "emp_id":str(emp_id).strip(),"emp_name":emp_name.strip(),
+                        "birth_date":birth_date.isoformat() if birth_date else None,
+                        "dept":dept,"position":position,"hobong":hobong,
+                        "hire_date":hire_date.isoformat() if hire_date else None,
+                        "retire_date":retire_date.isoformat() if retire_date and employment_status=="퇴직" else None,
+                        "employment_status":employment_status,"phone":phone,"email":email,"address":address,
+                        "base_salary":base_salary,"hourly_wage":hourly_wage,
+                        "total_annual_leave":total_leave,"family_allowance":family_allowance,
+                        "non_taxable":non_taxable,"other_allowance":other_allowance,
+                        "is_national":1 if is_national else 0,"is_health":1 if is_health else 0,
+                        "is_employment":1 if is_employment else 0,"is_industrial":1 if is_industrial else 0
+                    }
+                    try:
+                        if mode=="신규 직원 등록":
+                            supabase.table("employees").insert(payload).execute()
+                            st.success("신규 직원이 등록되었습니다.")
+                        else:
+                            supabase.table("employees").update(payload).eq("emp_id",selected_emp_id).execute()
+                            st.success("직원 인사카드가 수정되었습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error("저장하지 못했습니다. v21 인사정보 DB 확장 SQL을 먼저 적용했는지 확인해 주세요.")
+
+    with tab_history:
+        st.markdown("#### 🗂️ 직원 인사이력")
+        if df_emp.empty:
+            st.info("직원 등록 후 사용할 수 있습니다.")
+        else:
+            opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            sel=st.selectbox("직원 선택",list(opts.keys()),key="v21_hist_emp")
+            eid=opts[sel]
+            hist=_safe_table("employee_history",eid)
+            if not hist.empty:
+                display_table_kr(hist,use_container_width=True,hide_index=True)
+            else:
+                st.info("등록된 인사이력이 없습니다.")
+            if has_permission("employee_write"):
+                with st.form("v21_history_form",clear_on_submit=True):
+                    c1,c2=st.columns(2)
+                    effective_date=c1.date_input("발령일",format="YYYY-MM-DD")
+                    history_type=c2.selectbox("구분",["입사","승진","부서이동","호봉변경","휴직","복직","퇴직","기타"])
+                    c1,c2=st.columns(2)
+                    before_value=c1.text_input("변경 전")
+                    after_value=c2.text_input("변경 후")
+                    note=st.text_area("비고")
+                    if st.form_submit_button("인사이력 등록"):
+                        try:
+                            supabase.table("employee_history").insert({
+                                "emp_id":eid,"effective_date":effective_date.isoformat(),
+                                "history_type":history_type,"before_value":before_value,
+                                "after_value":after_value,"note":note
+                            }).execute()
+                            st.success("인사이력이 등록되었습니다."); st.rerun()
+                        except Exception:
+                            st.error("인사이력 저장 실패: v21 DB 확장 SQL 적용 여부를 확인해 주세요.")
+
+    with tab_secure:
+        st.markdown("#### 💳 급여·계좌 및 민감정보")
+        st.warning("주민등록번호와 계좌정보는 관리자 전용 별도 테이블에 저장하며 직원목록에는 표시하지 않습니다.")
+        if CURRENT_ROLE!="admin":
+            st.info("관리자만 민감정보를 조회·수정할 수 있습니다.")
+        elif df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            sel=st.selectbox("직원 선택",list(opts.keys()),key="v21_secure_emp")
+            eid=opts[sel]
+            secure=_safe_table("employee_private_info",eid)
+            row=secure.iloc[0].to_dict() if not secure.empty else {}
+            with st.form("v21_secure_form"):
+                c1,c2,c3=st.columns(3)
+                bank_name=c1.text_input("은행명",value=str(row.get("bank_name","") or ""))
+                account_holder=c2.text_input("예금주",value=str(row.get("account_holder","") or ""))
+                account_number=c3.text_input("계좌번호",value=str(row.get("account_number","") or ""),type="password")
+                resident_no=st.text_input("주민등록번호",value="",type="password",
+                    help="기존 번호는 화면에 재표시하지 않습니다. 변경할 때만 새 번호를 입력하세요.")
+                note=st.text_area("민감정보 비고",value=str(row.get("note","") or ""))
+                if st.form_submit_button("🔐 민감정보 저장"):
+                    payload={"emp_id":eid,"bank_name":bank_name,"account_holder":account_holder,
+                             "account_number":account_number,"note":note}
+                    if resident_no.strip():
+                        payload["resident_no"]=resident_no.strip()
+                    try:
+                        supabase.table("employee_private_info").upsert(payload,on_conflict="emp_id").execute()
+                        st.success("관리자 전용 정보가 저장되었습니다."); st.rerun()
+                    except Exception:
+                        st.error("저장 실패: v21 DB 확장 SQL 및 관리자 RLS 적용 여부를 확인해 주세요.")
+
 # TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
 if active_tab == 2:
