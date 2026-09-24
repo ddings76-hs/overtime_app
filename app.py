@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -382,6 +382,33 @@ def _normalize_table_view(df):
             view[c]=dt.dt.strftime("%Y-%m-%d %H:%M").where(dt.notna(), view[c])
     view=view.rename(columns={c:_kr_col(c) for c in view.columns})
     return view
+
+def employee_filter_ui(df, key, label="직원 검색"):
+    if df is None or df.empty:
+        return df
+    # 직원은 기존 본인자료 제한 유지
+    if CURRENT_ROLE == "employee":
+        return scope_dataframe_to_current_employee(df, "emp_id")
+    name_col = "emp_name" if "emp_name" in df.columns else ("name" if "name" in df.columns else None)
+    id_col = "emp_id" if "emp_id" in df.columns else None
+    if not name_col and not id_col:
+        return df
+    choices = ["전체"]
+    mapping = {}
+    for _, row in df.iterrows():
+        eid = str(row.get(id_col, "")) if id_col else ""
+        nm = str(row.get(name_col, "")) if name_col else ""
+        txt = f"{nm} ({eid})" if eid else nm
+        if txt and txt not in mapping:
+            mapping[txt] = (eid, nm)
+            choices.append(txt)
+    selected = st.selectbox(label, choices, key=key)
+    if selected == "전체":
+        return df
+    eid, nm = mapping[selected]
+    if id_col and eid:
+        return df[df[id_col].astype(str) == eid].copy()
+    return df[df[name_col].astype(str) == nm].copy()
 
 def display_table_kr(df, use_container_width=True, hide_index=True, **kwargs):
     """모든 조회 표 공통 표시."""
@@ -3607,6 +3634,7 @@ if active_tab == 13:
 
         with tab_month:
             st.markdown(f"#### {_year}년 {_month}월 통합 현황")
+            st.caption("※ 초과근무 월간 통계는 실제 근무일(1일~말일) 기준입니다. 급여 연계의 전월 25일~당월 24일 기준과는 다릅니다.")
             a,b,c,d=st.columns(4)
             a.metric("급여",f"{int(_pay_sum):,}원" if _pay_sum else f"{len(_pay)}건",
                      delta=f"{int(_pay_sum-_prev[0]):+,}원 전월대비")
@@ -3618,10 +3646,17 @@ if active_tab == 13:
                      delta=f"{int(_tr_sum-_prev[3]):+,}원 전월대비")
             st.markdown("#### 월간 상세자료")
             m1,m2,m3,m4=st.tabs(["급여","연차","초과근무","출장"])
-            with m1: display_table_kr(_pay,use_container_width=True,hide_index=True)
-            with m2: display_table_kr(_lv,use_container_width=True,hide_index=True)
-            with m3: display_table_kr(_ot,use_container_width=True,hide_index=True)
-            with m4: display_table_kr(_tr,use_container_width=True,hide_index=True)
+            with m1:
+                display_table_kr(_pay,use_container_width=True,hide_index=True)
+            with m2:
+                _lv_view=employee_filter_ui(_lv,"v201_report_leave_emp","연차 직원 검색")
+                display_table_kr(_lv_view,use_container_width=True,hide_index=True)
+            with m3:
+                _ot_view=employee_filter_ui(_ot,"v201_report_ot_emp","초과근무 직원 검색")
+                display_table_kr(_ot_view,use_container_width=True,hide_index=True)
+            with m4:
+                _tr_view=employee_filter_ui(_tr,"v201_report_trip_emp","출장 직원 검색")
+                display_table_kr(_tr_view,use_container_width=True,hide_index=True)
 
         with tab_year:
             rows=[]
