@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v22.2"
+APP_VERSION = "v22.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.3")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1168,9 +1168,65 @@ if active_tab == 1:
         _career=_safe_table("employee_careers",eid)
         if not _career.empty:
             display_table_kr(_career,use_container_width=True,hide_index=True)
+
+            if has_permission("employee_write"):
+                st.markdown("##### ✏️ 등록 경력 수정·삭제")
+                _career_rows={}
+                for _,_cr in _career.iterrows():
+                    _cid=_cr.get("id","")
+                    _label=f"{_cr.get('company_name','근무처 미입력')} · {_cr.get('position','')} · {_cr.get('start_date','')} ~ {_cr.get('end_date','')} [#{_cid}]"
+                    _career_rows[_label]=_cr.to_dict()
+                _career_manage=st.selectbox("수정·삭제할 경력 선택",list(_career_rows.keys()),key="v223_career_manage")
+                _cm=_career_rows[_career_manage]
+
+                def _career_date(v):
+                    try:
+                        x=pd.to_datetime(v,errors="coerce")
+                        return datetime.now().date() if pd.isna(x) else x.date()
+                    except Exception:
+                        return datetime.now().date()
+
+                with st.form("v223_career_edit_form"):
+                    c1,c2=st.columns(2)
+                    _e_company=c1.text_input("근무처",value=str(_cm.get("company_name","") or ""),key="v223_ec")
+                    _e_pos=c2.text_input("직위·직급",value=str(_cm.get("position","") or ""),key="v223_ep")
+                    c1,c2=st.columns(2)
+                    _e_start=c1.date_input("근무 시작일",value=_career_date(_cm.get("start_date")),key="v223_es")
+                    _e_end=c2.date_input("근무 종료일",value=_career_date(_cm.get("end_date")),key="v223_ee")
+                    c1,c2=st.columns(2)
+                    try:
+                        _rm=float(_cm.get("recognized_months",0) or 0)
+                    except Exception:
+                        _rm=0.0
+                    _e_rec=c1.number_input("인정경력(개월)",min_value=0.0,value=_rm,step=1.0,format="%.1f",key="v223_er")
+                    _types=["경력","신입 전 경력","유사경력","기타"]
+                    _cur_type=str(_cm.get("career_type","경력") or "경력")
+                    _e_type=c2.selectbox("경력구분",_types,index=_types.index(_cur_type) if _cur_type in _types else 0,key="v223_et")
+                    _e_duties=st.text_area("담당업무",value=str(_cm.get("duties","") or ""),key="v223_ed")
+                    _e_note=st.text_area("경력 비고",value=str(_cm.get("note","") or ""),key="v223_en")
+                    if st.form_submit_button("💾 선택 경력 수정 저장",use_container_width=True):
+                        try:
+                            supabase.table("employee_careers").update({
+                                "company_name":_e_company,"position":_e_pos,
+                                "start_date":_e_start.isoformat(),"end_date":_e_end.isoformat(),
+                                "recognized_months":_e_rec,"career_type":_e_type,
+                                "duties":_e_duties,"note":_e_note
+                            }).eq("id",_cm.get("id")).eq("emp_id",eid).execute()
+                            st.success("경력사항을 수정했습니다."); st.rerun()
+                        except Exception:
+                            st.error("경력사항 수정에 실패했습니다.")
+
+                _confirm=st.checkbox("선택한 경력사항 삭제에 동의합니다.",key="v223_career_delete_confirm")
+                if st.button("🗑️ 선택 경력 삭제",key="v223_career_delete",disabled=not _confirm):
+                    try:
+                        supabase.table("employee_careers").delete().eq("id",_cm.get("id")).eq("emp_id",eid).execute()
+                        st.success("선택한 경력사항을 삭제했습니다."); st.rerun()
+                    except Exception:
+                        st.error("경력사항 삭제에 실패했습니다.")
         else:
             st.info("등록된 경력사항이 없습니다.")
         if has_permission("employee_write"):
+            st.markdown("##### ➕ 새 경력 등록")
             with st.form("v22_career_form",clear_on_submit=True):
                 c1,c2=st.columns(2)
                 _company=c1.text_input("근무처")
