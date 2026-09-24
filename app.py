@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.4"
+APP_VERSION = "v24.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.4")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -964,8 +964,8 @@ if active_tab == 1:
             else:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
-    tab_list, tab_card,tab_summary, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
-        ["직원 목록","통합 인사기록카드","직원 종합현황","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
+    tab_list, tab_card,tab_summary, tab_hradmin, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
+        ["직원 목록","통합 인사기록카드","직원 종합현황","퇴직·증명서·통합대장","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
     )
 
     with tab_list:
@@ -1450,6 +1450,74 @@ window.addEventListener("load", function(){
             with _s6:
                 if _sum_hist.empty: st.caption("인사이력이 없습니다.")
                 else: display_table_kr(_sum_hist,use_container_width=True,hide_index=True)
+
+    with tab_hradmin:
+        st.markdown("#### 🧑‍💼 퇴직처리 · 증명서 · 직원 통합대장")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif not has_permission("employee_write"):
+            st.warning("인사관리 권한이 필요합니다.")
+        else:
+            _opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _sel=st.selectbox("대상 직원",list(_opts.keys()),key="v240_emp")
+            _er=_opts[_sel]; _eid=str(_er.get("emp_id",""))
+            _a,_b,_c=st.tabs(["퇴직처리","재직·경력증명서","직원 통합대장"])
+
+            with _a:
+                st.caption("퇴직처리 후에도 기존 급여·연차·출장 등 업무 이력은 보존됩니다.")
+                with st.form("v240_retire"):
+                    _rd=st.date_input("퇴직일",value=datetime.now().date())
+                    _rr=st.text_area("퇴직사유")
+                    _ok=st.checkbox("퇴직처리 내용을 확인했습니다.")
+                    if st.form_submit_button("🚪 퇴직처리",use_container_width=True):
+                        if not _ok: st.warning("확인란에 체크해 주세요.")
+                        else:
+                            try:
+                                supabase.table("employees").update({"retire_date":_rd.isoformat(),"employment_status":"퇴직"}).eq("emp_id",_eid).execute()
+                                supabase.table("employee_history").insert({"emp_id":_eid,"effective_date":_rd.isoformat(),"history_type":"퇴직","before_value":str(_er.get("employment_status","재직") or "재직"),"after_value":"퇴직","note":_rr}).execute()
+                                st.success("퇴직처리가 완료되었습니다."); st.rerun()
+                            except Exception as e: st.error(f"퇴직처리 실패: {e}")
+                if str(_er.get("employment_status",""))=="퇴직":
+                    if st.button("↩️ 재직상태로 복원",key="v240_restore"):
+                        try:
+                            supabase.table("employees").update({"retire_date":None,"employment_status":"재직"}).eq("emp_id",_eid).execute()
+                            st.success("재직상태로 복원했습니다."); st.rerun()
+                        except Exception as e: st.error(f"복원 실패: {e}")
+
+            with _b:
+                _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True)
+                _purpose=st.text_input("용도",value="제출용")
+                _hire=str(_er.get("hire_date","") or "")
+                _ret=str(_er.get("retire_date","") or "")
+                _period=f"{_hire} ~ {_ret if _ret else '현재'}"
+                st.markdown(f"""
+                <div style="max-width:760px;margin:20px auto;padding:45px;border:1px solid #bbb;background:white;color:black">
+                <h1 style="text-align:center;letter-spacing:8px;margin-bottom:45px">{_ct}</h1>
+                <table style="width:100%;border-collapse:collapse">
+                <tr><th style="border:1px solid;padding:12px">성명</th><td style="border:1px solid;padding:12px">{_er.get('emp_name','')}</td><th style="border:1px solid;padding:12px">사번</th><td style="border:1px solid;padding:12px">{_eid}</td></tr>
+                <tr><th style="border:1px solid;padding:12px">부서</th><td style="border:1px solid;padding:12px">{_er.get('dept','')}</td><th style="border:1px solid;padding:12px">직위</th><td style="border:1px solid;padding:12px">{_er.get('position','')}</td></tr>
+                <tr><th style="border:1px solid;padding:12px">재직기간</th><td colspan="3" style="border:1px solid;padding:12px">{_period}</td></tr>
+                <tr><th style="border:1px solid;padding:12px">용도</th><td colspan="3" style="border:1px solid;padding:12px">{_purpose}</td></tr>
+                </table><p style="text-align:center;margin-top:55px;font-size:18px">위와 같이 {_ct.replace('증명서','')} 사실을 증명합니다.</p>
+                <p style="text-align:center;margin-top:45px">{datetime.now().date().isoformat()}</p>
+                <p style="text-align:center;font-size:22px;font-weight:700">화성시장기요양지원센터</p></div>
+                """,unsafe_allow_html=True)
+                st.caption("현재는 브라우저 인쇄(Ctrl+P)로 출력합니다. 발급번호·직인 자동화는 다음 단계에서 연결할 수 있습니다.")
+
+            with _c:
+                _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
+                _cols=[x for x in ["사번","성명","부서","직위","입사일","퇴사일","재직상태","연락처","이메일","주소"] if x in _ledger.columns]
+                st.dataframe(_ledger[_cols],use_container_width=True,hide_index=True)
+                import io as _io
+                _buf=_io.BytesIO()
+                with pd.ExcelWriter(_buf,engine="openpyxl") as _writer:
+                    _ledger[_cols].to_excel(_writer,index=False,sheet_name="직원 인사 통합대장")
+                    _ws=_writer.book["직원 인사 통합대장"]; _ws.freeze_panes="A2"; _ws.auto_filter.ref=_ws.dimensions
+                    for _cell in _ws[1]: _cell.alignment=_cell.alignment.copy(horizontal="center",vertical="center")
+                    for _col in _ws.columns:
+                        _mx=max(len(str(_x.value or "")) for _x in _col)
+                        _ws.column_dimensions[_col[0].column_letter].width=min(max(_mx+3,10),35)
+                st.download_button("⬇️ 직원 인사 통합대장 Excel",_buf.getvalue(),f"직원_인사_통합대장_{datetime.now().strftime('%Y%m%d')}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
