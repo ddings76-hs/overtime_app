@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.4"
+APP_VERSION = "v28.5"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.5", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.4")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.5")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4553,63 +4553,59 @@ if active_tab == 11:
 
         # 현재 센터에서 사용하던 출장복명서 형식 기반
         report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
-        # v28.1: 출장 첨부자료를 복명서에 자동 삽입
+        # v28.5: 복명서의 실제 출력대상(pr) ID와 첨부파일을 직접 연결
         _trip_attach_html = ""
         _trip_extra_attach_html = ""
+        _trip_files = []
+        _photo_blocks = []
+        _extra_blocks = []
+        _trip_id_for_report = int(pr.get("id")) if pr.get("id") is not None else None
+        _attach_error = ""
+
         try:
-            # v28.4: 복명서에서 실제 선택된 출장 ID로 첨부파일을 조회
-            _trip_id_for_report = None
-            for _obj_name in ["selected_trip", "trip_row", "target_trip", "trip"]:
-                _obj = locals().get(_obj_name)
-                if isinstance(_obj, pd.Series):
-                    _obj = _obj.to_dict()
-                if isinstance(_obj, dict) and _obj.get("id") is not None:
-                    _trip_id_for_report = int(_obj.get("id"))
-                    break
-            if _trip_id_for_report is None:
-                for _id_name in ["selected_trip_id", "trip_id", "sel_trip_id"]:
-                    _id_val = locals().get(_id_name)
-                    if _id_val is not None:
-                        try:
-                            _trip_id_for_report = int(_id_val)
-                            break
-                        except Exception:
-                            pass
             _files_client = supabase_admin if supabase_admin is not None else supabase
             _files_res = _files_client.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
             _trip_files = _files_res.data or []
-        except Exception:
-            _trip_files = []
-        
-        _photo_blocks=[]
-        _extra_blocks=[]
-        for _f in _trip_files:
-            _ft=str(_f.get("file_type","")).strip()
-            _path=_f.get("storage_path")
-            _name=_f.get("file_name") or "첨부파일"
-            if not _path:
-                continue
-            try:
-                _signed=_files_client.storage.from_("business-trip-files").create_signed_url(_path,3600)
-                _url=_signed.get("signedURL") or _signed.get("signedUrl") or _signed.get("signed_url")
-            except Exception:
-                _url=None
-            if not _url:
-                continue
-            _ext=str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
-            _is_image=_ext in ["jpg","jpeg","png","webp"]
-            if _ft=="출장사진" and _is_image:
-                _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><img src="{_url}" style="max-width:100%;max-height:210px;object-fit:contain;"><div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
-            elif _is_image:
-                _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div><img src="{_url}" style="max-width:100%;max-height:230px;object-fit:contain;"><div style="font-size:9px;">{_name}</div></div>')
-            else:
-                _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
-        
+
+            # v28.5: signed URL 대신 서버에서 파일을 읽어 data URI로 삽입.
+            # Streamlit iframe/인쇄창에서도 private Storage 이미지를 확실히 표시하기 위함.
+            import base64 as _trip_b64
+            for _f in _trip_files:
+                _ft = str(_f.get("file_type","")).strip()
+                _path = _f.get("storage_path")
+                _name = _f.get("file_name") or "첨부파일"
+                if not _path:
+                    continue
+
+                _ext = str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
+                _is_image = _ext in ["jpg","jpeg","png","webp"]
+                if _is_image:
+                    try:
+                        _raw = _files_client.storage.from_("business-trip-files").download(_path)
+                        _mime = "image/jpeg" if _ext in ["jpg","jpeg"] else ("image/png" if _ext=="png" else "image/webp")
+                        _data_uri = f"data:{_mime};base64,{_trip_b64.b64encode(_raw).decode('ascii')}"
+                    except Exception as _img_e:
+                        _data_uri = None
+                        _attach_error += f"{_name}: {_img_e}; "
+
+                    if _data_uri:
+                        _img_html = f'<img src="{_data_uri}" style="max-width:100%;max-height:205px;object-fit:contain;">'
+                        if _ft == "출장사진":
+                            _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;">{_img_html}<div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
+                        else:
+                            _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div>{_img_html}<div style="font-size:9px;">{_name}</div></div>')
+                else:
+                    _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
+        except Exception as _attach_e:
+            _attach_error = str(_attach_e)
+
         _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
-        if _trip_id_for_report is not None:
-            st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
         if _extra_blocks:
             _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
+
+        st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
+        if _attach_error:
+            st.warning(f"첨부파일 읽기 확인: {_attach_error[:300]}")
 
         trip_report_html = f"""
         <style>
