@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -2287,8 +2287,13 @@ if active_tab == 7:
 # -------------------------------------------------------------------
 # TAB 8: 통합 급여대장 인쇄
 # -------------------------------------------------------------------
-if active_tab == 8:
-    st.header("🖨️ 통합 급여대장 인쇄")
+if active_tab in (7, 8):
+    if active_tab == 7:
+        st.divider()
+        st.header("🖨️ 급여대장 인쇄")
+        st.caption("통합 급여대장과 같은 화면에서 지급일·대장 차수를 선택한 뒤 바로 인쇄할 수 있습니다.")
+    else:
+        st.header("🖨️ 통합 급여대장 인쇄")
 
     print_col1, print_col2 = st.columns(2)
     with print_col1:
@@ -3657,6 +3662,42 @@ if active_tab == 13:
             with m4:
                 _tr_view=employee_filter_ui(_tr,"v201_report_trip_emp","출장 직원 검색")
                 display_table_kr(_tr_view,use_container_width=True,hide_index=True)
+
+            st.markdown("#### 🔎 연차·초과근무·출장 기간 검색")
+            st.caption("예: 시작월 3월 / 종료월 5월을 선택하면 해당 연도 3월 1일부터 5월 말일까지 조회합니다.")
+            _pc1,_pc2=st.columns(2)
+            _sm=_pc1.selectbox("시작월",range(1,13),index=max(0,_month-1),format_func=lambda x:f"{x}월",key="v202_start_month")
+            _em=_pc2.selectbox("종료월",range(1,13),index=max(0,_month-1),format_func=lambda x:f"{x}월",key="v202_end_month")
+            if _sm > _em:
+                st.warning("시작월은 종료월보다 클 수 없습니다.")
+            else:
+                _range_start=f"{_year:04d}-{_sm:02d}-01"
+                _range_end=(pd.Timestamp(f"{_year:04d}-{_em:02d}-01")+pd.offsets.MonthEnd(1)).strftime("%Y-%m-%d")
+
+                def _range20(df, preferred):
+                    if df.empty:
+                        return df
+                    col=next((c for c in preferred if c in df.columns),None)
+                    if not col:
+                        return df.iloc[0:0].copy()
+                    ds=pd.to_datetime(df[col],errors="coerce")
+                    return df[(ds>=pd.Timestamp(_range_start)) & (ds<=pd.Timestamp(_range_end+" 23:59:59"))].copy()
+
+                _rlv=_range20(_lv_all,["start_date","leave_date","created_at"])
+                _rot=_range20(_ot_all,["work_date","ot_date","created_at"])
+                _rtr=_range20(_tr_all,["start_at","start_date","created_at"])
+
+                st.caption(f"조회기간: {_range_start} ~ {_range_end}")
+                _r1,_r2,_r3=st.tabs(["연차 기간조회","초과근무 기간조회","출장 기간조회"])
+                with _r1:
+                    _rlv_view=employee_filter_ui(_rlv,"v202_range_leave_emp","연차 직원 검색")
+                    display_table_kr(_rlv_view,use_container_width=True,hide_index=True)
+                with _r2:
+                    _rot_view=employee_filter_ui(_rot,"v202_range_ot_emp","초과근무 직원 검색")
+                    display_table_kr(_rot_view,use_container_width=True,hide_index=True)
+                with _r3:
+                    _rtr_view=employee_filter_ui(_rtr,"v202_range_trip_emp","출장 직원 검색")
+                    display_table_kr(_rtr_view,use_container_width=True,hide_index=True)
 
         with tab_year:
             rows=[]
