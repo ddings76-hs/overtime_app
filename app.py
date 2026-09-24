@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v21.3"
+APP_VERSION = "v21.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -306,7 +306,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -547,6 +547,26 @@ def show_payroll_summary(df, key_prefix="pay"):
     c6.metric("퇴직적립금 합계",f"{vals['퇴직적립금']:,}원")
     return vals
 
+
+
+def auth_diagnostic():
+    """현재 앱 세션에서 Supabase Auth가 실제로 전달하는 사용자 메타데이터 확인."""
+    result={"authenticated":False,"email":"","role":"","emp_id":"","name":""}
+    try:
+        u=supabase.auth.get_user()
+        user=getattr(u,"user",None)
+        if user:
+            meta=getattr(user,"user_metadata",{}) or {}
+            result.update({
+                "authenticated":True,
+                "email":getattr(user,"email","") or "",
+                "role":str(meta.get("role","") or ""),
+                "emp_id":str(meta.get("emp_id","") or ""),
+                "name":str(meta.get("name","") or "")
+            })
+    except Exception:
+        pass
+    return result
 
 def current_emp_id():
     return str(CURRENT_META.get("emp_id", "") or "").strip()
@@ -898,6 +918,21 @@ if active_tab == 1:
             return pd.DataFrame()
 
     df_emp=_emp_load()
+    if CURRENT_ROLE=="admin":
+        with st.expander("🔎 v21.4 인사정보 저장 권한 진단",expanded=False):
+            _ad=auth_diagnostic()
+            c1,c2,c3=st.columns(3)
+            c1.metric("앱 권한",str(CURRENT_ROLE))
+            c2.metric("JWT role",_ad.get("role") or "(없음)")
+            c3.metric("JWT 사번",_ad.get("emp_id") or "(없음)")
+            st.caption(f"로그인 이메일: {_ad.get('email') or '-'}")
+            if not _ad.get("authenticated"):
+                st.error("Supabase Auth 세션을 확인하지 못했습니다. 로그아웃 후 다시 로그인해 주세요.")
+            elif _ad.get("role")!="admin":
+                st.warning("화면 권한은 관리자이지만 Supabase JWT role이 admin이 아닙니다. v21.4 SQL 적용 후 로그아웃/재로그인해 주세요.")
+            else:
+                st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
+
     tab_list, tab_card, tab_history, tab_secure = st.tabs(
         ["직원 목록","인사카드 등록·수정","인사이력","급여·계좌정보"]
     )
@@ -1044,7 +1079,7 @@ if active_tab == 1:
                             elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
                                 st.error("인사이력 저장 실패: 현재 계정의 RLS 권한을 확인해 주세요.")
                             else:
-                                st.error("인사이력 저장 실패: v21.3 DB 복구 SQL을 실행해 주세요.")
+                                st.error("인사이력 저장 실패: v21.4 권한 SQL을 실행한 뒤 로그아웃/재로그인해 주세요.")
 
     with tab_secure:
         st.markdown("#### 💳 급여·계좌 및 민감정보")
@@ -1082,7 +1117,7 @@ if active_tab == 1:
                         elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
                             st.error("저장 실패: 관리자 RLS 권한을 확인해 주세요.")
                         else:
-                            st.error("저장 실패: v21.3 DB 복구 SQL을 실행해 주세요.")
+                            st.error("저장 실패: v21.4 권한 SQL을 실행한 뒤 로그아웃/재로그인해 주세요.")
 
 # TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
