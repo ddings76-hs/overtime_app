@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.0"
+APP_VERSION = "v28.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4516,6 +4516,44 @@ if active_tab == 11:
 
         # 현재 센터에서 사용하던 출장복명서 형식 기반
         report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
+        # v28.1: 출장 첨부자료를 복명서에 자동 삽입
+        _trip_attach_html = ""
+        _trip_extra_attach_html = ""
+        try:
+            _trip_id_for_report = int(target_trip.get("id")) if target_trip is not None else None
+            _files_res = supabase.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
+            _trip_files = _files_res.data or []
+        except Exception:
+            _trip_files = []
+        
+        _photo_blocks=[]
+        _extra_blocks=[]
+        for _f in _trip_files:
+            _ft=str(_f.get("file_type","")).strip()
+            _path=_f.get("storage_path")
+            _name=_f.get("file_name") or "첨부파일"
+            if not _path:
+                continue
+            try:
+                _signed=supabase.storage.from_("business-trip-files").create_signed_url(_path,3600)
+                _url=_signed.get("signedURL") or _signed.get("signedUrl") or _signed.get("signed_url")
+            except Exception:
+                _url=None
+            if not _url:
+                continue
+            _ext=str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
+            _is_image=_ext in ["jpg","jpeg","png","webp"]
+            if _ft=="출장사진" and _is_image:
+                _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><img src="{_url}" style="max-width:100%;max-height:210px;object-fit:contain;"><div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
+            elif _is_image:
+                _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div><img src="{_url}" style="max-width:100%;max-height:230px;object-fit:contain;"><div style="font-size:9px;">{_name}</div></div>')
+            else:
+                _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
+        
+        _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
+        if _extra_blocks:
+            _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
+
         trip_report_html = f"""
         <style>
         * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
@@ -4553,12 +4591,13 @@ if active_tab == 11:
           <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
           <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
           <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
-          <tr><td class="label">출장 사진</td><td colspan="6" class="photo">첨부 사진 출력 영역</td></tr>
+          <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
           <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
         </table>
         <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
         </div>
-        """
+        {_trip_extra_attach_html}
+"""
 
         pc1, pc2 = st.columns(2)
         with pc1:
