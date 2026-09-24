@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v21.5"
+APP_VERSION = "v22.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.5", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.5")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -962,8 +962,8 @@ if active_tab == 1:
             else:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
-    tab_list, tab_card, tab_history, tab_secure = st.tabs(
-        ["직원 목록","인사카드 등록·수정","인사이력","급여·계좌정보"]
+    tab_list, tab_card, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
+        ["직원 목록","인사카드 등록·수정","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
     )
 
     with tab_list:
@@ -1071,8 +1071,61 @@ if active_tab == 1:
                     except Exception as e:
                         st.error("저장하지 못했습니다. v21 인사정보 DB 확장 SQL을 먼저 적용했는지 확인해 주세요.")
 
+    with tab_salary:
+        st.markdown("#### 💰 직원별 급여·수당 설정")
+        st.caption("기존 직원관리의 급여 기준값을 복원한 화면입니다. 여기서 저장한 값은 기존 급여 계산에서 사용하는 employees 정보를 수정합니다.")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif not has_permission("employee_write"):
+            st.info("급여 기준정보 수정은 관리자 권한이 필요합니다.")
+        else:
+            _salary_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _salary_sel=st.selectbox("직원 선택",list(_salary_opts.keys()),key="v22_salary_emp")
+            _sr=_salary_opts[_salary_sel]
+            _seid=str(_sr.get("emp_id",""))
+            def _num(row,key,default=0):
+                try:
+                    v=row.get(key,default)
+                    return default if pd.isna(v) else int(float(v or 0))
+                except Exception:
+                    return default
+            def _flt(row,key,default=0.0):
+                try:
+                    v=row.get(key,default)
+                    return default if pd.isna(v) else float(v or 0)
+                except Exception:
+                    return default
+            with st.form("v22_salary_form"):
+                c1,c2,c3=st.columns(3)
+                _base=c1.number_input("기본급",min_value=0,value=_num(_sr,"base_salary"),step=10000,format="%d")
+                _hour=c2.number_input("통상시급",min_value=0,value=_num(_sr,"hourly_wage"),step=100,format="%d")
+                _leave=c3.number_input("연간 총 연차",min_value=0.0,value=_flt(_sr,"total_annual_leave",15.0),step=0.5,format="%.2f")
+                c1,c2,c3=st.columns(3)
+                _family=c1.number_input("가족수당",min_value=0,value=_num(_sr,"family_allowance"),step=10000,format="%d")
+                _non_tax=c2.number_input("비과세",min_value=0,value=_num(_sr,"non_taxable"),step=10000,format="%d")
+                _other=c3.number_input("기타수당",min_value=0,value=_num(_sr,"other_allowance"),step=10000,format="%d")
+                st.markdown("##### 4대보험 적용")
+                c1,c2,c3,c4=st.columns(4)
+                _nat=c1.checkbox("국민연금",value=bool(_num(_sr,"is_national",1)))
+                _health=c2.checkbox("건강·장기요양",value=bool(_num(_sr,"is_health",1)))
+                _empins=c3.checkbox("고용보험",value=bool(_num(_sr,"is_employment",1)))
+                _industrial=c4.checkbox("산재보험",value=bool(_num(_sr,"is_industrial",1)))
+                if st.form_submit_button("💾 급여·수당 설정 저장",use_container_width=True):
+                    try:
+                        supabase.table("employees").update({
+                            "base_salary":_base,"hourly_wage":_hour,
+                            "total_annual_leave":_leave,"family_allowance":_family,
+                            "non_taxable":_non_tax,"other_allowance":_other,
+                            "is_national":1 if _nat else 0,"is_health":1 if _health else 0,
+                            "is_employment":1 if _empins else 0,"is_industrial":1 if _industrial else 0
+                        }).eq("emp_id",_seid).execute()
+                        st.success("급여·수당 기준정보가 저장되었습니다.")
+                        st.rerun()
+                    except Exception:
+                        st.error("급여·수당 설정을 저장하지 못했습니다. employees 급여 컬럼을 확인해 주세요.")
+
     with tab_history:
-        st.markdown("#### 🗂️ 직원 인사이력")
+        st.markdown("#### 🗂️ 직원 인사이력·경력사항")
         if df_emp.empty:
             st.info("직원 등록 후 사용할 수 있습니다.")
         else:
@@ -1110,8 +1163,92 @@ if active_tab == 1:
                             else:
                                 st.error("인사이력 저장 실패: v21.5로 교체 후 로그아웃/재로그인해 주세요.")
 
+        st.divider()
+        st.markdown("#### 🧾 경력사항")
+        _career=_safe_table("employee_careers",eid)
+        if not _career.empty:
+            display_table_kr(_career,use_container_width=True,hide_index=True)
+        else:
+            st.info("등록된 경력사항이 없습니다.")
+        if has_permission("employee_write"):
+            with st.form("v22_career_form",clear_on_submit=True):
+                c1,c2=st.columns(2)
+                _company=c1.text_input("근무처")
+                _career_pos=c2.text_input("직위·직급")
+                c1,c2=st.columns(2)
+                _career_start=c1.date_input("근무 시작일",key="v22_career_start")
+                _career_end=c2.date_input("근무 종료일",key="v22_career_end")
+                c1,c2=st.columns(2)
+                _recognized=c1.number_input("인정경력(개월)",min_value=0.0,step=1.0,format="%.1f")
+                _career_type=c2.selectbox("경력구분",["경력","신입 전 경력","유사경력","기타"])
+                _duties=st.text_area("담당업무")
+                _career_note=st.text_area("경력 비고")
+                if st.form_submit_button("경력사항 등록"):
+                    try:
+                        supabase.table("employee_careers").insert({
+                            "emp_id":eid,"company_name":_company,"position":_career_pos,
+                            "start_date":_career_start.isoformat(),"end_date":_career_end.isoformat(),
+                            "recognized_months":_recognized,"career_type":_career_type,
+                            "duties":_duties,"note":_career_note
+                        }).execute()
+                        st.success("경력사항이 등록되었습니다."); st.rerun()
+                    except Exception:
+                        st.error("경력사항 저장 실패: v22.0 DB SQL 적용 여부를 확인해 주세요.")
+
+    with tab_docs:
+        st.markdown("#### 📁 직원별 인사서류")
+        st.caption("입사서류·계약서·자격증 등을 직원별 비공개 Storage에 보관합니다.")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif CURRENT_ROLE not in ("admin","manager"):
+            st.info("인사서류는 관리자/담당자만 관리할 수 있습니다.")
+        else:
+            _doc_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            _doc_sel=st.selectbox("직원 선택",list(_doc_opts.keys()),key="v22_doc_emp")
+            _deid=_doc_opts[_doc_sel]
+            _docs=_safe_table("employee_documents",_deid)
+            if not _docs.empty:
+                _show=[c for c in ["document_type","document_name","document_date","expiry_date","original_filename","note","created_at"] if c in _docs.columns]
+                display_table_kr(_docs[_show] if _show else _docs,use_container_width=True,hide_index=True)
+            else:
+                st.info("등록된 인사서류가 없습니다.")
+
+            with st.form("v22_doc_upload_form",clear_on_submit=True):
+                c1,c2=st.columns(2)
+                _dtype=c1.selectbox("문서구분",["이력서","자기소개서","경력증명서","자격증","근로계약서","급여·연봉계약서","개인정보 서류","채용서류","기타"])
+                _dname=c2.text_input("문서명")
+                c1,c2=st.columns(2)
+                _ddate=c1.date_input("작성·계약일",key="v22_doc_date")
+                _has_exp=c2.checkbox("유효기간 있음")
+                _expiry=st.date_input("유효기간",key="v22_doc_expiry") if _has_exp else None
+                _dnote=st.text_input("비고")
+                _file=st.file_uploader("파일 선택",type=["pdf","doc","docx","hwp","hwpx","xls","xlsx","jpg","jpeg","png"],key="v22_hr_file")
+                if st.form_submit_button("📤 인사서류 업로드",use_container_width=True):
+                    if _file is None:
+                        st.warning("업로드할 파일을 선택해 주세요.")
+                    else:
+                        try:
+                            import uuid as _uuid
+                            _ext=Path(_file.name).suffix.lower()
+                            _storage_path=f"{_deid}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{_uuid.uuid4().hex[:10]}{_ext}"
+                            supabase.storage.from_("employee-documents").upload(
+                                _storage_path,_file.getvalue(),
+                                {"content-type":_file.type or "application/octet-stream","upsert":"false"}
+                            )
+                            supabase.table("employee_documents").insert({
+                                "emp_id":_deid,"document_type":_dtype,
+                                "document_name":_dname or _file.name,
+                                "document_date":_ddate.isoformat() if _ddate else None,
+                                "expiry_date":_expiry.isoformat() if _expiry else None,
+                                "original_filename":_file.name,"storage_path":_storage_path,
+                                "note":_dnote
+                            }).execute()
+                            st.success("인사서류가 업로드되었습니다."); st.rerun()
+                        except Exception:
+                            st.error("인사서류 업로드 실패: v22.0 DB/Storage SQL 적용 여부를 확인해 주세요.")
+
     with tab_secure:
-        st.markdown("#### 💳 급여·계좌 및 민감정보")
+        st.markdown("#### 💳 계좌·민감정보")
         st.warning("주민등록번호와 계좌정보는 관리자 전용 별도 테이블에 저장하며 직원목록에는 표시하지 않습니다.")
         if CURRENT_ROLE!="admin":
             st.info("관리자만 민감정보를 조회·수정할 수 있습니다.")
