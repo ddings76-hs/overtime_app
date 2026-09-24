@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v26.0"
+APP_VERSION = "v27.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v26.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v27.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -249,30 +249,6 @@ def safe_int(value):
     return int(value)
 
 def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
-
-    # v26.0 급여 검증·마감 현황 (기존 급여 계산식은 변경하지 않음)
-    with st.expander("🔎 급여 검증 · 전월비교 · 마감상태", expanded=True):
-        st.caption("기존 급여 계산 결과를 기준으로 검증합니다. 이 화면에서는 급여 산식 자체를 변경하지 않습니다.")
-        try:
-            _v260_close=pd.DataFrame(supabase.table("payroll_monthly_closings").select("*").order("id",desc=True).limit(24).execute().data or [])
-        except Exception:
-            _v260_close=pd.DataFrame()
-        if _v260_close.empty:
-            st.info("등록된 급여 마감 이력이 없습니다.")
-        else:
-            _v260_show=_v260_close.copy()
-            _v260_show=_v260_show.rename(columns={"pay_month":"지급월","month":"지급월","status":"마감상태","closed_at":"마감일시","closed_by":"마감자","created_at":"등록일"})
-            _v260_cols=[c for c in ["지급월","마감상태","마감일시","마감자","등록일"] if c in _v260_show.columns]
-            if _v260_cols:
-                st.dataframe(_v260_show[_v260_cols],use_container_width=True,hide_index=True)
-    
-        st.markdown("**급여 검증 체크**")
-        st.write("• 급여대장 합계와 직원별 명세서 합계가 동일한지 확인")
-        st.write("• 지급총액 - 공제총액 = 실지급액 관계 확인")
-        st.write("• 전월 대비 급여 변동이 큰 직원 확인")
-        st.write("• 마감된 지급월의 수정 여부 확인")
-        st.info("v26.0에서는 검증·마감 현황부터 안전하게 추가했습니다. 기존 계산/저장 로직은 그대로 유지합니다.")
-
     """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
     employees = []
     totals = {
@@ -359,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v26.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v27.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -894,6 +870,58 @@ if active_tab == 0:
                     cs=[c for c in ["start_date","end_date","leave_type","used_days"] if c in _lv.columns]
                     display_table_kr((_lv.sort_values("id",ascending=False).head(5) if "id" in _lv else _lv.tail(5))[cs],use_container_width=True,hide_index=True)
                 st.subheader("⏱️ 최근 초과근무")
+
+                # v27.0 초과근무 급여반영기간 통합 조회
+                with st.expander("🕒 초과근무 급여반영 현황", expanded=False):
+                    _v270_today=datetime.now().date()
+                    _v270_year=st.selectbox("지급연도",list(range(_v270_today.year-2,_v270_today.year+2)),index=2,key="v270_ot_year")
+                    _v270_month=st.selectbox("지급월",list(range(1,13)),index=_v270_today.month-1,key="v270_ot_month")
+                    if _v270_month==1:
+                        _v270_start=datetime(_v270_year-1,12,25).date()
+                    else:
+                        _v270_start=datetime(_v270_year,_v270_month-1,25).date()
+                    _v270_end=datetime(_v270_year,_v270_month,24).date()
+                    st.caption(f"급여 반영기간: {_v270_start.isoformat()} ~ {_v270_end.isoformat()} (전월 25일 ~ 당월 24일)")
+                
+                    try:
+                        _v270_ot=pd.DataFrame(
+                            supabase.table("overtime_records").select("*")
+                            .gte("work_date",_v270_start.isoformat()).lte("work_date",_v270_end.isoformat())
+                            .execute().data or []
+                        )
+                    except Exception:
+                        _v270_ot=pd.DataFrame()
+                
+                    if _v270_ot.empty:
+                        st.info("해당 급여 반영기간의 초과근무 기록이 없습니다.")
+                    else:
+                        _v270_emp_col=next((c for c in ["emp_name","employee_name","name"] if c in _v270_ot.columns),None)
+                        _v270_id_col=next((c for c in ["emp_id","employee_id"] if c in _v270_ot.columns),None)
+                        _v270_hours_col=next((c for c in ["approved_hours","overtime_hours","hours","work_hours"] if c in _v270_ot.columns),None)
+                        _v270_pay_col=next((c for c in ["overtime_pay","pay_amount","amount"] if c in _v270_ot.columns),None)
+                
+                        _v270_count=len(_v270_ot)
+                        _v270_hours=float(pd.to_numeric(_v270_ot[_v270_hours_col],errors="coerce").fillna(0).sum()) if _v270_hours_col else 0
+                        _v270_pay=int(pd.to_numeric(_v270_ot[_v270_pay_col],errors="coerce").fillna(0).sum()) if _v270_pay_col else 0
+                        c1,c2,c3=st.columns(3)
+                        c1.metric("초과근무 기록",f"{_v270_count:,}건")
+                        c2.metric("반영시간",f"{_v270_hours:,.2f}시간")
+                        c3.metric("초과근무수당",f"{_v270_pay:,}원")
+                
+                        if _v270_emp_col and _v270_hours_col:
+                            _grp_cols=[c for c in [_v270_id_col,_v270_emp_col] if c]
+                            _agg={_v270_hours_col:"sum"}
+                            if _v270_pay_col: _agg[_v270_pay_col]="sum"
+                            _v270_sum=_v270_ot.groupby(_grp_cols,dropna=False).agg(_agg).reset_index()
+                            _rename={_v270_id_col:"사번",_v270_emp_col:"성명",_v270_hours_col:"반영시간",_v270_pay_col:"초과근무수당"}
+                            _v270_sum=_v270_sum.rename(columns={k:v for k,v in _rename.items() if k})
+                            if "반영시간" in _v270_sum.columns: _v270_sum["반영시간"]=_v270_sum["반영시간"].round(2)
+                            st.dataframe(_v270_sum,use_container_width=True,hide_index=True)
+                        else:
+                            st.dataframe(_v270_ot,use_container_width=True,hide_index=True)
+                
+                    st.info("이 화면은 초과근무의 급여 반영기간을 확인하는 조회 기능입니다. 기존 초과근무 등록·승인·급여 계산식은 변경하지 않습니다.")
+
                 if _ot.empty: st.info("초과근무 내역이 없습니다.")
                 else:
                     cs=[c for c in ["work_date","ot_date","hours","status"] if c in _ot.columns]
@@ -2849,6 +2877,11 @@ if active_tab == 6:
     except Exception:
         closing_table_ready = False
 
+    # v26.2: finalized payroll is read-only until an administrator cancels closing.
+    payroll_locked = bool(current_closing and current_closing.get("status") == "finalized")
+    if payroll_locked:
+        st.warning(f"🔒 {pay_month} {pay_run_no}차 급여는 마감되었습니다. 관리자 마감취소 전에는 수정·저장·재확정할 수 없습니다.")
+
     if df_emp.empty:
         st.warning("등록된 직원이 없다.")
     else:
@@ -2971,7 +3004,7 @@ if active_tab == 6:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            disabled=identity_columns,
+            disabled=(list(df_calc.columns) if payroll_locked else identity_columns),
             column_config=column_config,
             height=min(650, max(220, 38 * (len(df_calc) + 2)))
         )
@@ -3001,11 +3034,19 @@ if active_tab == 6:
         metric_cols[3].metric("사업주 부담보험", f"{int(employer_series.sum()):,}원")
         metric_cols[4].metric("퇴직적립금", f"{int(edited_payroll['퇴직적립금'].sum()):,}원")
 
+        # v26.2: payroll ledger arithmetic validation used by payslip/closing.
+        ledger_check_diff = (gross_series - deduction_series - net_series).round(0)
+        ledger_check_ok = bool((ledger_check_diff.abs() <= 1).all())
+        if ledger_check_ok:
+            st.success("✅ 급여대장 자동검증 정상: 직원별 지급총액 - 공제총액 = 실지급액이 모두 일치합니다.")
+        else:
+            st.error("❌ 급여대장 자동검증 불일치가 있습니다. 수정 후 저장·마감해 주세요.")
+
         action_col1, action_col2 = st.columns([3, 1])
         with action_col1:
             save_adjustments = st.button(
                 "💾 수정사항 개별 급여명세서에 연동 저장",
-                disabled=bool(invalid_cells),
+                disabled=(bool(invalid_cells) or payroll_locked),
                 use_container_width=True
             )
         with action_col2:
@@ -3101,8 +3142,8 @@ if active_tab == 6:
 
         confirm_col, cancel_col = st.columns(2)
         with confirm_col:
-            confirm_label = "🔒 월 급여 확정" if not current_closing else "🔁 변경 내용 재확정"
-            if st.button(confirm_label, disabled=(not closing_table_ready or not multi_run_ready or bool(invalid_cells)), use_container_width=True):
+            confirm_label = "🔒 마감 완료" if payroll_locked else ("🔒 월 급여 확정" if not current_closing else "🔁 월 급여 재확정")
+            if st.button(confirm_label, disabled=(payroll_locked or not closing_table_ready or not multi_run_ready or bool(invalid_cells) or not ledger_check_ok), use_container_width=True):
                 for _, r in edited_payroll.iterrows():
                     supabase.table("monthly_payroll_adjust").upsert({
                         "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
@@ -3136,8 +3177,10 @@ if active_tab == 6:
                 st.rerun()
 
         with cancel_col:
-            can_cancel = bool(current_closing and current_closing.get("status") == "finalized")
-            if st.button("🔓 확정 취소", disabled=not can_cancel, use_container_width=True):
+            can_cancel = bool(payroll_locked and CURRENT_ROLE == "admin")
+            if payroll_locked and CURRENT_ROLE != "admin":
+                st.caption("마감취소는 관리자만 가능합니다.")
+            if st.button("🔓 관리자 마감취소", disabled=not can_cancel, use_container_width=True):
                 supabase.table("payroll_monthly_closings").update({
                     "status": "cancelled", "updated_at": datetime.now().isoformat()
                 }).eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
@@ -3346,6 +3389,36 @@ if active_tab == 7:
         total_gross = base + ot_pay + family + holiday_bonus + non_tax + other_allow
         emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
         net_pay = total_gross - emp_deduction_total
+
+        # v26.2: compare payslip totals with finalized payroll ledger snapshot.
+        try:
+            _slip_close_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).execute()
+            _slip_close = _slip_close_res.data[0] if _slip_close_res.data else None
+        except Exception:
+            _slip_close = None
+        if _slip_close and _slip_close.get("status") == "finalized":
+            _snap = _slip_close.get("payroll_data") or {}
+            if isinstance(_snap, str):
+                try:
+                    import json as _json_v262
+                    _snap = _json_v262.loads(_snap)
+                except Exception:
+                    _snap = {}
+            _snap_emp = next((x for x in (_snap.get("employees",[]) if isinstance(_snap,dict) else []) if str(x.get("emp_id","")) == str(emp["emp_id"])), None)
+            if _snap_emp:
+                _match = (
+                    safe_int(_snap_emp.get("gross_pay")) == safe_int(total_gross)
+                    and safe_int(_snap_emp.get("employee_deductions")) == safe_int(emp_deduction_total)
+                    and safe_int(_snap_emp.get("net_pay")) == safe_int(net_pay)
+                )
+                if _match:
+                    st.success("✅ 급여명세서 자동검증 정상: 마감된 급여대장과 지급총액·공제총액·실지급액이 일치합니다.")
+                else:
+                    st.error("❌ 급여명세서와 마감된 급여대장이 일치하지 않습니다. 관리자 확인이 필요합니다.")
+            else:
+                st.warning("마감 급여대장에서 해당 직원 자료를 찾지 못했습니다.")
+        else:
+            st.info("현재 지급월/차수는 아직 마감되지 않아 급여대장↔명세서 확정 일치검증 대상이 아닙니다.")
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 32px; float: left;">' if st.session_state.logo_b64 else ''
 
