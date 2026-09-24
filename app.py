@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v27.0"
+APP_VERSION = "v27.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v27.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v27.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v27.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v27.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -2226,6 +2226,24 @@ if active_tab == 3:
         with col_ot2:
             st.write("**🗑️ 선택 내역 삭제**")
             if st.button("해당 초과근무 내역 삭제", type="primary", key="del_ot_btn"):
+                _dw=pd.to_datetime(target_ot.get("work_date"),errors="coerce")
+                _dl=False
+                _dpm=None
+                if pd.notna(_dw):
+                    _dd=_dw.date()
+                    if _dd.day >= 25:
+                        _dn=(_dw + pd.DateOffset(months=1)).date()
+                        _dpm=f"{_dn.year:04d}-{_dn.month:02d}"
+                    else:
+                        _dpm=f"{_dd.year:04d}-{_dd.month:02d}"
+                    try:
+                        _dq=supabase.table("payroll_monthly_closings").select("id").eq("pay_month",_dpm).eq("status","finalized").execute()
+                        _dl=bool(_dq.data)
+                    except Exception:
+                        _dl=False
+                if _dl:
+                    st.error(f"🔒 {_dpm} 급여 마감자료이므로 삭제할 수 없습니다. 관리자 마감취소 후 처리하세요.")
+                    st.stop()
                 supabase.table("overtime_records").delete().eq("id", int(target_ot['id'])).execute()
                 st.success(f"ID {target_ot['id']} 초과근무 내역이 정상적으로 삭제되었다.")
                 st.rerun()
@@ -2242,6 +2260,27 @@ if active_tab == 3:
 
         st.subheader(f"✏️ 실제 수행 시간 및 승인 상태 변경: {target_ot['emp_name']} ({target_ot['work_date']})")
         
+        # v27.2: 급여 마감 완료 기간의 초과근무는 과거 지급자료로 보호
+        _ot_wd=pd.to_datetime(target_ot.get("work_date"),errors="coerce")
+        _ot_pay_month=None
+        _ot_payroll_locked=False
+        if pd.notna(_ot_wd):
+            _d=_ot_wd.date()
+            if _d.day >= 25:
+                _nm=(_ot_wd + pd.DateOffset(months=1)).date()
+                _ot_pay_month=f"{_nm.year:04d}-{_nm.month:02d}"
+            else:
+                _ot_pay_month=f"{_d.year:04d}-{_d.month:02d}"
+            try:
+                _cl=supabase.table("payroll_monthly_closings").select("*").eq("pay_month",_ot_pay_month).eq("status","finalized").execute()
+                _ot_payroll_locked=bool(_cl.data)
+            except Exception:
+                _ot_payroll_locked=False
+        if _ot_payroll_locked:
+            st.warning(f"🔒 {_ot_pay_month} 급여가 마감·지출 완료된 기간입니다. 기존 인정시간과 초과근무수당을 그대로 보존하며 수정·재계산할 수 없습니다.")
+        else:
+            st.caption(f"급여 반영월: {_ot_pay_month or '-'} · 미마감 자료는 인정시간 기준 계산식을 적용합니다.")
+
         with st.form("actual_ot_form"):
             col_a1, col_a2 = st.columns(2)
             with col_a1:
@@ -2259,26 +2298,31 @@ if active_tab == 3:
                     init_s_time = time(18, 0)
                     init_e_time = time(20, 0)
 
-                act_s_time = st.time_input("실제 시작 시간", init_s_time)
-                act_e_time = st.time_input("실제 종료 시간", init_e_time)
+                act_s_time = st.time_input("실제 시작 시간", init_s_time, disabled=_ot_payroll_locked)
+                act_e_time = st.time_input("실제 종료 시간", init_e_time, disabled=_ot_payroll_locked)
 
                 dummy_date = datetime.now().date()
                 s_dt = datetime.combine(dummy_date, act_s_time)
                 e_dt = datetime.combine(dummy_date, act_e_time)
                 calculated_act_hours = max(0.0, (e_dt - s_dt).total_seconds() / 3600)
+                # v27.1: 화면에 확정되는 인정시간(소수점 1자리)을 급여 계산 기준으로 사용
+                recognized_hours = round(calculated_act_hours, 1)
 
-                st.metric(label="실제 인정 시간", value=f"{calculated_act_hours:.1f} 시간")
-                act_pay = truncate_ten(calculated_act_hours * hourly_w * 1.5)
+                st.metric(label="실제 인정 시간", value=f"{recognized_hours:.1f} 시간")
+                act_pay = truncate_ten(recognized_hours * hourly_w * 1.5)
                 
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
                 act_reason_input = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else '')
 
-            submit_act = st.form_submit_button("실제 수행 내역 저장 및 승인 반영")
+            submit_act = st.form_submit_button("실제 수행 내역 저장 및 승인 반영", disabled=_ot_payroll_locked)
 
             if submit_act:
+                if _ot_payroll_locked:
+                    st.error("마감된 급여 반영기간의 초과근무는 수정하거나 재계산할 수 없습니다.")
+                    st.stop()
                 update_data = {
                     "act_start_time": str(act_s_time), "act_end_time": str(act_e_time),
-                    "actual_duration_hours": calculated_act_hours, "actual_pay": act_pay,
+                    "actual_duration_hours": recognized_hours, "actual_pay": act_pay,
                     "status": status_choice, "act_reason": act_reason_input
                 }
                 supabase.table("overtime_records").update(update_data).eq("id", int(target_ot['id'])).execute()
