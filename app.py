@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -3680,8 +3680,12 @@ if active_tab == 13:
                     col=next((c for c in preferred if c in df.columns),None)
                     if not col:
                         return df.iloc[0:0].copy()
-                    ds=pd.to_datetime(df[col],errors="coerce")
-                    return df[(ds>=pd.Timestamp(_range_start)) & (ds<=pd.Timestamp(_range_end+" 23:59:59"))].copy()
+                    # Supabase timestamptz(+00:00)와 일반 날짜가 섞여 있어도
+                    # 모두 UTC 기준으로 변환한 뒤 날짜만 비교하여 tz-aware/naive 충돌 방지
+                    ds=pd.to_datetime(df[col],errors="coerce",utc=True)
+                    start_ts=pd.to_datetime(_range_start,utc=True)
+                    end_ts=pd.to_datetime(_range_end+" 23:59:59",utc=True)
+                    return df[(ds>=start_ts) & (ds<=end_ts)].copy()
 
                 _rlv=_range20(_lv_all,["start_date","leave_date","created_at"])
                 _rot=_range20(_ot_all,["work_date","ot_date","created_at"])
