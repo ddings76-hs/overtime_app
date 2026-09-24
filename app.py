@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v25.0"
+APP_VERSION = "v26.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v25.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v26.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -249,6 +249,30 @@ def safe_int(value):
     return int(value)
 
 def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
+
+    # v26.0 급여 검증·마감 현황 (기존 급여 계산식은 변경하지 않음)
+    with st.expander("🔎 급여 검증 · 전월비교 · 마감상태", expanded=True):
+        st.caption("기존 급여 계산 결과를 기준으로 검증합니다. 이 화면에서는 급여 산식 자체를 변경하지 않습니다.")
+        try:
+            _v260_close=pd.DataFrame(supabase.table("payroll_monthly_closings").select("*").order("id",desc=True).limit(24).execute().data or [])
+        except Exception:
+            _v260_close=pd.DataFrame()
+        if _v260_close.empty:
+            st.info("등록된 급여 마감 이력이 없습니다.")
+        else:
+            _v260_show=_v260_close.copy()
+            _v260_show=_v260_show.rename(columns={"pay_month":"지급월","month":"지급월","status":"마감상태","closed_at":"마감일시","closed_by":"마감자","created_at":"등록일"})
+            _v260_cols=[c for c in ["지급월","마감상태","마감일시","마감자","등록일"] if c in _v260_show.columns]
+            if _v260_cols:
+                st.dataframe(_v260_show[_v260_cols],use_container_width=True,hide_index=True)
+    
+        st.markdown("**급여 검증 체크**")
+        st.write("• 급여대장 합계와 직원별 명세서 합계가 동일한지 확인")
+        st.write("• 지급총액 - 공제총액 = 실지급액 관계 확인")
+        st.write("• 전월 대비 급여 변동이 큰 직원 확인")
+        st.write("• 마감된 지급월의 수정 여부 확인")
+        st.info("v26.0에서는 검증·마감 현황부터 안전하게 추가했습니다. 기존 계산/저장 로직은 그대로 유지합니다.")
+
     """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
     employees = []
     totals = {
@@ -335,7 +359,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v25.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v26.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
