@@ -15,14 +15,15 @@ import hashlib
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from supabase import create_client, Client
+import json
 
 # 페이지 기본 설정
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.2"
+APP_VERSION = "v23.3.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -334,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.3")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1371,8 +1372,7 @@ th { font-weight:700; background:#f2f2f2; }
 .print-footer { font-size:8px; text-align:right; margin-top:3mm; }
 @media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
 </style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
-import json as _json
-_print_doc_js=_json.dumps(_print_doc)
+_print_doc_js=json.dumps(_print_doc)
 if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
     st.components.v1.html(f"""<script>
 const doc={_print_doc_js};
