@@ -21,7 +21,7 @@ TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
 APP_VERSION = "v19.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v19.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -339,6 +339,7 @@ COLUMN_KR = {
     "estimated_pay":"예상수당","act_start_time":"실적시작시간","act_end_time":"실적종료시간",
     "actual_hours":"실적시간","work_hours":"근무시간","hours":"시간",
     "actual_pay":"실적수당","approved_pay":"승인수당",
+    "actual_duration_hours":"실적시간","act_reason":"실적사유","requested_hours":"신청시간","approved_hours":"승인시간",
     # 출장
     "trip_type":"출장구분","purpose":"출장목적","start_at":"출장시작","end_at":"출장종료",
     "destination":"출장지","transport_type":"교통수단","distance_km":"출장거리(km)",
@@ -357,6 +358,7 @@ COLUMN_KR = {
     "ot_pay_overridden":"초과수당수정","gross_pay":"급여총액",
     "employee_deductions":"근로자공제합계","net_pay":"실지급액",
     "employer_insurance":"사업주부담보험","retirement_accrual":"퇴직적립금",
+    "employer_national_pension":"사업주국민연금","employer_health_insurance":"사업주건강보험","employer_longterm_care":"사업주장기요양보험","employer_employment_insurance":"사업주고용보험","employer_industrial_insurance":"사업주산재보험","retirement_reserve":"퇴직적립금",
     # 파일/변경
     "file_type":"파일구분","file_name":"파일명","change_type":"변경구분",
     "change_reason":"변경사유","new_destination":"변경출장지","approval_type":"승인구분",
@@ -3544,80 +3546,148 @@ if active_tab == 12:
 
 
 # -------------------------------------------------------------------
-# TAB 13: v19.2 관리자 월별 통계·보고서
+
+# TAB 13: v20 관리자 통합 통계·보고서
 if active_tab == 13:
-    st.subheader("📊 관리자 월별 통계·보고서")
+    st.subheader("📊 관리자 통합 통계·보고서")
     if not can_manage_all_records():
         st.warning("관리자 또는 담당자만 이용할 수 있습니다.")
     else:
-        _now = datetime.now()
-        _years = list(range(_now.year - 3, _now.year + 2))
-        _c1, _c2 = st.columns(2)
-        _year = _c1.selectbox("연도", _years, index=_years.index(_now.year), key="v19_year")
-        _month = _c2.selectbox("월", range(1,13), index=_now.month-1, format_func=lambda x: f"{x}월", key="v19_month")
-        _ym = f"{_year:04d}-{_month:02d}"
+        _now=datetime.now()
+        _years=list(range(_now.year-3,_now.year+2))
+        _c1,_c2=st.columns(2)
+        _year=_c1.selectbox("연도",_years,index=_years.index(_now.year),key="v20_year")
+        _month=_c2.selectbox("월",range(1,13),index=_now.month-1,format_func=lambda x:f"{x}월",key="v20_month")
+        _ym=f"{_year:04d}-{_month:02d}"
 
-        def _v19_load(table):
+        def _load20(table):
+            try: return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
+            except Exception: return pd.DataFrame()
+
+        def _month20(df, ym, preferred):
+            if df.empty: return df
+            col=next((c for c in preferred if c in df.columns),None)
+            if not col: return df.iloc[0:0].copy()
+            return df[df[col].astype(str).str[:7]==ym].copy()
+
+        def _sum20(df, cols):
+            if df.empty:return 0.0
+            c=next((x for x in cols if x in df.columns),None)
+            return float(pd.to_numeric(df[c],errors="coerce").fillna(0).sum()) if c else 0.0
+
+        _pay_all=_load20("monthly_payroll_adjust")
+        _lv_all=_load20("leave_records")
+        _ot_all=_load20("overtime_records")
+        _tr_all=_load20("business_trips")
+        _emp_all=_load20("employees")
+
+        def _datasets20(ym):
+            return (
+                _month20(_pay_all,ym,["pay_month","created_at"]),
+                _month20(_lv_all,ym,["start_date","leave_date","created_at"]),
+                _month20(_ot_all,ym,["work_date","ot_date","created_at"]),
+                _month20(_tr_all,ym,["start_at","start_date","created_at"])
+            )
+
+        _pay,_lv,_ot,_tr=_datasets20(_ym)
+        _prev_dt=(pd.Timestamp(f"{_ym}-01")-pd.offsets.MonthBegin(1))
+        _pym=_prev_dt.strftime("%Y-%m")
+        _ppay,_plv,_pot,_ptr=_datasets20(_pym)
+
+        _pay_sum=_sum20(_pay,["gross_pay","total_pay","pay_total","total_salary","net_pay"])
+        _lv_sum=_sum20(_lv,["used_days","leave_days","days","day_count"])
+        _ot_sum=_sum20(_ot,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"])
+        _tr_sum=_sum20(_tr,["total_cost"])
+        _prev=[_sum20(_ppay,["gross_pay","total_pay","pay_total","total_salary","net_pay"]),
+               _sum20(_plv,["used_days","leave_days","days","day_count"]),
+               _sum20(_pot,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"]),
+               _sum20(_ptr,["total_cost"])]
+
+        tab_month,tab_year,tab_check,tab_export=st.tabs(["월간 현황","연간 현황","데이터 점검","Excel 통합보고서"])
+
+        with tab_month:
+            st.markdown(f"#### {_year}년 {_month}월 통합 현황")
+            a,b,c,d=st.columns(4)
+            a.metric("급여",f"{int(_pay_sum):,}원" if _pay_sum else f"{len(_pay)}건",
+                     delta=f"{int(_pay_sum-_prev[0]):+,}원 전월대비")
+            b.metric("연차",f"{_lv_sum:,.2f}일" if _lv_sum else f"{len(_lv)}건",
+                     delta=f"{_lv_sum-_prev[1]:+.2f}일 전월대비")
+            c.metric("초과근무",f"{_ot_sum:,.2f}시간" if _ot_sum else f"{len(_ot)}건",
+                     delta=f"{_ot_sum-_prev[2]:+.2f}시간 전월대비")
+            d.metric("출장비",f"{int(_tr_sum):,}원" if _tr_sum else f"{len(_tr)}건",
+                     delta=f"{int(_tr_sum-_prev[3]):+,}원 전월대비")
+            st.markdown("#### 월간 상세자료")
+            m1,m2,m3,m4=st.tabs(["급여","연차","초과근무","출장"])
+            with m1: display_table_kr(_pay,use_container_width=True,hide_index=True)
+            with m2: display_table_kr(_lv,use_container_width=True,hide_index=True)
+            with m3: display_table_kr(_ot,use_container_width=True,hide_index=True)
+            with m4: display_table_kr(_tr,use_container_width=True,hide_index=True)
+
+        with tab_year:
+            rows=[]
+            for mm in range(1,13):
+                ym=f"{_year:04d}-{mm:02d}"
+                p,l,o,r=_datasets20(ym)
+                rows.append({"월":f"{mm}월",
+                    "급여총액":_sum20(p,["gross_pay","total_pay","pay_total","total_salary","net_pay"]),
+                    "연차사용일수":_sum20(l,["used_days","leave_days","days","day_count"]),
+                    "초과근무시간":_sum20(o,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"]),
+                    "출장비":_sum20(r,["total_cost"])})
+            _annual=pd.DataFrame(rows)
+            display_table_kr(_annual,use_container_width=True,hide_index=True)
+            st.markdown("##### 연간 월별 추이")
+            _chart=_annual.copy()
+            _chart["월번호"]=range(1,13)
+            st.line_chart(_chart.set_index("월번호")[["연차사용일수","초과근무시간"]])
+            st.bar_chart(_chart.set_index("월번호")[["급여총액","출장비"]])
+
+        with tab_check:
+            st.markdown("#### ⚠️ 데이터 점검")
+            issues=[]
+            if not _pay.empty:
+                pc=next((c for c in ["gross_pay","total_pay","pay_total","total_salary","net_pay"] if c in _pay.columns),None)
+                if pc:
+                    n=int((pd.to_numeric(_pay[pc],errors="coerce").fillna(0)<=0).sum())
+                    if n: issues.append({"점검항목":"급여 0원/누락","건수":n,"조치":"급여대장 확인"})
+            if not _ot.empty:
+                hc=next((c for c in ["actual_duration_hours","actual_hours","work_hours"] if c in _ot.columns),None)
+                if hc:
+                    n=int(pd.to_numeric(_ot[hc],errors="coerce").isna().sum())
+                    if n: issues.append({"점검항목":"초과근무 실적시간 누락","건수":n,"조치":"초과근무 실적 확인"})
+            if not _tr.empty:
+                if "report_status" in _tr.columns:
+                    n=int((~_tr["report_status"].astype(str).isin(["완료","승인"])).sum())
+                    if n: issues.append({"점검항목":"출장 복명 미완료","건수":n,"조치":"출장 복명 확인"})
+                if "settlement_status" in _tr.columns:
+                    n=int((~_tr["settlement_status"].astype(str).isin(["완료","승인"])).sum())
+                    if n: issues.append({"점검항목":"출장비 미정산","건수":n,"조치":"출장 정산 확인"})
+            if not _emp_all.empty:
+                required=[c for c in ["emp_id","emp_name","dept","position"] if c in _emp_all.columns]
+                if required:
+                    n=int(_emp_all[required].isna().any(axis=1).sum())
+                    if n: issues.append({"점검항목":"직원 기본정보 누락","건수":n,"조치":"직원관리 확인"})
+            if issues: display_table_kr(pd.DataFrame(issues),use_container_width=True,hide_index=True)
+            else: st.success("선택한 월 기준 주요 데이터 점검에서 이상 항목이 발견되지 않았습니다.")
+
+        with tab_export:
+            st.markdown("#### 📥 월간·연간 통합보고서")
             try:
-                return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
-            except Exception:
-                return pd.DataFrame()
-
-        def _v19_month(df):
-            if df.empty:
-                return df
-            for col in ["pay_month","month","work_date","date","start_date","start_at","created_at","leave_date"]:
-                if col in df.columns:
-                    return df[df[col].astype(str).str[:7] == _ym].copy()
-            return df.iloc[0:0].copy()
-
-        def _v19_sum(df, cols):
-            if df.empty:
-                return 0.0
-            col = next((c for c in cols if c in df.columns), None)
-            return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum()) if col else 0.0
-
-        _pay = _v19_month(_v19_load("monthly_payroll_adjust"))
-        _leave = _v19_month(_v19_load("leave_records"))
-        _ot = _v19_month(_v19_load("overtime_records"))
-        _trip = _v19_month(_v19_load("business_trips"))
-
-        _pay_sum = _v19_sum(_pay, ["gross_pay","total_pay","pay_total","total_salary","net_pay"])
-        _leave_sum = _v19_sum(_leave, ["days","leave_days","used_days","day_count"])
-        _ot_sum = _v19_sum(_ot, ["hours","actual_hours","work_hours"])
-        _trip_sum = _v19_sum(_trip, ["total_cost"])
-
-        st.markdown(f"#### {_year}년 {_month}월 통합 현황")
-        _m1,_m2,_m3,_m4 = st.columns(4)
-        _m1.metric("급여", f"{int(_pay_sum):,}원" if _pay_sum else f"{len(_pay)}건")
-        _m2.metric("연차", f"{_leave_sum:g}일" if _leave_sum else f"{len(_leave)}건")
-        _m3.metric("초과근무", f"{_ot_sum:g}시간" if _ot_sum else f"{len(_ot)}건")
-        _m4.metric("출장비", f"{int(_trip_sum):,}원" if _trip_sum else f"{len(_trip)}건")
-
-        st.markdown("#### 월간 상세자료")
-        _t1,_t2,_t3,_t4 = st.tabs(["급여","연차","초과근무","출장"])
-        with _t1: display_table_kr(_pay, use_container_width=True, hide_index=True)
-        with _t2: display_table_kr(_leave, use_container_width=True, hide_index=True)
-        with _t3: display_table_kr(_ot, use_container_width=True, hide_index=True)
-        with _t4: display_table_kr(_trip, use_container_width=True, hide_index=True)
-
-        try:
-            from io import BytesIO
-            _bio = BytesIO()
-            with pd.ExcelWriter(_bio, engine="openpyxl") as _writer:
-                pd.DataFrame([{"기준월":_ym,"급여합계":_pay_sum,"연차사용":_leave_sum,
-                               "초과근무시간":_ot_sum,"출장비":_trip_sum}]).to_excel(_writer, sheet_name="월간요약", index=False)
-                excel_view_df(_pay).to_excel(_writer, sheet_name="급여", index=False)
-                excel_view_df(_leave).to_excel(_writer, sheet_name="연차", index=False)
-                excel_view_df(_ot).to_excel(_writer, sheet_name="초과근무", index=False)
-                excel_view_df(_trip).to_excel(_writer, sheet_name="출장", index=False)
-                for _ws in _writer.book.worksheets:
-                    style_excel_sheet(_ws)
-            st.download_button("📥 월간 통합보고서 Excel 다운로드", _bio.getvalue(),
-                               file_name=f"월간_통합업무보고서_{_ym}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        except Exception as _e:
-            st.caption(f"Excel 보고서 생성 확인 필요: {_e}")
+                from io import BytesIO
+                _bio=BytesIO()
+                with pd.ExcelWriter(_bio,engine="openpyxl") as w:
+                    pd.DataFrame([{"기준월":_ym,"직원수":len(_emp_all),"급여합계":_pay_sum,
+                        "연차사용일수":_lv_sum,"초과근무시간":_ot_sum,"출장비":_tr_sum}]).to_excel(w,sheet_name="업무현황요약",index=False)
+                    excel_view_df(_pay).to_excel(w,sheet_name="급여",index=False)
+                    excel_view_df(_lv).to_excel(w,sheet_name="연차",index=False)
+                    excel_view_df(_ot).to_excel(w,sheet_name="초과근무",index=False)
+                    excel_view_df(_tr).to_excel(w,sheet_name="출장",index=False)
+                    excel_view_df(_annual).to_excel(w,sheet_name="연간현황",index=False)
+                    for ws in w.book.worksheets: style_excel_sheet(ws)
+                st.download_button("📥 월간·연간 통합 Excel 다운로드",_bio.getvalue(),
+                    file_name=f"통합업무보고서_{_ym}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            except Exception as e:
+                st.error(f"보고서 생성 중 확인이 필요합니다: {e}")
 
 
 # 모든 업무화면 공통 하단 회사 로고
