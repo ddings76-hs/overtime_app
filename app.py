@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.5"
+APP_VERSION = "v28.6"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.5", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.6", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.5")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.6")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -928,6 +928,23 @@ if active_tab == 0:
                     display_table_kr((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
             with b:
                 st.subheader("🚗 최근 출장")
+
+                # v28.6 출장관리 업무현황
+                try:
+                    _v286_all=pd.DataFrame(supabase.table("business_trips").select("*").execute().data or [])
+                except Exception:
+                    _v286_all=pd.DataFrame()
+                if not _v286_all.empty:
+                    _ap=_v286_all.get("apply_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _rp=_v286_all.get("report_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _sp=_v286_all.get("settlement_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _c1,_c2,_c3,_c4,_c5=st.columns(5)
+                    _c1.metric("전체 출장",f"{len(_v286_all):,}건")
+                    _c2.metric("승인대기",f"{int(_ap.isin(['신청','승인대기']).sum()):,}건")
+                    _c3.metric("미보고",f"{int((~_rp.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+                    _c4.metric("미정산",f"{int((~_sp.isin(['정산완료','지급완료'])).sum()):,}건")
+                    _c5.metric("지급완료",f"{int((_sp=='지급완료').sum()):,}건")
+                st.info("📋 출장현황  |  📝 신청·변경  |  ✅ 승인관리  |  📄 복명·보고  |  💳 정산관리  |  📎 증빙관리  |  📊 월별현황")
 
                 # v28.0 출장관리 고도화: 월별 출장비 집계 · 지급자료 · 미처리 알림
                 with st.expander("📊 월별 출장비 · 지급/정산 현황", expanded=True):
@@ -4553,6 +4570,22 @@ if active_tab == 11:
 
         # 현재 센터에서 사용하던 출장복명서 형식 기반
         report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
+        # v28.6: 원 출장 ID에 연결된 사전/사후승인 변경이력
+        _trip_change_html=""
+        try:
+            _chg_client=supabase_admin if supabase_admin is not None else supabase
+            _chg_rows=_chg_client.table("business_trip_changes").select("*").eq("trip_id",int(pr.get("id"))).order("created_at").execute().data or []
+            if _chg_rows:
+                _chg_items=[]
+                for _ch in _chg_rows:
+                    _txt=f"{str(_ch.get('change_type','변경'))} · {str(_ch.get('approval_type','') or '')} {str(_ch.get('approval_status','') or '')}"
+                    if _ch.get("new_destination"): _txt+=f" · 변경행선지: {_ch.get('new_destination')}"
+                    if _ch.get("change_reason"): _txt+=f" · 사유: {_ch.get('change_reason')}"
+                    _chg_items.append(f"<div style='margin:2px 0;'>• {_txt}</div>")
+                _trip_change_html="<div style='margin-top:8px;padding:7px;border:1px solid #aaa;'><b>[출장 변경·승인 이력]</b>"+"".join(_chg_items)+"</div>"
+        except Exception:
+            _trip_change_html=""
+
         # v28.5: 복명서의 실제 출력대상(pr) ID와 첨부파일을 직접 연결
         _trip_attach_html = ""
         _trip_extra_attach_html = ""
@@ -4644,7 +4677,11 @@ if active_tab == 11:
           <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
           <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
           <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
-          <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
+          <tr>
+                <td class="label">변경 이력</td>
+                <td colspan="5" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
+            </tr>
+            <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
           <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
         </table>
         <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
