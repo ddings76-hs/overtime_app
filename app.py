@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v21.4"
+APP_VERSION = "v21.5"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.5", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -69,6 +69,29 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 if "auth_role" not in st.session_state:
     st.session_state.auth_role = "viewer"
+if "auth_access_token" not in st.session_state:
+    st.session_state.auth_access_token = ""
+if "auth_refresh_token" not in st.session_state:
+    st.session_state.auth_refresh_token = ""
+
+# Streamlit은 rerun 때 Supabase client를 새로 만들기 때문에,
+# 저장해 둔 access/refresh token을 client에 다시 연결해야 RLS가 로그인 사용자 JWT를 받는다.
+if st.session_state.auth_access_token and st.session_state.auth_refresh_token:
+    try:
+        _restored = supabase.auth.set_session(
+            st.session_state.auth_access_token,
+            st.session_state.auth_refresh_token
+        )
+        _rs = getattr(_restored, "session", None)
+        if _rs:
+            st.session_state.auth_access_token = getattr(_rs, "access_token", st.session_state.auth_access_token) or st.session_state.auth_access_token
+            st.session_state.auth_refresh_token = getattr(_rs, "refresh_token", st.session_state.auth_refresh_token) or st.session_state.auth_refresh_token
+            _ru = getattr(_restored, "user", None) or getattr(_rs, "user", None)
+            if _ru:
+                st.session_state.auth_user = _ru
+                st.session_state.auth_role = str(_user_metadata(_ru).get("role", st.session_state.auth_role))
+    except Exception:
+        pass
 
 # Streamlit 재실행 시 Supabase Auth 세션 복구
 if st.session_state.auth_user is None:
@@ -121,6 +144,10 @@ if st.session_state.auth_user is None:
                     raise RuntimeError("사용자 정보 없음")
                 st.session_state.auth_user = user
                 st.session_state.auth_role = str(_user_metadata(user).get("role", "viewer"))
+                _login_session = getattr(result, "session", None)
+                if _login_session:
+                    st.session_state.auth_access_token = getattr(_login_session, "access_token", "") or ""
+                    st.session_state.auth_refresh_token = getattr(_login_session, "refresh_token", "") or ""
                 st.rerun()
             except Exception:
                 st.error("로그인에 실패했습니다. 이메일 또는 비밀번호를 확인해 주세요.")
@@ -306,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.4")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.5")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -737,6 +764,8 @@ with st.sidebar:
             pass
         st.session_state.auth_user = None
         st.session_state.auth_role = "viewer"
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
         st.rerun()
 
     if CURRENT_ROLE == "admin":
@@ -919,7 +948,7 @@ if active_tab == 1:
 
     df_emp=_emp_load()
     if CURRENT_ROLE=="admin":
-        with st.expander("🔎 v21.4 인사정보 저장 권한 진단",expanded=False):
+        with st.expander("🔎 v21.5 로그인·RLS 세션 진단",expanded=False):
             _ad=auth_diagnostic()
             c1,c2,c3=st.columns(3)
             c1.metric("앱 권한",str(CURRENT_ROLE))
@@ -929,7 +958,7 @@ if active_tab == 1:
             if not _ad.get("authenticated"):
                 st.error("Supabase Auth 세션을 확인하지 못했습니다. 로그아웃 후 다시 로그인해 주세요.")
             elif _ad.get("role")!="admin":
-                st.warning("화면 권한은 관리자이지만 Supabase JWT role이 admin이 아닙니다. v21.4 SQL 적용 후 로그아웃/재로그인해 주세요.")
+                st.warning("화면 권한은 관리자이지만 Supabase JWT role이 admin이 아닙니다. 로그인 세션 JWT가 연결되지 않았습니다. v21.5에서 로그아웃 후 다시 로그인해 주세요.")
             else:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
@@ -1079,7 +1108,7 @@ if active_tab == 1:
                             elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
                                 st.error("인사이력 저장 실패: 현재 계정의 RLS 권한을 확인해 주세요.")
                             else:
-                                st.error("인사이력 저장 실패: v21.4 권한 SQL을 실행한 뒤 로그아웃/재로그인해 주세요.")
+                                st.error("인사이력 저장 실패: v21.5로 교체 후 로그아웃/재로그인해 주세요.")
 
     with tab_secure:
         st.markdown("#### 💳 급여·계좌 및 민감정보")
@@ -1117,7 +1146,7 @@ if active_tab == 1:
                         elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
                             st.error("저장 실패: 관리자 RLS 권한을 확인해 주세요.")
                         else:
-                            st.error("저장 실패: v21.4 권한 SQL을 실행한 뒤 로그아웃/재로그인해 주세요.")
+                            st.error("저장 실패: v21.5로 교체 후 로그아웃/재로그인해 주세요.")
 
 # TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
