@@ -1,4 +1,5 @@
 import re
+import html
 from pathlib import Path
 import uuid
 from openpyxl import Workbook
@@ -19,9 +20,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.2"
+APP_VERSION = "v23.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +334,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1269,8 +1270,89 @@ if active_tab == 1:
             }
             </style>
             """,unsafe_allow_html=True)
-            if st.button("🖨️ 개인별 인사기록카드 인쇄 안내",key="v232_print"):
-                st.info("브라우저 인쇄(Ctrl+P)에서 A4 세로, 배율 90~100%로 출력해 주세요. 다음 버전에서 전용 서식 출력으로 더 정교하게 맞출 수 있습니다.")
+            st.markdown("##### 🖨️ A4 개인별 인사기록카드 전용 출력")
+            def _esc(v):
+                if v is None or (isinstance(v,float) and pd.isna(v)): return ""
+                return html.escape(str(v))
+            def _rows_html(df, cols, empty_text="등록내역 없음"):
+                if df is None or df.empty:
+                    return f'<tr><td colspan="{len(cols)}" class="empty">{empty_text}</td></tr>'
+                rows=[]
+                for _,r in df.iterrows():
+                    rows.append("<tr>"+"".join(f"<td>{_esc(r.get(k,''))}</td>" for k,_ in cols)+"</tr>")
+                return "".join(rows)
+            def _head_html(cols):
+                return "<tr>"+"".join(f"<th>{_esc(label)}</th>" for _,label in cols)+"</tr>"
+
+            _photo_html='<div class="photo-box">사진</div>'
+            if _photo_path:
+                try:
+                    _ps2=supabase.storage.from_("employee-photos").create_signed_url(_photo_path,1800)
+                    _pu2=(_ps2.get("signedURL") or _ps2.get("signedUrl")) if isinstance(_ps2,dict) else getattr(_ps2,"signed_url","")
+                    if _pu2: _photo_html=f'<img class="photo-box" src="{_esc(_pu2)}">'
+                except Exception:
+                    pass
+
+            _edu_cols=[("school_name","학교명"),("major","전공"),("degree","학위·과정"),("start_date","입학일"),("end_date","졸업·수료일")]
+            _lic_cols=[("license_name","면허·자격명"),("license_number","자격번호"),("issuer","발급기관"),("issue_date","취득일")]
+            _career_cols=[("company_name","근무처"),("position","직위·직급"),("start_date","시작일"),("end_date","종료일"),("recognized_months","인정경력(개월)")]
+            _hist_cols=[("effective_date","발령일"),("history_type","구분"),("before_value","변경 전"),("after_value","변경 후"),("note","비고")]
+
+            _print_html=f"""
+            <div id="hr-card-print" class="hr-card">
+              <div class="hr-title">개 인 별  인 사 기 록 카 드</div>
+              <div class="top-grid">
+                <div>
+                  <table class="info-table">
+                    <tr><th>사번</th><td>{_esc(_photo_eid)}</td><th>성명</th><td>{_esc(_photo_row.get('emp_name',''))}</td></tr>
+                    <tr><th>부서</th><td>{_esc(_photo_row.get('dept',''))}</td><th>직위</th><td>{_esc(_photo_row.get('position',''))}</td></tr>
+                    <tr><th>입사일</th><td>{_esc(_photo_row.get('hire_date',''))}</td><th>재직상태</th><td>{_esc(_photo_row.get('employment_status',''))}</td></tr>
+                    <tr><th>연락처</th><td>{_esc(_photo_row.get('phone',''))}</td><th>이메일</th><td>{_esc(_photo_row.get('email',''))}</td></tr>
+                    <tr><th>주소</th><td colspan="3">{_esc(_photo_row.get('address',''))}</td></tr>
+                  </table>
+                </div>
+                <div>{_photo_html}</div>
+              </div>
+
+              <div class="section-title">학 력 사 항</div>
+              <table>{_head_html(_edu_cols)}{_rows_html(_ed,_edu_cols)}</table>
+              <div class="section-title">면 허 · 자 격 사 항</div>
+              <table>{_head_html(_lic_cols)}{_rows_html(_li,_lic_cols)}</table>
+              <div class="section-title">경 력 사 항</div>
+              <table>{_head_html(_career_cols)}{_rows_html(_ca,_career_cols)}</table>
+              <div class="section-title">입 사 후 인 사 이 력</div>
+              <table>{_head_html(_hist_cols)}{_rows_html(_hi,_hist_cols)}</table>
+              <div class="print-footer">화성시장기요양지원센터 · 인사기록카드 · {APP_VERSION}</div>
+            </div>
+            <style>
+              .hr-card{{display:none}}
+              @media print {{
+                body * {{visibility:hidden !important;}}
+                #hr-card-print, #hr-card-print * {{visibility:visible !important;}}
+                #hr-card-print {{
+                  display:block !important; position:absolute; left:0; top:0;
+                  width:190mm; margin:0; padding:0; color:#000; background:#fff;
+                  font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+                }}
+                @page {{size:A4 portrait; margin:10mm;}}
+                .hr-title{{font-size:22px;font-weight:700;text-align:center;letter-spacing:5px;margin:3mm 0 5mm}}
+                .top-grid{{display:grid;grid-template-columns:1fr 32mm;gap:4mm;align-items:start}}
+                .photo-box{{width:30mm;height:40mm;border:1px solid #000;object-fit:cover;display:flex;align-items:center;justify-content:center;font-size:11px}}
+                #hr-card-print table{{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 3mm}}
+                #hr-card-print th,#hr-card-print td{{border:1px solid #000;padding:2mm 1.5mm;font-size:9.5px;text-align:center;vertical-align:middle;word-break:break-word}}
+                #hr-card-print th{{font-weight:700;background:#f2f2f2}}
+                #hr-card-print .info-table th{{width:15%}}
+                #hr-card-print .info-table td{{text-align:left}}
+                .section-title{{font-size:12px;font-weight:700;text-align:center;border:1px solid #000;border-bottom:0;padding:1.5mm;margin-top:3mm;letter-spacing:2px}}
+                .empty{{height:9mm;color:#555}}
+                .print-footer{{font-size:8px;text-align:right;margin-top:3mm}}
+              }}
+            </style>
+            """
+            st.markdown(_print_html,unsafe_allow_html=True)
+            st.info("아래 버튼을 누른 뒤 브라우저 인쇄 창에서 A4 세로 / 여백 기본 / 배율 100%로 출력하세요.")
+            if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
+                st.components.v1.html("<script>window.parent.print();</script>",height=0)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
