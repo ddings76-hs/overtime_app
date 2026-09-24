@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.3"
+APP_VERSION = "v28.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4557,8 +4557,26 @@ if active_tab == 11:
         _trip_attach_html = ""
         _trip_extra_attach_html = ""
         try:
-            _trip_id_for_report = int(target_trip.get("id")) if target_trip is not None else None
-            _files_res = supabase.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
+            # v28.4: 복명서에서 실제 선택된 출장 ID로 첨부파일을 조회
+            _trip_id_for_report = None
+            for _obj_name in ["selected_trip", "trip_row", "target_trip", "trip"]:
+                _obj = locals().get(_obj_name)
+                if isinstance(_obj, pd.Series):
+                    _obj = _obj.to_dict()
+                if isinstance(_obj, dict) and _obj.get("id") is not None:
+                    _trip_id_for_report = int(_obj.get("id"))
+                    break
+            if _trip_id_for_report is None:
+                for _id_name in ["selected_trip_id", "trip_id", "sel_trip_id"]:
+                    _id_val = locals().get(_id_name)
+                    if _id_val is not None:
+                        try:
+                            _trip_id_for_report = int(_id_val)
+                            break
+                        except Exception:
+                            pass
+            _files_client = supabase_admin if supabase_admin is not None else supabase
+            _files_res = _files_client.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
             _trip_files = _files_res.data or []
         except Exception:
             _trip_files = []
@@ -4572,7 +4590,7 @@ if active_tab == 11:
             if not _path:
                 continue
             try:
-                _signed=supabase.storage.from_("business-trip-files").create_signed_url(_path,3600)
+                _signed=_files_client.storage.from_("business-trip-files").create_signed_url(_path,3600)
                 _url=_signed.get("signedURL") or _signed.get("signedUrl") or _signed.get("signed_url")
             except Exception:
                 _url=None
@@ -4588,6 +4606,8 @@ if active_tab == 11:
                 _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
         
         _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
+        if _trip_id_for_report is not None:
+            st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
         if _extra_blocks:
             _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
 
