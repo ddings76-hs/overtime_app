@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.6"
+APP_VERSION = "v23.3.7"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.6", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.7", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.6")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.7")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1352,8 +1352,7 @@ if active_tab == 1:
             """
             st.markdown(_print_html,unsafe_allow_html=True)
             st.info("아래 버튼을 누른 뒤 브라우저 인쇄 창에서 A4 세로 / 여백 기본 / 배율 100%로 출력하세요.")
-            if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
-                _print_doc = """<!doctype html><html><head><meta charset="utf-8"><title>개인별 인사기록카드</title>
+            _print_doc = """<!doctype html><html><head><meta charset="utf-8"><title>개인별 인사기록카드</title>
 <style>
 @page { size:A4 portrait; margin:10mm; }
 html,body { margin:0; padding:0; background:#fff; color:#000; }
@@ -1372,16 +1371,16 @@ th { font-weight:700; background:#f2f2f2; }
 .print-footer { font-size:8px; text-align:right; margin-top:3mm; }
 @media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
 </style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
-if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
-    _print_component = _print_doc.replace(
-        "</body></html>",
-        """<script>
+            if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
+                _print_component = _print_doc.replace(
+                    "</body></html>",
+                    """<script>
 window.addEventListener("load", function(){
   setTimeout(function(){ window.focus(); window.print(); }, 400);
 });
 </script></body></html>"""
-    )
-    st.components.v1.html(_print_component, height=1120, scrolling=False)
+                )
+                st.components.v1.html(_print_component, height=1120, scrolling=False)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
