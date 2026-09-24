@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v24.2.2"
+APP_VERSION = "v24.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.2.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.2.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.3")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1517,7 +1517,7 @@ window.addEventListener("load", function(){
                     <tr><th>재직기간</th><td colspan="3">{_period}</td></tr>
                     <tr><th>용도</th><td colspan="3">{_purpose}</td></tr>
                   </table>
-                  <p class="cert-text">상기와 같이 재직하였음을 증명합니다.</p>
+                  <p class="cert-text">{'상기와 같이 현재 재직하고 있음을 증명합니다.' if _ct=='재직증명서' else '상기와 같이 재직하였음을 증명합니다.'}</p>
                   <p class="cert-date">{_issue_day.strftime('%Y. %m. %d.')}</p>
                   <p class="cert-org">화성시장기요양지원센터장 <span style="font-size:14px;font-weight:400">(직인)</span></p>
                 </div>
@@ -1617,6 +1617,26 @@ window.addEventListener("load", function(){
                     _sc=[x for x in ["발급번호","사번","성명","증명서종류","용도","발급일","발급자","상태","취소사유","등록일"] if x in _show.columns]
                     st.dataframe(_show[_sc],use_container_width=True,hide_index=True)
 
+                    import io as _cert_io
+                    _cert_buf=_cert_io.BytesIO()
+                    with pd.ExcelWriter(_cert_buf,engine="openpyxl") as _writer:
+                        _show[_sc].to_excel(_writer,index=False,sheet_name="증명서 발급대장")
+                        _ws=_writer.book["증명서 발급대장"]
+                        _ws.freeze_panes="A2"; _ws.auto_filter.ref=_ws.dimensions
+                        for _cell in _ws[1]:
+                            _cell.alignment=_cell.alignment.copy(horizontal="center",vertical="center")
+                        for _col in _ws.columns:
+                            _mx=max(len(str(_x.value or "")) for _x in _col)
+                            _ws.column_dimensions[_col[0].column_letter].width=min(max(_mx+3,12),35)
+                    st.download_button(
+                        "⬇️ 조회된 증명서 발급대장 Excel",
+                        data=_cert_buf.getvalue(),
+                        file_name=f"증명서_발급대장_{_from.strftime('%Y%m%d')}_{_to.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="v243_cert_excel",
+                        use_container_width=True
+                    )
+
                     _issue_opts={}
                     for _,_ir in _issues.iterrows():
                         _lbl=f"{_ir.get('certificate_no','')} · {_ir.get('emp_name','')} · {_ir.get('certificate_type','')} · {_ir.get('issue_date','')}"
@@ -1665,7 +1685,7 @@ window.addEventListener("load", function(){
                             <table><tr><th>성명</th><td>{_r_emp}</td><th>생년월일</th><td>{_rbirth}</td></tr>
                             <tr><th>부서</th><td>{_ed.get('dept','')}</td><th>직위</th><td>{_ed.get('position','')}</td></tr>
                             <tr><th>재직기간</th><td colspan="3">{_rperiod}</td></tr><tr><th>용도</th><td colspan="3">{_r_purpose}</td></tr></table>
-                            <p class="txt">상기와 같이 재직하였음을 증명합니다.</p><p class="dt">{_rdate_fmt}</p>
+                            <p class="txt">{'상기와 같이 현재 재직하고 있음을 증명합니다.' if _r_type=='재직증명서' else '상기와 같이 재직하였음을 증명합니다.'}</p><p class="dt">{_rdate_fmt}</p>
                             <p class="org">화성시장기요양지원센터장 <span style="font-size:10pt;font-weight:400">(직인)</span></p></div>
                             <script>window.addEventListener("load",function(){{setTimeout(function(){{window.focus();window.print();}},400);}});</script>
                             </body></html>"""
@@ -1689,7 +1709,7 @@ window.addEventListener("load", function(){
                                     except Exception as e:
                                         st.error(f"발급취소 실패: {e}")
 
-                st.info("직인/로고는 보안과 기존 로고 설정 충돌을 피하기 위해 자동 삽입하지 않고, 다음 단계에서 별도 사용 여부를 선택하도록 연결할 수 있습니다.")
+                st.info("증명서 관리: 발급·검색·재출력·취소·Excel 발급대장까지 연결되었습니다. 실제 직인 이미지 자동 삽입은 기존 로고/보안 설정과 분리하여 추후 선택 기능으로 적용합니다.")
 
             with _c:
                 _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
