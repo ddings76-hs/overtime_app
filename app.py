@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v24.3"
+APP_VERSION = "v25.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v25.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v25.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1397,6 +1397,29 @@ window.addEventListener("load", function(){
             c2.metric("부서",str(_sr.get("dept","") or "-"))
             c3.metric("직위",str(_sr.get("position","") or "-"))
             c4.metric("재직상태",str(_sr.get("employment_status","") or "재직"))
+
+            st.markdown("##### 📊 인사관리 핵심 현황")
+            _today_v250=pd.Timestamp(datetime.now().date())
+            try:
+                _all_docs_v250=pd.DataFrame(supabase.table("employee_documents").select("*").execute().data or [])
+            except Exception:
+                _all_docs_v250=pd.DataFrame()
+            try:
+                _all_lic_v250=pd.DataFrame(supabase.table("employee_licenses").select("*").execute().data or [])
+            except Exception:
+                _all_lic_v250=pd.DataFrame()
+
+            _active_cnt=int((df_emp.get("employment_status",pd.Series("",index=df_emp.index)).fillna("재직").astype(str)!="퇴직").sum())
+            _retired_cnt=int((df_emp.get("employment_status",pd.Series("",index=df_emp.index)).fillna("").astype(str)=="퇴직").sum())
+            _exp_doc_cnt=0
+            if not _all_docs_v250.empty and "expiry_date" in _all_docs_v250.columns:
+                _dx=pd.to_datetime(_all_docs_v250["expiry_date"],errors="coerce").dt.normalize()
+                _exp_doc_cnt=int(((_dx>=_today_v250)&(_dx<=_today_v250+pd.Timedelta(days=60))).sum())
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("전체 직원",f"{len(df_emp):,}명")
+            c2.metric("재직",f"{_active_cnt:,}명")
+            c3.metric("퇴직",f"{_retired_cnt:,}명")
+            c4.metric("60일 내 만료서류",f"{_exp_doc_cnt:,}건")
 
             st.markdown("##### 📌 기본 인사정보")
             _basic=pd.DataFrame([{
