@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.3"
+APP_VERSION = "v23.3.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1372,10 +1372,12 @@ th { font-weight:700; background:#f2f2f2; }
 .print-footer { font-size:8px; text-align:right; margin-top:3mm; }
 @media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
 </style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
-_print_doc_js=json.dumps(_print_doc)
+_print_doc_b64=base64.b64encode(_print_doc.encode("utf-8")).decode("ascii")
 if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
     st.components.v1.html(f"""<script>
-const doc={_print_doc_js};
+const b64="{_print_doc_b64}";
+const bytes=Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+const doc=new TextDecoder("utf-8").decode(bytes);
 const w=window.open("", "_blank", "width=900,height=1100");
 if (w) {{
   w.document.open(); w.document.write(doc); w.document.close();
