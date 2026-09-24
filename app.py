@@ -20,9 +20,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.1"
+APP_VERSION = "v23.3.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -334,7 +334,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1352,9 +1352,38 @@ if active_tab == 1:
             st.markdown(_print_html,unsafe_allow_html=True)
             st.info("아래 버튼을 누른 뒤 브라우저 인쇄 창에서 A4 세로 / 여백 기본 / 배율 100%로 출력하세요.")
             if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
-                st.components.v1.html("""<script>
-window.parent.scrollTo(0,0);
-setTimeout(function(){ window.parent.print(); },250);
+                _print_doc = """<!doctype html><html><head><meta charset="utf-8"><title>개인별 인사기록카드</title>
+<style>
+@page { size:A4 portrait; margin:10mm; }
+html,body { margin:0; padding:0; background:#fff; color:#000; }
+body { font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+.hr-card { display:block !important; width:190mm !important; margin:0 auto !important; padding:0 !important; }
+.hr-title { font-size:24px !important; font-weight:700; text-align:center; letter-spacing:6px; margin:2mm 0 6mm !important; }
+.top-grid { display:grid; grid-template-columns:1fr 34mm; gap:4mm; align-items:start; }
+.photo-box { width:32mm !important; height:42mm !important; border:1px solid #000; object-fit:cover; display:flex; align-items:center; justify-content:center; font-size:11px; }
+table { width:100%; border-collapse:collapse; table-layout:fixed; margin:0 0 3mm; }
+th,td { border:1px solid #000; padding:2.2mm 1.5mm; font-size:10px; text-align:center; vertical-align:middle; word-break:break-word; }
+th { font-weight:700; background:#f2f2f2; }
+.info-table th { width:15%; }
+.info-table td { text-align:left; }
+.section-title { font-size:12px; font-weight:700; text-align:center; border:1px solid #000; border-bottom:0; padding:1.7mm; margin-top:3mm; letter-spacing:2px; }
+.empty { height:9mm; color:#555; }
+.print-footer { font-size:8px; text-align:right; margin-top:3mm; }
+@media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
+</style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
+import json as _json
+_print_doc_js=_json.dumps(_print_doc)
+if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
+    st.components.v1.html(f"""<script>
+const doc={_print_doc_js};
+const w=window.open("", "_blank", "width=900,height=1100");
+if (w) {{
+  w.document.open(); w.document.write(doc); w.document.close();
+  w.focus();
+  setTimeout(function(){{ w.print(); }}, 500);
+}} else {{
+  alert("팝업이 차단되었습니다. 이 사이트의 팝업을 허용한 후 다시 출력해 주세요.");
+}}
 </script>""",height=0)
 
     with tab_salary:
