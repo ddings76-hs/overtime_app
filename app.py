@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.0"
+APP_VERSION = "v23.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1083,33 +1083,33 @@ if active_tab == 1:
                 _pdata=(_pr.data or [{}])[0] if getattr(_pr,"data",None) else {}
             except Exception:
                 _pdata={}
-            with st.form("v230_profile_form"):
-                c1,c2,c3=st.columns(3)
-                _hanja=c1.text_input("성명(한문)",value=str(_pdata.get("name_hanja","") or ""))
-                _english=c2.text_input("성명(영문)",value=str(_pdata.get("name_english","") or ""))
-                _hobby=c3.text_input("취미",value=str(_pdata.get("hobby","") or ""))
-                c1,c2,c3=st.columns(3)
-                _height=c1.number_input("신장(cm)",min_value=0.0,value=float(_pdata.get("height_cm",0) or 0),step=0.1)
-                _weight=c2.number_input("체중(kg)",min_value=0.0,value=float(_pdata.get("weight_kg",0) or 0),step=0.1)
-                _blood=c3.text_input("혈액형",value=str(_pdata.get("blood_type","") or ""))
-                _mopts=["해당없음","필","미필","면제","복무중"]
-                _mcur=str(_pdata.get("military_status","해당없음") or "해당없음")
-                c1,c2,c3=st.columns(3)
-                _military=c1.selectbox("병역",_mopts,index=_mopts.index(_mcur) if _mcur in _mopts else 0)
-                _branch=c2.text_input("군별",value=str(_pdata.get("military_branch","") or ""))
-                _rank=c3.text_input("계급",value=str(_pdata.get("military_rank","") or ""))
-                _mil_note=st.text_input("병역 비고",value=str(_pdata.get("military_note","") or ""))
-                if st.form_submit_button("💾 통합 기본정보 저장",use_container_width=True):
-                    _pay={"emp_id":_peid,"name_hanja":_hanja,"name_english":_english,"hobby":_hobby,"height_cm":_height,"weight_kg":_weight,"blood_type":_blood,"military_status":_military,"military_branch":_branch,"military_rank":_rank,"military_note":_mil_note,"updated_at":datetime.now().isoformat()}
-                    try:
-                        if _pdata.get("id"): supabase.table("employee_profiles").update(_pay).eq("id",_pdata["id"]).execute()
-                        else: supabase.table("employee_profiles").insert(_pay).execute()
-                        st.success("통합 기본정보를 저장했습니다."); st.rerun()
-                    except Exception: st.error("통합 기본정보 저장 실패: v23.0 SQL 적용 여부를 확인해 주세요.")
+            st.caption("신장·체중·혈액형·취미·병역사항은 인사기록 관리 대상에서 제외했습니다.")
 
             st.markdown("##### 🎓 학력")
             _edu=_safe_table("employee_education",_peid)
-            if not _edu.empty: display_table_kr(_edu,use_container_width=True,hide_index=True)
+            if not _edu.empty:
+                display_table_kr(_edu,use_container_width=True,hide_index=True)
+                _edu_rows={f"{r.get('school_name','')} · {r.get('major','')} · #{r.get('id','')}":r.to_dict() for _,r in _edu.iterrows()}
+                _edu_sel=st.selectbox("수정·삭제할 학력",list(_edu_rows.keys()),key="v231_edu_sel")
+                _er=_edu_rows[_edu_sel]
+                with st.expander("✏️ 선택 학력 수정·삭제"):
+                    with st.form("v231_edu_edit"):
+                        c1,c2,c3=st.columns(3)
+                        _eeschool=c1.text_input("학교명",value=str(_er.get("school_name","") or ""))
+                        _eemajor=c2.text_input("전공",value=str(_er.get("major","") or ""))
+                        _eedegree=c3.text_input("학위·과정",value=str(_er.get("degree","") or ""))
+                        _eenote=st.text_input("학력 비고",value=str(_er.get("note","") or ""))
+                        if st.form_submit_button("💾 학력 수정 저장"):
+                            try:
+                                supabase.table("employee_education").update({"school_name":_eeschool,"major":_eemajor,"degree":_eedegree,"note":_eenote}).eq("id",_er.get("id")).eq("emp_id",_peid).execute()
+                                st.success("학력을 수정했습니다."); st.rerun()
+                            except Exception: st.error("학력 수정 실패")
+                    _edel=st.checkbox("선택 학력 삭제 확인",key="v231_edu_del_confirm")
+                    if st.button("🗑️ 선택 학력 삭제",key="v231_edu_del",disabled=not _edel):
+                        try:
+                            supabase.table("employee_education").delete().eq("id",_er.get("id")).eq("emp_id",_peid).execute()
+                            st.success("학력을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("학력 삭제 실패")
             with st.form("v230_edu_form",clear_on_submit=True):
                 c1,c2,c3=st.columns(3); _school=c1.text_input("학교명"); _major=c2.text_input("전공"); _degree=c3.text_input("학위·과정")
                 c1,c2=st.columns(2); _es=c1.date_input("입학일",key="v230_es"); _ee=c2.date_input("졸업·수료일",key="v230_ee")
@@ -1121,7 +1121,29 @@ if active_tab == 1:
 
             st.markdown("##### 👪 가족사항")
             _fam=_safe_table("employee_family",_peid)
-            if not _fam.empty: display_table_kr(_fam,use_container_width=True,hide_index=True)
+            if not _fam.empty:
+                display_table_kr(_fam,use_container_width=True,hide_index=True)
+                _fam_rows={f"{r.get('family_name','')} · {r.get('relation','')} · #{r.get('id','')}":r.to_dict() for _,r in _fam.iterrows()}
+                _fam_sel=st.selectbox("수정·삭제할 가족사항",list(_fam_rows.keys()),key="v231_fam_sel")
+                _frw=_fam_rows[_fam_sel]
+                with st.expander("✏️ 선택 가족사항 수정·삭제"):
+                    with st.form("v231_fam_edit"):
+                        c1,c2,c3=st.columns(3)
+                        _efn=c1.text_input("성명",value=str(_frw.get("family_name","") or ""))
+                        _efr=c2.text_input("관계",value=str(_frw.get("relation","") or ""))
+                        _efj=c3.text_input("직업",value=str(_frw.get("occupation","") or ""))
+                        _efp=st.text_input("연락처",value=str(_frw.get("phone","") or ""))
+                        if st.form_submit_button("💾 가족사항 수정 저장"):
+                            try:
+                                supabase.table("employee_family").update({"family_name":_efn,"relation":_efr,"occupation":_efj,"phone":_efp}).eq("id",_frw.get("id")).eq("emp_id",_peid).execute()
+                                st.success("가족사항을 수정했습니다."); st.rerun()
+                            except Exception: st.error("가족사항 수정 실패")
+                    _fdel=st.checkbox("선택 가족사항 삭제 확인",key="v231_fam_del_confirm")
+                    if st.button("🗑️ 선택 가족사항 삭제",key="v231_fam_del",disabled=not _fdel):
+                        try:
+                            supabase.table("employee_family").delete().eq("id",_frw.get("id")).eq("emp_id",_peid).execute()
+                            st.success("가족사항을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("가족사항 삭제 실패")
             with st.form("v230_family_form",clear_on_submit=True):
                 c1,c2,c3=st.columns(3); _fn=c1.text_input("성명"); _fr=c2.text_input("관계"); _fj=c3.text_input("직업")
                 c1,c2=st.columns(2); _fb=c1.date_input("생년월일",key="v230_fb"); _fp=c2.text_input("연락처")
@@ -1132,7 +1154,30 @@ if active_tab == 1:
 
             st.markdown("##### 🪪 면허·자격")
             _lic=_safe_table("employee_licenses",_peid)
-            if not _lic.empty: display_table_kr(_lic,use_container_width=True,hide_index=True)
+            if not _lic.empty:
+                display_table_kr(_lic,use_container_width=True,hide_index=True)
+                _lic_rows={f"{r.get('license_name','')} · {r.get('issuer','')} · #{r.get('id','')}":r.to_dict() for _,r in _lic.iterrows()}
+                _lic_sel=st.selectbox("수정·삭제할 면허·자격",list(_lic_rows.keys()),key="v231_lic_sel")
+                _lr=_lic_rows[_lic_sel]
+                with st.expander("✏️ 선택 면허·자격 수정·삭제"):
+                    with st.form("v231_lic_edit"):
+                        c1,c2=st.columns(2)
+                        _eln=c1.text_input("면허·자격명",value=str(_lr.get("license_name","") or ""))
+                        _elno=c2.text_input("자격번호",value=str(_lr.get("license_number","") or ""))
+                        c1,c2=st.columns(2)
+                        _elo=c1.text_input("발급기관",value=str(_lr.get("issuer","") or ""))
+                        _elnt=c2.text_input("자격 비고",value=str(_lr.get("note","") or ""))
+                        if st.form_submit_button("💾 면허·자격 수정 저장"):
+                            try:
+                                supabase.table("employee_licenses").update({"license_name":_eln,"license_number":_elno,"issuer":_elo,"note":_elnt}).eq("id",_lr.get("id")).eq("emp_id",_peid).execute()
+                                st.success("면허·자격을 수정했습니다."); st.rerun()
+                            except Exception: st.error("면허·자격 수정 실패")
+                    _ldel=st.checkbox("선택 면허·자격 삭제 확인",key="v231_lic_del_confirm")
+                    if st.button("🗑️ 선택 면허·자격 삭제",key="v231_lic_del",disabled=not _ldel):
+                        try:
+                            supabase.table("employee_licenses").delete().eq("id",_lr.get("id")).eq("emp_id",_peid).execute()
+                            st.success("면허·자격을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("면허·자격 삭제 실패")
             with st.form("v230_license_form",clear_on_submit=True):
                 c1,c2=st.columns(2); _ln=c1.text_input("면허·자격명"); _lno=c2.text_input("자격번호")
                 c1,c2=st.columns(2); _lo=c1.text_input("발급기관"); _ld=c2.date_input("취득일",key="v230_ld")
@@ -1141,7 +1186,7 @@ if active_tab == 1:
                     try:
                         supabase.table("employee_licenses").insert({"emp_id":_peid,"license_name":_ln,"license_number":_lno,"issuer":_lo,"issue_date":_ld.isoformat(),"note":_lnt}).execute(); st.success("면허·자격을 등록했습니다."); st.rerun()
                     except Exception: st.error("면허·자격 저장 실패")
-            st.info("📄 A4 개인별 인사기록카드 출력은 입력항목 검증 후 다음 단계에서 연결합니다.")
+            st.info("📄 다음 단계에서 직원 사진·경력/인사이력 연계와 A4 개인별 인사기록카드 출력을 연결합니다.")
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
