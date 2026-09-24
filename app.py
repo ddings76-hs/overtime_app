@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.2"
+APP_VERSION = "v28.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.3", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.3")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4311,6 +4311,43 @@ if active_tab == 10:
                 supabase.table("business_trips").update({"apply_status":"취소"}).eq("id", sel_trip_id).execute()
                 write_audit_log("출장 취소", "business_trips", sel_trip_id)
                 st.rerun()
+
+        st.markdown("#### 💳 정산상태 변경")
+        _sel_trip_row = df_trips[df_trips["id"] == sel_trip_id].iloc[0]
+        _settle_options = ["미정산","정산대기","정산완료","지급완료"]
+        _current_settle = str(_sel_trip_row.get("settlement_status","미정산") or "미정산")
+        _settle_idx = _settle_options.index(_current_settle) if _current_settle in _settle_options else 0
+        _new_settle = st.selectbox("정산상태", _settle_options, index=_settle_idx, key="trip_settlement_change")
+        if st.button("💾 정산상태 저장", use_container_width=True, disabled=not has_permission("trip_approve")):
+            supabase.table("business_trips").update({"settlement_status":_new_settle}).eq("id",sel_trip_id).execute()
+            write_audit_log(f"출장 정산상태 변경: {_new_settle}", "business_trips", sel_trip_id)
+            st.success(f"정산상태를 '{_new_settle}'로 변경했습니다.")
+            st.rerun()
+
+        st.markdown("#### 🗑️ 취소 출장 삭제")
+        _is_cancelled = str(_sel_trip_row.get("apply_status","")) == "취소"
+        if not _is_cancelled:
+            st.caption("출장신청 상태가 '취소'인 건만 삭제할 수 있습니다.")
+        _confirm_trip_delete = st.checkbox("선택한 취소 출장과 연결된 증빙파일까지 영구 삭제하는 것에 동의합니다.", key="confirm_cancelled_trip_delete", disabled=not _is_cancelled)
+        if st.button("🗑️ 취소 출장 영구 삭제", type="primary", use_container_width=True,
+                     disabled=(not _is_cancelled or not _confirm_trip_delete or CURRENT_ROLE!="admin")):
+            # Delete attached Storage objects first, then child DB rows, then trip.
+            try:
+                _del_client = supabase_admin if supabase_admin is not None else supabase
+                _fr = _del_client.table("business_trip_files").select("*").eq("trip_id",sel_trip_id).execute()
+                _paths=[str(x.get("storage_path")) for x in (_fr.data or []) if x.get("storage_path")]
+                if _paths:
+                    _del_client.storage.from_(TRIP_STORAGE_BUCKET).remove(_paths)
+                _del_client.table("business_trip_files").delete().eq("trip_id",sel_trip_id).execute()
+                _del_client.table("business_trip_changes").delete().eq("trip_id",sel_trip_id).execute()
+                _del_client.table("business_trips").delete().eq("id",sel_trip_id).eq("apply_status","취소").execute()
+                write_audit_log("취소 출장 영구 삭제", "business_trips", sel_trip_id)
+                st.success("취소 출장과 연결 증빙자료를 삭제했습니다.")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"취소 출장 삭제 실패: {_e}")
+        if CURRENT_ROLE!="admin" and _is_cancelled:
+            st.caption("영구 삭제는 관리자만 가능합니다.")
     elif trip_table_ok:
         st.info("등록된 출장 내역이 없습니다.")
 
@@ -4641,12 +4678,16 @@ if active_tab == 11:
                     storage_path = f"trip-{int(file_trip_id)}/{object_name}"
 
                     try:
-                        supabase.storage.from_(TRIP_STORAGE_BUCKET).upload(
+                        # v28.3: admin/manager uploads through the configured server-side secret client.
+                        # This avoids browser/session JWT loss causing storage.objects RLS failures.
+                        _trip_storage_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                        _trip_storage_client.storage.from_(TRIP_STORAGE_BUCKET).upload(
                             storage_path,
                             uf.getvalue(),
                             {"content-type": uf.type or "application/octet-stream", "upsert": "false"}
                         )
-                        supabase.table("business_trip_files").insert({
+                        _trip_db_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                        _trip_db_client.table("business_trip_files").insert({
                             "trip_id": int(file_trip_id),
                             "file_type": file_type,
                             "file_name": original_name,
