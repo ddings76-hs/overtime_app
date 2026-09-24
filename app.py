@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.1"
+APP_VERSION = "v23.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1187,6 +1187,90 @@ if active_tab == 1:
                         supabase.table("employee_licenses").insert({"emp_id":_peid,"license_name":_ln,"license_number":_lno,"issuer":_lo,"issue_date":_ld.isoformat(),"note":_lnt}).execute(); st.success("면허·자격을 등록했습니다."); st.rerun()
                     except Exception: st.error("면허·자격 저장 실패")
             st.info("📄 다음 단계에서 직원 사진·경력/인사이력 연계와 A4 개인별 인사기록카드 출력을 연결합니다.")
+
+        st.divider()
+        st.markdown("#### 🖼️ 직원 사진 및 통합 인사기록카드")
+        if not df_emp.empty and has_permission("employee_write"):
+            _photo_emp_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _photo_sel=st.selectbox("인사기록카드 대상 직원",list(_photo_emp_opts.keys()),key="v232_photo_emp")
+            _photo_row=_photo_emp_opts[_photo_sel]
+            _photo_eid=str(_photo_row.get("emp_id",""))
+
+            try:
+                _ph=supabase.table("employee_profiles").select("*").eq("emp_id",_photo_eid).limit(1).execute()
+                _phdata=(_ph.data or [{}])[0] if getattr(_ph,"data",None) else {}
+            except Exception:
+                _phdata={}
+
+            c1,c2=st.columns([1,3])
+            with c1:
+                _photo_path=str(_phdata.get("photo_path","") or "")
+                if _photo_path:
+                    try:
+                        _ps=supabase.storage.from_("employee-photos").create_signed_url(_photo_path,300)
+                        _pu=(_ps.get("signedURL") or _ps.get("signedUrl")) if isinstance(_ps,dict) else getattr(_ps,"signed_url","")
+                        if _pu: st.image(_pu,width=150)
+                    except Exception:
+                        st.caption("등록 사진을 불러오지 못했습니다.")
+                _pf=st.file_uploader("직원 사진",type=["jpg","jpeg","png"],key="v232_photo_file")
+                if st.button("📷 사진 저장·교체",key="v232_photo_save",use_container_width=True):
+                    if _pf is None:
+                        st.warning("사진 파일을 선택해 주세요.")
+                    else:
+                        try:
+                            import uuid as _uuid
+                            _ext=Path(_pf.name).suffix.lower()
+                            _newp=f"{_photo_eid}/{_uuid.uuid4().hex[:12]}{_ext}"
+                            supabase.storage.from_("employee-photos").upload(_newp,_pf.getvalue(),{"content-type":_pf.type or "image/jpeg","upsert":"false"})
+                            if _phdata.get("id"):
+                                supabase.table("employee_profiles").update({"photo_path":_newp,"updated_at":datetime.now().isoformat()}).eq("id",_phdata["id"]).execute()
+                            else:
+                                supabase.table("employee_profiles").insert({"emp_id":_photo_eid,"photo_path":_newp}).execute()
+                            if _photo_path:
+                                try: supabase.storage.from_("employee-photos").remove([_photo_path])
+                                except Exception: pass
+                            st.success("직원 사진을 저장했습니다."); st.rerun()
+                        except Exception:
+                            st.error("사진 저장 실패: v23.2 SQL 적용 여부를 확인해 주세요.")
+
+            with c2:
+                st.markdown("##### 📋 인사기록 통합 미리보기")
+                _ed=_safe_table("employee_education",_photo_eid)
+                _fa=_safe_table("employee_family",_photo_eid)
+                _li=_safe_table("employee_licenses",_photo_eid)
+                _ca=_safe_table("employee_careers",_photo_eid)
+                try:
+                    _hi=pd.DataFrame(supabase.table("employee_history").select("*").eq("emp_id",_photo_eid).execute().data or [])
+                except Exception:
+                    _hi=pd.DataFrame()
+                st.write(f"**성명:** {_photo_row.get('emp_name','')}　 **사번:** {_photo_eid}　 **부서:** {_photo_row.get('dept','')}　 **직위:** {_photo_row.get('position','')}")
+                st.caption(f"학력 {len(_ed)}건 · 가족 {len(_fa)}건 · 자격 {len(_li)}건 · 경력 {len(_ca)}건 · 인사이력 {len(_hi)}건")
+
+            st.markdown("##### 🎓 학력")
+            if not _ed.empty: display_table_kr(_ed,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 학력이 없습니다.")
+            st.markdown("##### 🪪 면허·자격")
+            if not _li.empty: display_table_kr(_li,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 면허·자격이 없습니다.")
+            st.markdown("##### 🧾 경력")
+            if not _ca.empty: display_table_kr(_ca,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 경력이 없습니다.")
+            st.markdown("##### 🗂️ 인사이력")
+            if not _hi.empty: display_table_kr(_hi,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 인사이력이 없습니다.")
+
+            # Browser print: current integrated card section/page
+            st.markdown("""
+            <style>
+            @media print {
+              [data-testid="stSidebar"], header, footer, .stButton, .stFileUploader {display:none !important;}
+              .block-container {max-width:100% !important; padding:10mm !important;}
+              table {font-size:10px !important;}
+            }
+            </style>
+            """,unsafe_allow_html=True)
+            if st.button("🖨️ 개인별 인사기록카드 인쇄 안내",key="v232_print"):
+                st.info("브라우저 인쇄(Ctrl+P)에서 A4 세로, 배율 90~100%로 출력해 주세요. 다음 버전에서 전용 서식 출력으로 더 정교하게 맞출 수 있습니다.")
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
