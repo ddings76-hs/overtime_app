@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v24.1"
+APP_VERSION = "v24.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1534,7 +1534,7 @@ window.addEventListener("load", function(){
                             _ins=supabase.table("employee_certificate_issues").insert({
                                 "emp_id":_eid,"emp_name":str(_er.get("emp_name","") or ""),
                                 "certificate_type":_ct,"purpose":_purpose,
-                                "issue_date":_issue_day.isoformat(),"issued_by":_issued_by
+                                "issue_date":_issue_day.isoformat(),"issued_by":_issued_by,"status":"발급"
                             }).execute()
                             _row=(_ins.data or [{}])[0]
                             _iid=_row.get("id")
@@ -1570,21 +1570,104 @@ window.addEventListener("load", function(){
                         st.components.v1.html(_pc,height=1050,scrolling=False)
 
                 st.divider()
-                st.markdown("##### 📚 증명서 발급대장")
+                st.markdown("##### 📚 증명서 발급대장 · 검색 · 재출력 · 취소")
+                _fc1,_fc2,_fc3=st.columns([1.3,1,1])
+                with _fc1:
+                    _kw=st.text_input("직원 검색",placeholder="성명 또는 사번",key="v242_cert_kw")
+                with _fc2:
+                    _from=st.date_input("조회 시작일",value=datetime(datetime.now().year,1,1).date(),key="v242_cert_from")
+                with _fc3:
+                    _to=st.date_input("조회 종료일",value=datetime.now().date(),key="v242_cert_to")
+
                 try:
-                    _issues=pd.DataFrame(supabase.table("employee_certificate_issues").select("*").order("id",desc=True).limit(500).execute().data or [])
+                    _issues=pd.DataFrame(
+                        supabase.table("employee_certificate_issues")
+                        .select("*").gte("issue_date",_from.isoformat()).lte("issue_date",_to.isoformat())
+                        .order("id",desc=True).limit(1000).execute().data or []
+                    )
                 except Exception:
                     _issues=pd.DataFrame()
+
+                if not _issues.empty and _kw.strip():
+                    _needle=_kw.strip().lower()
+                    _issues=_issues[
+                        _issues.get("emp_name",pd.Series("",index=_issues.index)).fillna("").astype(str).str.lower().str.contains(_needle,regex=False) |
+                        _issues.get("emp_id",pd.Series("",index=_issues.index)).fillna("").astype(str).str.lower().str.contains(_needle,regex=False)
+                    ]
+
                 if _issues.empty:
-                    st.caption("발급이력이 없습니다.")
+                    st.caption("조건에 해당하는 발급이력이 없습니다.")
                 else:
                     _show=_issues.rename(columns={
                         "certificate_no":"발급번호","emp_id":"사번","emp_name":"성명",
                         "certificate_type":"증명서종류","purpose":"용도","issue_date":"발급일",
-                        "issued_by":"발급자","created_at":"등록일"
+                        "issued_by":"발급자","status":"상태","cancel_reason":"취소사유",
+                        "cancelled_at":"취소일시","created_at":"등록일"
                     })
-                    _sc=[x for x in ["발급번호","사번","성명","증명서종류","용도","발급일","발급자","등록일"] if x in _show.columns]
+                    _sc=[x for x in ["발급번호","사번","성명","증명서종류","용도","발급일","발급자","상태","취소사유","등록일"] if x in _show.columns]
                     st.dataframe(_show[_sc],use_container_width=True,hide_index=True)
+
+                    _issue_opts={}
+                    for _,_ir in _issues.iterrows():
+                        _lbl=f"{_ir.get('certificate_no','')} · {_ir.get('emp_name','')} · {_ir.get('certificate_type','')} · {_ir.get('issue_date','')}"
+                        _issue_opts[_lbl]=_ir.to_dict()
+                    _picked=st.selectbox("재출력/취소할 발급건",list(_issue_opts.keys()),key="v242_pick_issue")
+                    _pr=_issue_opts[_picked]
+                    _pstatus=str(_pr.get("status","발급") or "발급")
+                    st.caption(f"현재 상태: {_pstatus}")
+
+                    _rc1,_rc2=st.columns(2)
+                    with _rc1:
+                        if st.button("🖨️ 선택 증명서 재출력",key="v242_reprint",use_container_width=True):
+                            _r_emp=str(_pr.get("emp_name","") or "")
+                            _r_no=str(_pr.get("certificate_no","") or "")
+                            _r_type=str(_pr.get("certificate_type","") or "")
+                            _r_purpose=str(_pr.get("purpose","") or "")
+                            _r_date=str(_pr.get("issue_date","") or "")
+                            _r_eid=str(_pr.get("emp_id","") or "")
+                            try:
+                                _ed=(supabase.table("employees").select("*").eq("emp_id",_r_eid).limit(1).execute().data or [{}])[0]
+                            except Exception:
+                                _ed={}
+                            _rh=str(_ed.get("hire_date","") or "")
+                            _rrt=str(_ed.get("retire_date","") or "")
+                            _rperiod=f"{_rh} ~ {_rrt if _rrt else '현재'}"
+                            _rdoc=f"""<!doctype html><html><head><meta charset="utf-8"><title>{_r_type}</title>
+                            <style>@page{{size:A4 portrait;margin:15mm}}body{{font-family:"Malgun Gothic",sans-serif;color:#000}}
+                            .c{{width:180mm;margin:0 auto;padding:18mm 12mm;box-sizing:border-box}}.n{{text-align:right;font-size:11pt}}
+                            h1{{text-align:center;letter-spacing:8px;font-size:24pt;margin:12mm 0 18mm}}
+                            table{{width:100%;border-collapse:collapse;table-layout:fixed}}th,td{{border:1px solid #111;padding:4mm 2mm;text-align:center;font-size:11pt}}
+                            th{{width:18%;background:#f4f4f4}}.txt{{text-align:center;margin-top:25mm;font-size:14pt}}
+                            .dt{{text-align:center;margin-top:22mm}}.org{{text-align:center;margin-top:12mm;font-size:17pt;font-weight:700}}</style>
+                            </head><body><div class="c"><div class="n">발급번호: {_r_no}</div><h1>{_r_type}</h1>
+                            <table><tr><th>성명</th><td>{_r_emp}</td><th>사번</th><td>{_r_eid}</td></tr>
+                            <tr><th>부서</th><td>{_ed.get('dept','')}</td><th>직위</th><td>{_ed.get('position','')}</td></tr>
+                            <tr><th>재직기간</th><td colspan="3">{_rperiod}</td></tr><tr><th>용도</th><td colspan="3">{_r_purpose}</td></tr></table>
+                            <p class="txt">위와 같이 {_r_type.replace('증명서','')} 사실을 증명합니다.</p><p class="dt">{_r_date}</p>
+                            <p class="org">화성시장기요양지원센터</p></div>
+                            <script>window.addEventListener("load",function(){{setTimeout(function(){{window.focus();window.print();}},400);}});</script>
+                            </body></html>"""
+                            st.components.v1.html(_rdoc,height=1050,scrolling=False)
+
+                    with _rc2:
+                        if _pstatus=="취소":
+                            st.warning("이미 취소된 발급건입니다.")
+                        else:
+                            _cancel_reason=st.text_input("발급취소 사유",key="v242_cancel_reason")
+                            if st.button("🚫 선택 발급건 취소",key="v242_cancel",use_container_width=True):
+                                if not _cancel_reason.strip():
+                                    st.warning("취소 사유를 입력해 주세요.")
+                                else:
+                                    try:
+                                        supabase.table("employee_certificate_issues").update({
+                                            "status":"취소","cancel_reason":_cancel_reason.strip(),
+                                            "cancelled_at":datetime.now().isoformat()
+                                        }).eq("id",int(_pr.get("id"))).execute()
+                                        st.success("발급건을 취소 처리했습니다. 기록은 삭제하지 않습니다."); st.rerun()
+                                    except Exception as e:
+                                        st.error(f"발급취소 실패: {e}")
+
+                st.info("직인/로고는 보안과 기존 로고 설정 충돌을 피하기 위해 자동 삽입하지 않고, 다음 단계에서 별도 사용 여부를 선택하도록 연결할 수 있습니다.")
 
             with _c:
                 _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
