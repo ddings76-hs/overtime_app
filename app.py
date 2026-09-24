@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3.5"
+APP_VERSION = "v23.3.6"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.5", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.6", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.5")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.6")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1372,19 +1372,16 @@ th { font-weight:700; background:#f2f2f2; }
 .print-footer { font-size:8px; text-align:right; margin-top:3mm; }
 @media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
 </style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
-_print_doc_js=ascii(_print_doc)
 if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
-    st.components.v1.html(f"""<script>
-const doc={_print_doc_js};
-const w=window.open("", "_blank", "width=900,height=1100");
-if (w) {{
-  w.document.open(); w.document.write(doc); w.document.close();
-  w.focus();
-  setTimeout(function(){{ w.print(); }}, 500);
-}} else {{
-  alert("팝업이 차단되었습니다. 이 사이트의 팝업을 허용한 후 다시 출력해 주세요.");
-}}
-</script>""",height=0)
+    _print_component = _print_doc.replace(
+        "</body></html>",
+        """<script>
+window.addEventListener("load", function(){
+  setTimeout(function(){ window.focus(); window.print(); }, 400);
+});
+</script></body></html>"""
+    )
+    st.components.v1.html(_print_component, height=1120, scrolling=False)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
