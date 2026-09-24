@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v20.4"
+APP_VERSION = "v20.5"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v20.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v20.5", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -306,7 +306,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v20.4")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v20.5")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -469,35 +469,68 @@ def style_excel_sheet(ws):
 
 
 def payroll_summary_values(df):
-    """급여대장 화면/인쇄 공통 합계."""
+    """급여대장 화면/인쇄/Excel 공통 합계.
+    편집용 한글 컬럼과 DB/스냅샷 영문 컬럼을 모두 지원한다.
+    """
+    zero = {
+        "급여총액":0, "근로자 사회보험료":0, "소득세·지방소득세":0,
+        "실지급액":0, "사업주 사회보험료":0, "퇴직적립금":0
+    }
     if df is None or df.empty:
-        return {
-            "급여총액":0, "근로자 사회보험료":0, "소득세·지방소득세":0,
-            "실지급액":0, "사업주 사회보험료":0, "퇴직적립금":0
-        }
-    def s(cols):
-        c=next((x for x in cols if x in df.columns),None)
-        return int(pd.to_numeric(df[c],errors="coerce").fillna(0).sum()) if c else 0
+        return zero
+
+    def s(*cols):
+        for c in cols:
+            if c in df.columns:
+                return int(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
+        return 0
+
+    # 화면 편집 급여대장(한글)과 저장/DB 데이터(영문) 양쪽에서 같은 값을 읽는다.
+    gross = s("급여총액", "gross_pay", "total_pay", "pay_total", "total_salary")
+    if gross == 0:
+        gross = (
+            s("기본급", "base_salary") +
+            s("초과수당(승인)", "초과수당", "overtime_pay", "ot_pay") +
+            s("가족수당", "family_allowance") +
+            s("명절상여", "holiday_bonus") +
+            s("비과세", "non_taxable") +
+            s("기타수당", "other_allowance")
+        )
 
     worker_ins = (
-        s(["national_pension"]) + s(["health_insurance"]) +
-        s(["longterm_care"]) + s(["employment_insurance"])
+        s("국민연금(본인)", "국민연금", "national_pension") +
+        s("건강보험(본인)", "건강보험", "health_insurance") +
+        s("장기요양(본인)", "장기요양보험", "longterm_care") +
+        s("고용보험(본인)", "고용보험", "employment_insurance")
     )
-    tax = s(["income_tax"]) + s(["local_tax"])
-    employer_ins = s(["employer_insurance"])
+    tax = (
+        s("소득세", "income_tax") +
+        s("지방소득세", "지방세", "local_tax")
+    )
+    net = s("실지급액", "net_pay", "real_pay")
+    if net == 0 and gross:
+        other_ded = s("기타공제", "other_deduction")
+        net = gross - worker_ins - tax - other_ded
+
+    employer_ins = s("사업주 부담보험", "사업주부담보험", "employer_insurance")
     if employer_ins == 0:
         employer_ins = (
-            s(["employer_national_pension"]) + s(["employer_health_insurance"]) +
-            s(["employer_longterm_care"]) + s(["employer_employment_insurance"]) +
-            s(["employer_industrial_insurance"])
+            s("국민연금(사업자)", "사업주국민연금", "employer_national_pension") +
+            s("건강보험(사업자)", "사업주건강보험", "employer_health_insurance") +
+            s("장기요양(사업자)", "사업주장기요양보험", "employer_longterm_care") +
+            s("고용보험(사업자)", "사업주고용보험", "employer_employment_insurance") +
+            s("산재보험(사업자)", "사업주산재보험", "employer_industrial_insurance")
         )
+
+    retirement = s("퇴직적립금", "retirement_accrual", "retirement_reserve")
+
     return {
-        "급여총액": s(["gross_pay","total_pay","pay_total","total_salary"]),
+        "급여총액": gross,
         "근로자 사회보험료": worker_ins,
         "소득세·지방소득세": tax,
-        "실지급액": s(["net_pay","actual_pay","real_pay"]),
+        "실지급액": net,
         "사업주 사회보험료": employer_ins,
-        "퇴직적립금": s(["retirement_accrual","retirement_reserve"]),
+        "퇴직적립금": retirement,
     }
 
 def show_payroll_summary(df, key_prefix="pay"):
