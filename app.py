@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v19.1"
+APP_VERSION = "v20.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 v20.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v20.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -306,7 +306,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v20.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -465,6 +465,53 @@ def style_excel_sheet(ws):
                     cell.number_format='#,##0.00'
     ws.row_dimensions[1].height=26
     ws.sheet_view.showGridLines=False
+
+
+
+def payroll_summary_values(df):
+    """급여대장 화면/인쇄 공통 합계."""
+    if df is None or df.empty:
+        return {
+            "급여총액":0, "근로자 사회보험료":0, "소득세·지방소득세":0,
+            "실지급액":0, "사업주 사회보험료":0, "퇴직적립금":0
+        }
+    def s(cols):
+        c=next((x for x in cols if x in df.columns),None)
+        return int(pd.to_numeric(df[c],errors="coerce").fillna(0).sum()) if c else 0
+
+    worker_ins = (
+        s(["national_pension"]) + s(["health_insurance"]) +
+        s(["longterm_care"]) + s(["employment_insurance"])
+    )
+    tax = s(["income_tax"]) + s(["local_tax"])
+    employer_ins = s(["employer_insurance"])
+    if employer_ins == 0:
+        employer_ins = (
+            s(["employer_national_pension"]) + s(["employer_health_insurance"]) +
+            s(["employer_longterm_care"]) + s(["employer_employment_insurance"]) +
+            s(["employer_industrial_insurance"])
+        )
+    return {
+        "급여총액": s(["gross_pay","total_pay","pay_total","total_salary"]),
+        "근로자 사회보험료": worker_ins,
+        "소득세·지방소득세": tax,
+        "실지급액": s(["net_pay","actual_pay","real_pay"]),
+        "사업주 사회보험료": employer_ins,
+        "퇴직적립금": s(["retirement_accrual","retirement_reserve"]),
+    }
+
+def show_payroll_summary(df, key_prefix="pay"):
+    vals=payroll_summary_values(df)
+    st.markdown("#### 💰 급여대장 주요 합계")
+    c1,c2,c3=st.columns(3)
+    c1.metric("급여총액",f"{vals['급여총액']:,}원")
+    c2.metric("근로자 사회보험료 합계",f"{vals['근로자 사회보험료']:,}원")
+    c3.metric("소득세·지방소득세 합계",f"{vals['소득세·지방소득세']:,}원")
+    c4,c5,c6=st.columns(3)
+    c4.metric("실지급액 합계",f"{vals['실지급액']:,}원")
+    c5.metric("사업주 사회보험료 합계",f"{vals['사업주 사회보험료']:,}원")
+    c6.metric("퇴직적립금 합계",f"{vals['퇴직적립금']:,}원")
+    return vals
 
 
 def current_emp_id():
@@ -1898,6 +1945,9 @@ if active_tab == 6:
             """
 
         st.divider()
+        # v20.4 급여대장 주요 합계
+        show_payroll_summary(edited_payroll, "ledger")
+        
         st.subheader("🔒 월 급여 확정 및 회계자료")
         snapshot, accounting_export = build_payroll_snapshot(pay_month, pay_date, edited_payroll, pay_run_no, pay_run_name)
         current_hash = payload_hash(snapshot, accounting_export)
@@ -2004,8 +2054,14 @@ if active_tab == 6:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             excel_view_df(edited_payroll).to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
+            _sv=payroll_summary_values(edited_payroll)
+            pd.DataFrame([{"항목":k,"합계금액":v} for k,v in _sv.items()]).to_excel(
+                writer,index=False,sheet_name="급여주요합계"
+            )
             worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
             style_excel_sheet(worksheet)
+            if "급여주요합계" in writer.sheets:
+                style_excel_sheet(writer.sheets["급여주요합계"])
             for col_idx, col_name in enumerate(edited_payroll.columns, 1):
                 if col_name in amount_columns:
                     for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
