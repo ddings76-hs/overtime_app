@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v22.1"
+APP_VERSION = "v22.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1278,11 +1278,13 @@ if active_tab == 1:
             # 계약서/자격증 등 만료 예정 알림
             if not _docs.empty and "expiry_date" in _docs.columns:
                 _exp=_docs.copy()
-                _exp["_expiry"]=pd.to_datetime(_exp["expiry_date"],errors="coerce").dt.date
-                _today=datetime.now().date()
-                _limit=_today+timedelta(days=60)
-                _soon=_exp[_exp["_expiry"].notna() & (_exp["_expiry"]>=_today) & (_exp["_expiry"]<=_limit)]
-                _expired=_exp[_exp["_expiry"].notna() & (_exp["_expiry"]<_today)]
+                # pandas Timestamp로 통일하여 datetime64[ns]와 Python date 간 비교 오류 방지
+                _exp["_expiry"]=pd.to_datetime(_exp["expiry_date"],errors="coerce").dt.normalize()
+                _today=pd.Timestamp(datetime.now().date())
+                _limit=_today+pd.Timedelta(days=60)
+                _valid_exp=_exp["_expiry"].notna()
+                _soon=_exp[_valid_exp & (_exp["_expiry"]>=_today) & (_exp["_expiry"]<=_limit)]
+                _expired=_exp[_valid_exp & (_exp["_expiry"]<_today)]
                 if not _expired.empty:
                     st.error(f"유효기간이 지난 인사서류가 {_expired.shape[0]}건 있습니다.")
                 if not _soon.empty:
