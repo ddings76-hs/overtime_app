@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v21.1"
+APP_VERSION = "v21.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v21.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -306,7 +306,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v21.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -945,17 +945,17 @@ if active_tab == 1:
                 c1,c2,c3=st.columns(3)
                 emp_id=c1.text_input("사번",value=str(_v("emp_id","")),disabled=(mode=="기존 직원 수정"))
                 emp_name=c2.text_input("성명",value=str(_v("emp_name","")))
-                birth_date=c3.date_input("생년월일",value=_datev("birth_date", date(1980,1,1)),format="YYYY-MM-DD")
+                birth_date=c3.date_input("생년월일",value=_datev("birth_date", datetime(1980,1,1).date()),format="YYYY-MM-DD")
                 c1,c2,c3=st.columns(3)
                 dept=c1.text_input("부서",value=str(_v("dept","")))
                 position=c2.text_input("직위",value=str(_v("position","")))
                 hobong=c3.text_input("호봉",value=str(_v("hobong","")))
                 c1,c2,c3=st.columns(3)
-                hire_date=c1.date_input("입사일",value=_datev("hire_date", date.today()),format="YYYY-MM-DD")
+                hire_date=c1.date_input("입사일",value=_datev("hire_date", datetime.now().date()),format="YYYY-MM-DD")
                 employment_status=c2.selectbox("재직상태",["재직","휴직","퇴직"],
                     index=["재직","휴직","퇴직"].index(str(_v("employment_status","재직"))) if str(_v("employment_status","재직")) in ["재직","휴직","퇴직"] else 0)
                 if employment_status=="퇴직":
-                    retire_date=c3.date_input("퇴사일",value=_datev("retire_date", date.today()),format="YYYY-MM-DD")
+                    retire_date=c3.date_input("퇴사일",value=_datev("retire_date", datetime.now().date()),format="YYYY-MM-DD")
                 else:
                     c3.text_input("퇴사일",value="재직 중",disabled=True)
                     retire_date=None
