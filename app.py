@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v27.2"
+APP_VERSION = "v28.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v27.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v27.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -928,6 +928,95 @@ if active_tab == 0:
                     display_table_kr((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
             with b:
                 st.subheader("🚗 최근 출장")
+
+                # v28.0 출장관리 고도화: 월별 출장비 집계 · 지급자료 · 미처리 알림
+                with st.expander("📊 월별 출장비 · 지급/정산 현황", expanded=True):
+                    _v280_today=datetime.now().date()
+                    _v280_c1,_v280_c2=st.columns(2)
+                    with _v280_c1:
+                        _v280_year=st.selectbox("조회연도",list(range(_v280_today.year-2,_v280_today.year+2)),index=2,key="v280_trip_year")
+                    with _v280_c2:
+                        _v280_month=st.selectbox("조회월",list(range(1,13)),index=_v280_today.month-1,key="v280_trip_month")
+                    _v280_start=datetime(_v280_year,_v280_month,1).date()
+                    if _v280_month==12:
+                        _v280_next=datetime(_v280_year+1,1,1).date()
+                    else:
+                        _v280_next=datetime(_v280_year,_v280_month+1,1).date()
+                
+                    try:
+                        _v280_trips=pd.DataFrame(
+                            supabase.table("business_trips").select("*")
+                            .gte("start_at",_v280_start.isoformat()).lt("start_at",_v280_next.isoformat())
+                            .order("start_at").execute().data or []
+                        )
+                    except Exception:
+                        _v280_trips=pd.DataFrame()
+                
+                    if _v280_trips.empty:
+                        st.info("해당 월의 출장 자료가 없습니다.")
+                    else:
+                        _num_cols=["transport_cost","toll_cost","lodging_cost","other_cost","daily_cost","meal_cost","total_cost"]
+                        for _c in _num_cols:
+                            if _c in _v280_trips.columns:
+                                _v280_trips[_c]=pd.to_numeric(_v280_trips[_c],errors="coerce").fillna(0)
+                
+                        _total=int(_v280_trips["total_cost"].sum()) if "total_cost" in _v280_trips.columns else 0
+                        _unreported=int((~_v280_trips.get("report_status",pd.Series([""]*len(_v280_trips))).astype(str).isin(["완료","보고완료","제출완료"])).sum())
+                        _unsettled=int((~_v280_trips.get("settlement_status",pd.Series([""]*len(_v280_trips))).astype(str).isin(["완료","정산완료","지급완료"])).sum())
+                        c1,c2,c3,c4=st.columns(4)
+                        c1.metric("출장 건수",f"{len(_v280_trips):,}건")
+                        c2.metric("출장비 합계",f"{_total:,}원")
+                        c3.metric("미보고",f"{_unreported:,}건")
+                        c4.metric("미정산",f"{_unsettled:,}건")
+                
+                        if _unreported:
+                            st.warning(f"⚠️ 출장보고 미완료 {_unreported}건이 있습니다.")
+                        if _unsettled:
+                            st.warning(f"💳 출장비 정산/지급 미완료 {_unsettled}건이 있습니다.")
+                
+                        _show_cols=[c for c in ["emp_id","emp_name","department","position","start_at","end_at","destination","purpose","report_status","settlement_status","transport_cost","toll_cost","lodging_cost","daily_cost","meal_cost","other_cost","total_cost"] if c in _v280_trips.columns]
+                        _v280_show=_v280_trips[_show_cols].copy()
+                        _v280_show=_v280_show.rename(columns={
+                            "emp_id":"사번","emp_name":"성명","department":"부서","position":"직위",
+                            "start_at":"출장시작","end_at":"출장종료","destination":"출장지","purpose":"출장목적",
+                            "report_status":"보고상태","settlement_status":"정산상태",
+                            "transport_cost":"교통비","toll_cost":"통행료","lodging_cost":"숙박비",
+                            "daily_cost":"일비","meal_cost":"식비","other_cost":"기타비용","total_cost":"출장비합계"
+                        })
+                        st.dataframe(_v280_show,use_container_width=True,hide_index=True)
+                
+                        # 회계/지급용 직원별 월 집계
+                        if "emp_name" in _v280_trips.columns:
+                            _grp=["emp_id","emp_name"] if "emp_id" in _v280_trips.columns else ["emp_name"]
+                            _agg={c:"sum" for c in _num_cols if c in _v280_trips.columns}
+                            if _agg:
+                                _v280_pay=_v280_trips.groupby(_grp,dropna=False).agg(_agg).reset_index()
+                                _v280_pay=_v280_pay.rename(columns={"emp_id":"사번","emp_name":"성명","transport_cost":"교통비","toll_cost":"통행료","lodging_cost":"숙박비","daily_cost":"일비","meal_cost":"식비","other_cost":"기타비용","total_cost":"지급예정액"})
+                                st.markdown("**회계·지급용 직원별 출장비 집계**")
+                                st.dataframe(_v280_pay,use_container_width=True,hide_index=True)
+                
+                                # Excel export matching the screen.
+                                try:
+                                    from io import BytesIO as _V280BytesIO
+                                    _bio=_V280BytesIO()
+                                    with pd.ExcelWriter(_bio,engine="openpyxl") as _writer:
+                                        _v280_pay.to_excel(_writer,index=False,sheet_name="직원별 출장비")
+                                        _v280_show.to_excel(_writer,index=False,sheet_name="출장 상세")
+                                        for _ws in _writer.book.worksheets:
+                                            _ws.freeze_panes="A2"
+                                            _ws.auto_filter.ref=_ws.dimensions
+                                            for _cell in _ws[1]:
+                                                _cell.alignment=Alignment(horizontal="center",vertical="center")
+                                            for _col in _ws.columns:
+                                                _letter=_col[0].column_letter
+                                                _width=min(max(max((len(str(x.value)) if x.value is not None else 0) for x in _col)+2,10),30)
+                                                _ws.column_dimensions[_letter].width=_width
+                                    st.download_button("📥 월별 출장비 지급자료 Excel",data=_bio.getvalue(),file_name=f"출장비_지급자료_{_v280_year}-{_v280_month:02d}.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key="v280_trip_excel")
+                                except Exception as _e:
+                                    st.caption(f"Excel 생성 오류: {_e}")
+                
+                    st.caption("출장비는 출장관리 원장의 정산금액을 기준으로 집계합니다. 급여 본봉에는 자동 합산하지 않고 회계·지급자료로 분리하여 제공합니다.")
+
                 if _tr.empty: st.info("출장 내역이 없습니다.")
                 else:
                     cs=[c for c in ["start_at","end_at","destination","purpose","apply_status"] if c in _tr.columns]
