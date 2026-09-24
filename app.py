@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v22.0"
+APP_VERSION = "v22.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1210,8 +1210,83 @@ if active_tab == 1:
             if not _docs.empty:
                 _show=[c for c in ["document_type","document_name","document_date","expiry_date","original_filename","note","created_at"] if c in _docs.columns]
                 display_table_kr(_docs[_show] if _show else _docs,use_container_width=True,hide_index=True)
+
+                st.markdown("##### 📄 등록 문서 관리")
+                _doc_rows={}
+                for _,_dr in _docs.iterrows():
+                    _label=f"{_dr.get('document_type','기타')} · {_dr.get('document_name','')} · {_dr.get('original_filename','')}"
+                    _doc_rows[_label]=_dr.to_dict()
+                _manage_sel=st.selectbox("관리할 문서",list(_doc_rows.keys()),key="v221_doc_manage")
+                _md=_doc_rows[_manage_sel]
+                _mc1,_mc2,_mc3=st.columns(3)
+
+                # Private bucket은 signed URL로만 열람/다운로드
+                try:
+                    _signed=supabase.storage.from_("employee-documents").create_signed_url(
+                        str(_md.get("storage_path","")), 300
+                    )
+                    _signed_url=""
+                    if isinstance(_signed,dict):
+                        _signed_url=_signed.get("signedURL") or _signed.get("signedUrl") or ""
+                    else:
+                        _signed_url=getattr(_signed,"signed_url","") or ""
+                    if _signed_url:
+                        _mc1.link_button("👁️ 문서 열기",_signed_url,use_container_width=True)
+                        _mc2.link_button("⬇️ 다운로드",_signed_url,use_container_width=True)
+                    else:
+                        _mc1.info("열람 URL 생성 실패")
+                except Exception:
+                    _mc1.info("열람 URL 생성 실패")
+
+                if _mc3.button("🗑️ 문서 삭제",key="v221_doc_delete",use_container_width=True):
+                    try:
+                        supabase.storage.from_("employee-documents").remove([str(_md.get("storage_path",""))])
+                        supabase.table("employee_documents").delete().eq("id",_md.get("id")).execute()
+                        st.success("문서가 삭제되었습니다."); st.rerun()
+                    except Exception:
+                        st.error("문서 삭제에 실패했습니다.")
+
+                with st.expander("🔄 선택 문서 교체"):
+                    _replace=st.file_uploader("새 파일",type=["pdf","doc","docx","hwp","hwpx","xls","xlsx","jpg","jpeg","png"],key="v221_replace_file")
+                    if st.button("선택 문서를 새 파일로 교체",key="v221_replace_btn"):
+                        if _replace is None:
+                            st.warning("새 파일을 선택해 주세요.")
+                        else:
+                            try:
+                                import uuid as _uuid
+                                _ext=Path(_replace.name).suffix.lower()
+                                _new_path=f"{_deid}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{_uuid.uuid4().hex[:10]}{_ext}"
+                                supabase.storage.from_("employee-documents").upload(
+                                    _new_path,_replace.getvalue(),
+                                    {"content-type":_replace.type or "application/octet-stream","upsert":"false"}
+                                )
+                                supabase.table("employee_documents").update({
+                                    "original_filename":_replace.name,
+                                    "storage_path":_new_path,
+                                    "updated_at":datetime.now().isoformat()
+                                }).eq("id",_md.get("id")).execute()
+                                try:
+                                    supabase.storage.from_("employee-documents").remove([str(_md.get("storage_path",""))])
+                                except Exception:
+                                    pass
+                                st.success("문서가 교체되었습니다."); st.rerun()
+                            except Exception:
+                                st.error("문서 교체에 실패했습니다.")
             else:
                 st.info("등록된 인사서류가 없습니다.")
+
+            # 계약서/자격증 등 만료 예정 알림
+            if not _docs.empty and "expiry_date" in _docs.columns:
+                _exp=_docs.copy()
+                _exp["_expiry"]=pd.to_datetime(_exp["expiry_date"],errors="coerce").dt.date
+                _today=datetime.now().date()
+                _limit=_today+timedelta(days=60)
+                _soon=_exp[_exp["_expiry"].notna() & (_exp["_expiry"]>=_today) & (_exp["_expiry"]<=_limit)]
+                _expired=_exp[_exp["_expiry"].notna() & (_exp["_expiry"]<_today)]
+                if not _expired.empty:
+                    st.error(f"유효기간이 지난 인사서류가 {_expired.shape[0]}건 있습니다.")
+                if not _soon.empty:
+                    st.warning(f"60일 이내 만료 예정 인사서류가 {_soon.shape[0]}건 있습니다.")
 
             with st.form("v22_doc_upload_form",clear_on_submit=True):
                 c1,c2=st.columns(2)
