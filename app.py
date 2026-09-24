@@ -20,9 +20,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v23.3"
+APP_VERSION = "v23.3.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.3.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -334,7 +334,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.3.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1352,7 +1352,10 @@ if active_tab == 1:
             st.markdown(_print_html,unsafe_allow_html=True)
             st.info("아래 버튼을 누른 뒤 브라우저 인쇄 창에서 A4 세로 / 여백 기본 / 배율 100%로 출력하세요.")
             if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
-                st.components.v1.html("<script>window.parent.print();</script>",height=0)
+                st.components.v1.html("""<script>
+window.parent.scrollTo(0,0);
+setTimeout(function(){ window.parent.print(); },250);
+</script>""",height=0)
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
@@ -3905,7 +3908,15 @@ if active_tab == 11:
         .photo {{height:58mm;text-align:center;color:#777;vertical-align:middle!important;background:#fafafa!important;}}
         .sign {{text-align:center;line-height:1.8;padding:12px;}}
         @page {{size:A4 portrait;margin:7mm;}}
-        @media print {{.toolbar{{display:none!important}} .paper{{width:auto;min-height:auto;padding:0}} *,td{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}}}
+        @media print {{
+                /* v23.3.1: 숨겨진 기존 화면이 인쇄 공간을 차지하지 않도록 제거 */
+                [data-testid="stSidebar"], header, footer {{display:none !important;}}
+                [data-testid="stMainBlockContainer"] {{padding:0 !important; margin:0 !important; max-width:none !important;}}
+                
+                body {{margin:0 !important; padding:0 !important;}}
+                .hr-card {{margin:0 !important;}}
+#hr-card-print {{position:fixed !important; left:10mm !important; top:10mm !important; z-index:999999 !important;}}
+                #hr-card-print ~ * {{display:none !important;}}.toolbar{{display:none!important}} .paper{{width:auto;min-height:auto;padding:0}} *,td{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}}}
         </style>
         <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장복명서 인쇄</button></div>
         <div class="paper">
