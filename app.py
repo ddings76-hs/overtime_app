@@ -19,9 +19,9 @@ from supabase import create_client, Client
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v22.3"
+APP_VERSION = "v23.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v22.3", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v23.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -333,7 +333,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v22.3")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v23.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -963,7 +963,7 @@ if active_tab == 1:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
     tab_list, tab_card, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
-        ["직원 목록","인사카드 등록·수정","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
+        ["직원 목록","통합 인사기록카드","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
     )
 
     with tab_list:
@@ -1070,6 +1070,78 @@ if active_tab == 1:
                         st.rerun()
                     except Exception as e:
                         st.error("저장하지 못했습니다. v21 인사정보 DB 확장 SQL을 먼저 적용했는지 확인해 주세요.")
+
+        st.divider()
+        st.markdown("#### 📘 개인별 통합 인사기록")
+        st.caption("기본 인사정보와 함께 학력·가족·자격·병역·신체정보를 직원별로 관리합니다.")
+        if not df_emp.empty and has_permission("employee_write"):
+            _p_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _p_sel=st.selectbox("통합 인사기록 직원 선택",list(_p_opts.keys()),key="v230_profile_emp")
+            _peid=str(_p_opts[_p_sel].get("emp_id",""))
+            try:
+                _pr=supabase.table("employee_profiles").select("*").eq("emp_id",_peid).limit(1).execute()
+                _pdata=(_pr.data or [{}])[0] if getattr(_pr,"data",None) else {}
+            except Exception:
+                _pdata={}
+            with st.form("v230_profile_form"):
+                c1,c2,c3=st.columns(3)
+                _hanja=c1.text_input("성명(한문)",value=str(_pdata.get("name_hanja","") or ""))
+                _english=c2.text_input("성명(영문)",value=str(_pdata.get("name_english","") or ""))
+                _hobby=c3.text_input("취미",value=str(_pdata.get("hobby","") or ""))
+                c1,c2,c3=st.columns(3)
+                _height=c1.number_input("신장(cm)",min_value=0.0,value=float(_pdata.get("height_cm",0) or 0),step=0.1)
+                _weight=c2.number_input("체중(kg)",min_value=0.0,value=float(_pdata.get("weight_kg",0) or 0),step=0.1)
+                _blood=c3.text_input("혈액형",value=str(_pdata.get("blood_type","") or ""))
+                _mopts=["해당없음","필","미필","면제","복무중"]
+                _mcur=str(_pdata.get("military_status","해당없음") or "해당없음")
+                c1,c2,c3=st.columns(3)
+                _military=c1.selectbox("병역",_mopts,index=_mopts.index(_mcur) if _mcur in _mopts else 0)
+                _branch=c2.text_input("군별",value=str(_pdata.get("military_branch","") or ""))
+                _rank=c3.text_input("계급",value=str(_pdata.get("military_rank","") or ""))
+                _mil_note=st.text_input("병역 비고",value=str(_pdata.get("military_note","") or ""))
+                if st.form_submit_button("💾 통합 기본정보 저장",use_container_width=True):
+                    _pay={"emp_id":_peid,"name_hanja":_hanja,"name_english":_english,"hobby":_hobby,"height_cm":_height,"weight_kg":_weight,"blood_type":_blood,"military_status":_military,"military_branch":_branch,"military_rank":_rank,"military_note":_mil_note,"updated_at":datetime.now().isoformat()}
+                    try:
+                        if _pdata.get("id"): supabase.table("employee_profiles").update(_pay).eq("id",_pdata["id"]).execute()
+                        else: supabase.table("employee_profiles").insert(_pay).execute()
+                        st.success("통합 기본정보를 저장했습니다."); st.rerun()
+                    except Exception: st.error("통합 기본정보 저장 실패: v23.0 SQL 적용 여부를 확인해 주세요.")
+
+            st.markdown("##### 🎓 학력")
+            _edu=_safe_table("employee_education",_peid)
+            if not _edu.empty: display_table_kr(_edu,use_container_width=True,hide_index=True)
+            with st.form("v230_edu_form",clear_on_submit=True):
+                c1,c2,c3=st.columns(3); _school=c1.text_input("학교명"); _major=c2.text_input("전공"); _degree=c3.text_input("학위·과정")
+                c1,c2=st.columns(2); _es=c1.date_input("입학일",key="v230_es"); _ee=c2.date_input("졸업·수료일",key="v230_ee")
+                _en=st.text_input("학력 비고")
+                if st.form_submit_button("학력 등록"):
+                    try:
+                        supabase.table("employee_education").insert({"emp_id":_peid,"school_name":_school,"major":_major,"degree":_degree,"start_date":_es.isoformat(),"end_date":_ee.isoformat(),"note":_en}).execute(); st.success("학력을 등록했습니다."); st.rerun()
+                    except Exception: st.error("학력 저장 실패")
+
+            st.markdown("##### 👪 가족사항")
+            _fam=_safe_table("employee_family",_peid)
+            if not _fam.empty: display_table_kr(_fam,use_container_width=True,hide_index=True)
+            with st.form("v230_family_form",clear_on_submit=True):
+                c1,c2,c3=st.columns(3); _fn=c1.text_input("성명"); _fr=c2.text_input("관계"); _fj=c3.text_input("직업")
+                c1,c2=st.columns(2); _fb=c1.date_input("생년월일",key="v230_fb"); _fp=c2.text_input("연락처")
+                if st.form_submit_button("가족사항 등록"):
+                    try:
+                        supabase.table("employee_family").insert({"emp_id":_peid,"family_name":_fn,"relation":_fr,"birth_date":_fb.isoformat(),"occupation":_fj,"phone":_fp}).execute(); st.success("가족사항을 등록했습니다."); st.rerun()
+                    except Exception: st.error("가족사항 저장 실패")
+
+            st.markdown("##### 🪪 면허·자격")
+            _lic=_safe_table("employee_licenses",_peid)
+            if not _lic.empty: display_table_kr(_lic,use_container_width=True,hide_index=True)
+            with st.form("v230_license_form",clear_on_submit=True):
+                c1,c2=st.columns(2); _ln=c1.text_input("면허·자격명"); _lno=c2.text_input("자격번호")
+                c1,c2=st.columns(2); _lo=c1.text_input("발급기관"); _ld=c2.date_input("취득일",key="v230_ld")
+                _lnt=st.text_input("자격 비고")
+                if st.form_submit_button("면허·자격 등록"):
+                    try:
+                        supabase.table("employee_licenses").insert({"emp_id":_peid,"license_name":_ln,"license_number":_lno,"issuer":_lo,"issue_date":_ld.isoformat(),"note":_lnt}).execute(); st.success("면허·자격을 등록했습니다."); st.rerun()
+                    except Exception: st.error("면허·자격 저장 실패")
+            st.info("📄 A4 개인별 인사기록카드 출력은 입력항목 검증 후 다음 단계에서 연결합니다.")
 
     with tab_salary:
         st.markdown("#### 💰 직원별 급여·수당 설정")
