@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v24.0"
+APP_VERSION = "v24.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v24.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v24.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -1485,24 +1485,106 @@ window.addEventListener("load", function(){
                         except Exception as e: st.error(f"복원 실패: {e}")
 
             with _b:
-                _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True)
-                _purpose=st.text_input("용도",value="제출용")
+                st.markdown("##### 📄 재직·경력증명서 발급")
+                _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True,key="v241_cert_type")
+                _purpose=st.text_input("용도",value="제출용",key="v241_cert_purpose")
+                _issue_day=datetime.now().date()
                 _hire=str(_er.get("hire_date","") or "")
                 _ret=str(_er.get("retire_date","") or "")
                 _period=f"{_hire} ~ {_ret if _ret else '현재'}"
-                st.markdown(f"""
-                <div style="max-width:760px;margin:20px auto;padding:45px;border:1px solid #bbb;background:white;color:black">
-                <h1 style="text-align:center;letter-spacing:8px;margin-bottom:45px">{_ct}</h1>
-                <table style="width:100%;border-collapse:collapse">
-                <tr><th style="border:1px solid;padding:12px">성명</th><td style="border:1px solid;padding:12px">{_er.get('emp_name','')}</td><th style="border:1px solid;padding:12px">사번</th><td style="border:1px solid;padding:12px">{_eid}</td></tr>
-                <tr><th style="border:1px solid;padding:12px">부서</th><td style="border:1px solid;padding:12px">{_er.get('dept','')}</td><th style="border:1px solid;padding:12px">직위</th><td style="border:1px solid;padding:12px">{_er.get('position','')}</td></tr>
-                <tr><th style="border:1px solid;padding:12px">재직기간</th><td colspan="3" style="border:1px solid;padding:12px">{_period}</td></tr>
-                <tr><th style="border:1px solid;padding:12px">용도</th><td colspan="3" style="border:1px solid;padding:12px">{_purpose}</td></tr>
-                </table><p style="text-align:center;margin-top:55px;font-size:18px">위와 같이 {_ct.replace('증명서','')} 사실을 증명합니다.</p>
-                <p style="text-align:center;margin-top:45px">{datetime.now().date().isoformat()}</p>
-                <p style="text-align:center;font-size:22px;font-weight:700">화성시장기요양지원센터</p></div>
-                """,unsafe_allow_html=True)
-                st.caption("현재는 브라우저 인쇄(Ctrl+P)로 출력합니다. 발급번호·직인 자동화는 다음 단계에서 연결할 수 있습니다.")
+
+                # 발급번호는 실제 발급 저장 시 DB identity를 기준으로 확정
+                _preview_no=f"미발급-{_issue_day.strftime('%Y%m%d')}"
+                st.caption(f"미리보기 발급번호: {_preview_no} · 실제 발급 시 자동 확정")
+
+                _cert_body=f"""
+                <div class="v241-cert">
+                  <div class="cert-no">발급번호: {_preview_no}</div>
+                  <h1>{_ct}</h1>
+                  <table>
+                    <tr><th>성명</th><td>{_er.get('emp_name','')}</td><th>사번</th><td>{_eid}</td></tr>
+                    <tr><th>부서</th><td>{_er.get('dept','')}</td><th>직위</th><td>{_er.get('position','')}</td></tr>
+                    <tr><th>재직기간</th><td colspan="3">{_period}</td></tr>
+                    <tr><th>용도</th><td colspan="3">{_purpose}</td></tr>
+                  </table>
+                  <p class="cert-text">위와 같이 {_ct.replace('증명서','')} 사실을 증명합니다.</p>
+                  <p class="cert-date">{_issue_day.isoformat()}</p>
+                  <p class="cert-org">화성시장기요양지원센터</p>
+                </div>
+                <style>
+                .v241-cert{{max-width:760px;margin:20px auto;padding:45px;border:1px solid #aaa;background:#fff;color:#000}}
+                .v241-cert .cert-no{{text-align:right;font-size:12px;margin-bottom:10px}}
+                .v241-cert h1{{text-align:center;letter-spacing:8px;margin:25px 0 45px;font-size:30px}}
+                .v241-cert table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+                .v241-cert th,.v241-cert td{{border:1px solid #222;padding:13px;text-align:center;font-size:14px}}
+                .v241-cert th{{background:#f4f4f4;width:18%}}
+                .v241-cert .cert-text{{text-align:center;margin-top:55px;font-size:18px}}
+                .v241-cert .cert-date{{text-align:center;margin-top:50px;font-size:15px}}
+                .v241-cert .cert-org{{text-align:center;font-size:22px;font-weight:700;margin-top:30px}}
+                </style>
+                """
+                st.markdown(_cert_body,unsafe_allow_html=True)
+
+                c_issue,c_print=st.columns(2)
+                with c_issue:
+                    if st.button("📌 증명서 발급·대장 저장",key="v241_issue",use_container_width=True):
+                        try:
+                            _login_email=str(st.session_state.get("user_email","") or st.session_state.get("login_email","") or "")
+                            _issued_by=str(st.session_state.get("user_name","") or st.session_state.get("name","") or _login_email or "관리자")
+                            _ins=supabase.table("employee_certificate_issues").insert({
+                                "emp_id":_eid,"emp_name":str(_er.get("emp_name","") or ""),
+                                "certificate_type":_ct,"purpose":_purpose,
+                                "issue_date":_issue_day.isoformat(),"issued_by":_issued_by
+                            }).execute()
+                            _row=(_ins.data or [{}])[0]
+                            _iid=_row.get("id")
+                            _cert_no=f"HSCARE-{_issue_day.strftime('%Y%m%d')}-{int(_iid):05d}" if _iid else f"HSCARE-{_issue_day.strftime('%Y%m%d')}"
+                            if _iid:
+                                supabase.table("employee_certificate_issues").update({"certificate_no":_cert_no}).eq("id",_iid).execute()
+                            st.session_state["v241_last_cert_no"]=_cert_no
+                            st.success(f"발급대장에 저장했습니다. 발급번호: {_cert_no}")
+                        except Exception as e:
+                            st.error(f"증명서 발급 저장 실패: {e}")
+
+                _final_no=st.session_state.get("v241_last_cert_no",_preview_no)
+                _print_cert=_cert_body.replace(_preview_no,str(_final_no))
+                _print_doc="""<!doctype html><html><head><meta charset="utf-8"><title>증명서</title>
+                <style>
+                @page{size:A4 portrait;margin:15mm}
+                html,body{margin:0;padding:0;background:white;color:black;font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif}
+                .v241-cert{width:180mm;box-sizing:border-box;margin:0 auto;padding:18mm 12mm;border:0}
+                .cert-no{text-align:right;font-size:11pt;margin-bottom:8mm}
+                h1{text-align:center;letter-spacing:8px;font-size:24pt;margin:5mm 0 18mm}
+                table{width:100%;border-collapse:collapse;table-layout:fixed}
+                th,td{border:1px solid #111;padding:4mm 2mm;text-align:center;font-size:11pt}
+                th{width:18%;background:#f4f4f4}
+                .cert-text{text-align:center;margin-top:25mm;font-size:14pt}
+                .cert-date{text-align:center;margin-top:22mm;font-size:11pt}
+                .cert-org{text-align:center;margin-top:12mm;font-size:17pt;font-weight:700}
+                </style></head><body>""" + _print_cert.split("<style>")[0] + """</body></html>"""
+                with c_print:
+                    if st.button("🖨️ A4 증명서 출력",key="v241_print",use_container_width=True):
+                        _pc=_print_doc.replace("</body></html>","""<script>
+                        window.addEventListener("load",function(){setTimeout(function(){window.focus();window.print();},400);});
+                        </script></body></html>""")
+                        st.components.v1.html(_pc,height=1050,scrolling=False)
+
+                st.divider()
+                st.markdown("##### 📚 증명서 발급대장")
+                try:
+                    _issues=pd.DataFrame(supabase.table("employee_certificate_issues").select("*").order("id",desc=True).limit(500).execute().data or [])
+                except Exception:
+                    _issues=pd.DataFrame()
+                if _issues.empty:
+                    st.caption("발급이력이 없습니다.")
+                else:
+                    _show=_issues.rename(columns={
+                        "certificate_no":"발급번호","emp_id":"사번","emp_name":"성명",
+                        "certificate_type":"증명서종류","purpose":"용도","issue_date":"발급일",
+                        "issued_by":"발급자","created_at":"등록일"
+                    })
+                    _sc=[x for x in ["발급번호","사번","성명","증명서종류","용도","발급일","발급자","등록일"] if x in _show.columns]
+                    st.dataframe(_show[_sc],use_container_width=True,hide_index=True)
 
             with _c:
                 _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
