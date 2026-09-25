@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.1"
+APP_VERSION = "v31.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
@@ -2277,9 +2277,17 @@ if active_tab == 2:
         _oc3.metric("누적 인정시간",f"{_oh.sum():,.1f}시간")
         _oc4.metric("누적 계산수당",f"{_op.sum():,.0f}원")
 
-    _ot_ui_tabs=st.tabs(["👤 직원별 현황","📝 초과근무 신청","✅ 승인·실적처리","🗂️ 사용내역","💰 급여연계 현황"])
+    # v31.2: st.tabs는 모든 탭 코드를 동시에 실행하므로 실제 입력폼 분리에 부적합.
+    # 단일 업무영역 선택 방식으로 변경하여 선택한 화면만 렌더링합니다.
+    _ot_view=st.radio(
+        "초과근무 업무",
+        ["👤 직원별 현황","📝 초과근무 신청","✅ 승인·실적처리","🗂️ 사용내역","💰 급여연계 현황"],
+        horizontal=True,
+        key="v312_ot_view",
+        label_visibility="collapsed"
+    )
 
-    with _ot_ui_tabs[0]:
+    if _ot_view=="👤 직원별 현황":
         st.markdown("#### 👤 직원별 초과근무 현황")
         if _ot_all.empty:
             st.info("등록된 초과근무 내역이 없습니다.")
@@ -2295,12 +2303,12 @@ if active_tab == 2:
                 _cols=[x for x in ["work_date","work_type","start_time","end_time","act_start_time","act_end_time","actual_duration_hours","actual_pay","status"] if x in _ov.columns]
                 display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
 
-    with _ot_ui_tabs[1]:
+    if _ot_view=="📝 초과근무 신청":
         st.markdown("#### 📝 초과근무 / 휴일근무 사전 신청")
         st.caption("직원·근무일·예정시간·신청사유를 입력하여 사전 신청합니다.")
-        st.info("이 탭 아래의 **사전 신청 입력** 영역이 실제 저장 화면입니다. 신청 후 직원별 현황과 사용내역에 즉시 반영됩니다.")
+        st.caption("아래에서 사전 신청 내용을 입력하고 제출합니다.")
 
-    with _ot_ui_tabs[2]:
+    if _ot_view=="✅ 승인·실적처리":
         st.markdown("#### ✅ 승인·실적처리")
         _pending=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="신청").sum()) if not _ot_all.empty else 0
         _approved_n=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="승인").sum()) if not _ot_all.empty else 0
@@ -2309,7 +2317,7 @@ if active_tab == 2:
         ab.metric("승인완료",f"{_approved_n:,}건")
         st.info("왼쪽 메뉴의 **초과근무 승인·실적처리** 화면에서 실제 시작·종료시간, 인정시간, 수행내용과 승인상태를 처리합니다.")
 
-    with _ot_ui_tabs[3]:
+    if _ot_view=="🗂️ 사용내역":
         st.markdown("#### 🗂️ 초과근무 사용내역")
         if _ot_all.empty:
             st.info("조회할 내역이 없습니다.")
@@ -2327,7 +2335,7 @@ if active_tab == 2:
             _cols=[x for x in ["id","work_date","emp_id","emp_name","work_type","duration_hours","actual_duration_hours","actual_pay","status","reason"] if x in _ov.columns]
             display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
 
-    with _ot_ui_tabs[4]:
+    if _ot_view=="💰 급여연계 현황":
         st.markdown("#### 💰 급여연계 현황")
         _today=datetime.now().date()
         _py,_pm=_today.year,_today.month
@@ -2344,59 +2352,61 @@ if active_tab == 2:
             p2.metric("승인건",f"{len(_approved):,}건")
             p3.metric("승인수당",f"{pd.to_numeric(_approved.get('actual_pay',0),errors='coerce').fillna(0).sum():,.0f}원")
 
-    st.divider()
-    st.markdown("### 📝 사전 신청 입력")
-    emp_res = supabase.table("employees").select("*").execute()
-    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = scope_employee_master(df_emp)
+    if _ot_view=="📝 초과근무 신청":
+        st.divider()
+        st.markdown("### 📝 사전 신청 입력")
+        emp_res = supabase.table("employees").select("*").execute()
+        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+        df_emp = scope_employee_master(df_emp)
 
-    df_emp = scope_employee_master(df_emp)
-    if df_emp.empty:
-        st.warning("먼저 '직원 등록 및 정보 관리' 탭에서 직원을 등록해야 한다.")
-    else:
-        emp_list = df_emp['emp_name'] + " (" + df_emp['position'] + " / " + df_emp['emp_id'] + ")"
-        selected_emp_str = st.selectbox("직원 선택", emp_list, key="ot_emp")
-        selected_emp_id = selected_emp_str.split("/")[-1].replace(")", "").strip()
-        emp_info = df_emp[df_emp['emp_id'] == selected_emp_id].iloc[0]
-
-        work_date = st.date_input("근무 예정 일자", datetime.now())
-        work_type = st.radio("근무 구분", ["평일 초과근무 (18:00 이후)", "휴일근무"])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            start_time = st.time_input("예정 시작 시간", time(18, 0) if work_type == "평일 초과근무 (18:00 이후)" else time(9, 0))
-        with col2:
-            end_time = st.time_input("예정 종료 시간", time(20, 0))
-
-        reason = st.text_area("신청 사유")
-
-        start_dt = datetime.combine(work_date, start_time)
-        end_dt = datetime.combine(work_date, end_time)
-        duration_hours = (end_dt - start_dt).total_seconds() / 3600
-
-        if duration_hours < 0:
-            st.error("종료 시간은 시작 시간보다 빨라야 한다.")
+        df_emp = scope_employee_master(df_emp)
+        if df_emp.empty:
+            st.warning("먼저 '직원 등록 및 정보 관리' 탭에서 직원을 등록해야 한다.")
         else:
-            multiplier = 1.5
-            raw_pay = duration_hours * emp_info['hourly_wage'] * multiplier
-            estimated_pay = truncate_ten(raw_pay)
+            emp_list = df_emp['emp_name'] + " (" + df_emp['position'] + " / " + df_emp['emp_id'] + ")"
+            selected_emp_str = st.selectbox("직원 선택", emp_list, key="ot_emp")
+            selected_emp_id = selected_emp_str.split("/")[-1].replace(")", "").strip()
+            emp_info = df_emp[df_emp['emp_id'] == selected_emp_id].iloc[0]
 
-            st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간**")
+            work_date = st.date_input("근무 예정 일자", datetime.now())
+            work_type = st.radio("근무 구분", ["평일 초과근무 (18:00 이후)", "휴일근무"])
+        
+            col1, col2 = st.columns(2)
+            with col1:
+                start_time = st.time_input("예정 시작 시간", time(18, 0) if work_type == "평일 초과근무 (18:00 이후)" else time(9, 0))
+            with col2:
+                end_time = st.time_input("예정 종료 시간", time(20, 0))
 
-            if st.button("사전 신청서 제출"):
-                ot_data = {
-                    "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "emp_id": emp_info['emp_id'], "emp_name": emp_info['emp_name'],
-                    "dept": emp_info['dept'], "position": emp_info['position'],
-                    "work_date": str(work_date), "work_type": work_type,
-                    "start_time": str(start_time), "end_time": str(end_time),
-                    "duration_hours": duration_hours, "estimated_pay": estimated_pay,
-                    "act_start_time": str(start_time), "act_end_time": str(end_time),
-                    "actual_duration_hours": duration_hours, "actual_pay": estimated_pay,
-                    "status": "신청", "reason": reason, "act_reason": ""
-                }
-                supabase.table("overtime_records").insert(ot_data).execute()
-                st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
+            reason = st.text_area("신청 사유")
+
+            start_dt = datetime.combine(work_date, start_time)
+            end_dt = datetime.combine(work_date, end_time)
+            duration_hours = (end_dt - start_dt).total_seconds() / 3600
+
+            if duration_hours < 0:
+                st.error("종료 시간은 시작 시간보다 빨라야 한다.")
+            else:
+                multiplier = 1.5
+                raw_pay = duration_hours * emp_info['hourly_wage'] * multiplier
+                estimated_pay = truncate_ten(raw_pay)
+
+                st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간**")
+
+                if st.button("사전 신청서 제출"):
+                    ot_data = {
+                        "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "emp_id": emp_info['emp_id'], "emp_name": emp_info['emp_name'],
+                        "dept": emp_info['dept'], "position": emp_info['position'],
+                        "work_date": str(work_date), "work_type": work_type,
+                        "start_time": str(start_time), "end_time": str(end_time),
+                        "duration_hours": duration_hours, "estimated_pay": estimated_pay,
+                        "act_start_time": str(start_time), "act_end_time": str(end_time),
+                        "actual_duration_hours": duration_hours, "actual_pay": estimated_pay,
+                        "status": "신청", "reason": reason, "act_reason": ""
+                    }
+                    supabase.table("overtime_records").insert(ot_data).execute()
+                    st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
+
 
 # -------------------------------------------------------------------
 # TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계 (전월 25일~당월 24일 기준)
