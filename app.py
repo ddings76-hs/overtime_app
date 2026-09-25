@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.1"
+APP_VERSION = "v30.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.2", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.2")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -2976,10 +2976,32 @@ if active_tab == 4:
             _days=0.5 if "반차" in _type else float((_ed-_sd).days+1)
             st.metric("신청 일수",f"{_days:,.1f}일")
             _reason=st.text_area("휴가 사유",key="v300_leave_reason")
+            # v30.2 동일 사번의 동일일/기간 중복 신청 사전 확인
+            _dup_rows=pd.DataFrame()
+            if not _erec.empty and "start_date" in _erec.columns and "end_date" in _erec.columns:
+                _dup_chk=_erec.copy()
+                _dup_chk["_sd"]=pd.to_datetime(_dup_chk["start_date"],errors="coerce").dt.date
+                _dup_chk["_ed"]=pd.to_datetime(_dup_chk["end_date"],errors="coerce").dt.date
+                # 기존 휴가기간과 신규 신청기간이 하루라도 겹치면 중복 후보
+                _dup_rows=_dup_chk[(_dup_chk["_sd"]<=_ed)&(_dup_chk["_ed"]>=_sd)].copy()
+
+            _dup_confirm=False
+            if not _dup_rows.empty:
+                st.warning(f"⚠️ 동일 사번({_eid})에 신청기간과 겹치는 기존 휴가신청 {_dup_rows.shape[0]}건이 있습니다.")
+                _dc=[c for c in ["id","apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _dup_rows.columns]
+                display_table_kr(_dup_rows[_dc],use_container_width=True,hide_index=True)
+                _dup_confirm=st.checkbox(
+                    "기존 신청과 날짜가 중복되는 것을 확인했으며, 그래도 신청을 등록합니다.",
+                    key="v302_leave_dup_confirm"
+                )
+
             if st.button("📝 연차 신청 저장",type="primary",use_container_width=True,key="v300_leave_save"):
-                if _ed<_sd: st.warning("휴가 종료일은 시작일보다 빠를 수 없습니다.")
+                if _ed<_sd:
+                    st.warning("휴가 종료일은 시작일보다 빠를 수 없습니다.")
                 elif ("연차" in _type or "반차" in _type) and _days>(_etot-_eu):
                     st.warning(f"잔여 연차({_etot-_eu:,.1f}일)보다 신청 일수({_days:,.1f}일)가 많습니다.")
+                elif not _dup_rows.empty and not _dup_confirm:
+                    st.warning("중복 신청 확인 문구를 체크한 후 다시 저장해 주세요.")
                 else:
                     supabase.table("leave_records").insert({
                         "apply_dt":datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -3010,12 +3032,20 @@ if active_tab == 4:
 
             if has_permission("leave_write") and not _hist.empty:
                 st.divider()
-                _did=st.selectbox("삭제할 내역 ID",_hist["id"].tolist(),key="v300_leave_delid")
-                _confirm=st.checkbox("선택한 연차·휴가 내역 삭제 확인",key="v300_leave_delconfirm")
-                if st.button("🗑️ 선택 내역 삭제",disabled=not _confirm,key="v300_leave_delete"):
+                st.markdown("##### 🗑️ 연차·휴가 신청 삭제")
+                _del_opts={}
+                for _,_r in _hist.iterrows():
+                    _label=f"ID {_r.get('id')} | {_r.get('emp_name','')} | {_r.get('start_date','')} ~ {_r.get('end_date','')} | {_r.get('leave_type','')}"
+                    _del_opts[_label]=int(_r.get("id"))
+                _dlabel=st.selectbox("삭제할 신청내역",list(_del_opts.keys()),key="v300_leave_delid")
+                _did=_del_opts[_dlabel]
+                _drow=_hist[_hist["id"]==_did].iloc[0]
+                st.caption(f"삭제 대상: {_drow.get('emp_name','')}({_drow.get('emp_id','')}) / {_drow.get('leave_type','')} / {_drow.get('start_date','')} ~ {_drow.get('end_date','')} / {_drow.get('used_days',0)}일")
+                _confirm=st.checkbox("위 연차·휴가 신청을 삭제하는 것을 확인했습니다.",key="v300_leave_delconfirm")
+                if st.button("🗑️ 선택 신청 삭제",type="primary",disabled=not _confirm,key="v300_leave_delete"):
                     supabase.table("leave_records").delete().eq("id",int(_did)).execute()
-                    write_audit_log("연차 내역 삭제","leave_records",_did)
-                    st.success("삭제했습니다."); st.rerun()
+                    write_audit_log("연차 신청 삭제","leave_records",_did)
+                    st.success("선택한 연차·휴가 신청을 삭제했습니다."); st.rerun()
 
     with _lv_tabs[4]:
         st.markdown("#### 👤 직원별 연차대장")
