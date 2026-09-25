@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.4.2"
+APP_VERSION = "v30.4.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
@@ -3048,20 +3048,20 @@ html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic N
 .toolbar {{ text-align:right; margin:0 0 6px 0; }}
 .toolbar button {{ padding:7px 14px; border:0; border-radius:5px; cursor:pointer; }}
 .sheet {{ width:186mm; min-height:270mm; margin:0 auto; border:1.5px solid #111; padding:11mm 10mm; }}
-.head {{ position:relative; width:100%; height:31mm; }}
-.brand {{ position:absolute; left:0; top:0; width:42mm; min-height:25mm; }}
-.title {{ position:absolute; left:50%; top:8mm; transform:translateX(-50%); width:90mm; text-align:center; font-size:21px; line-height:1.15; font-weight:700; letter-spacing:1px; white-space:nowrap !important; word-break:keep-all !important; }}
-.approval {{ position:absolute; right:0; top:0; border-collapse:collapse; width:62mm; font-size:11px; text-align:center; }}
-.approval th,.approval td {{ border:1px solid #222; padding:4px 3px; }}
-.approval .sign {{ height:18mm; }}
-.main {{ width:100%; border-collapse:collapse; margin-top:13mm; font-size:13px; }}
-.main th,.main td {{ border:1px solid #222; padding:4mm 3mm; }}
+.head {{ position:relative; width:100%; height:34mm; }}
+.brand {{ position:absolute; left:0; top:0; width:24mm; min-height:25mm; }}
+.title {{ position:absolute; left:25mm; right:66mm; top:9mm; text-align:center; font-size:23px; line-height:1.15; font-weight:700; letter-spacing:1.2px; white-space:nowrap !important; word-break:keep-all !important; }}
+.approval {{ position:absolute; right:0; top:0; border-collapse:collapse; width:62mm; font-size:13px; text-align:center; }}
+.approval th,.approval td {{ border:1px solid #222; padding:5px 3px; font-size:13px; }}
+.approval .sign {{ height:19mm; }}
+.main {{ width:100%; border-collapse:collapse; margin-top:11mm; font-size:16px; }}
+.main th,.main td {{ border:1px solid #222; padding:4.5mm 3.5mm; font-size:16px; }}
 .main th {{ width:23%; background:#f5f5f5; text-align:center; }}
 .reason {{ height:36mm; vertical-align:top; }}
-.statement {{ text-align:center; margin-top:24mm; font-size:14px; }}
-.date {{ text-align:center; margin-top:10mm; font-size:13px; }}
-.signer {{ text-align:right; margin-top:20mm; padding-right:8mm; font-size:14px; font-weight:700; }}
-.org {{ text-align:center; margin-top:28mm; font-size:17px; font-weight:700; }}
+.statement {{ text-align:center; margin-top:22mm; font-size:17px; }}
+.date {{ text-align:center; margin-top:9mm; font-size:16px; }}
+.signer {{ text-align:right; margin-top:17mm; padding-right:8mm; font-size:17px; font-weight:700; }}
+.org {{ text-align:center; margin-top:22mm; font-size:19px; font-weight:700; }}
 @media print {{
   .toolbar {{ display:none !important; }}
   .sheet {{ border:1.5px solid #111; width:100%; min-height:0; margin:0; page-break-inside:avoid; }}
