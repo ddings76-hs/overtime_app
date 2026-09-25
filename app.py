@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.6"
+APP_VERSION = "v31.7"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -4530,13 +4530,23 @@ if active_tab == 10:
         "📄 복명·보고", "💳 정산관리", "📎 증빙관리", "📊 월별현황"
     ])
 
-    # v28.9: 7개 탭을 실제 업무화면으로 사용
+    # 출장 원장
     try:
         _v289_res=supabase.table("business_trips").select("*").order("id",desc=True).execute()
         _v289_df=pd.DataFrame(_v289_res.data or [])
         _v289_df=scope_dataframe_to_current_employee(_v289_df)
     except Exception:
         _v289_df=pd.DataFrame()
+
+    if not _v289_df.empty:
+        _ap=_v289_df.get("apply_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _rp=_v289_df.get("report_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _sp=_v289_df.get("settlement_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _k1,_k2,_k3,_k4=st.columns(4)
+        _k1.metric("출장 전체",f"{len(_v289_df):,}건")
+        _k2.metric("승인대기",f"{int(_ap.isin(['신청','승인대기']).sum()):,}건")
+        _k3.metric("복명 필요",f"{int((~_rp.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+        _k4.metric("정산 필요",f"{int((~_sp.isin(['정산완료','지급완료'])).sum()):,}건")
 
     # 공통 직원자료
     try:
@@ -4598,7 +4608,9 @@ if active_tab == 10:
             _hours=max(0,(_edt-_sdt).total_seconds()/3600)
             _base=20000 if _hours>=4 else (10000 if _hours>2 else 0)
             if _transport=="센터차량": _base=max(0,_base-10000)
-            st.metric("규정 기준 여비(참고)",f"{_base:,}원")
+            st.metric("단시간 출장여비 기준(참고)",f"{_base:,}원")
+            if _hours<=2:
+                st.caption("2시간 이내 출장은 규정에 따라 실교통비 지급 가능 여부를 별도로 확인합니다.")
             _note=st.text_area("비고 / 출장 사전 특이사항",key="v289_note")
             if st.button("🚗 출장 신청 등록",type="primary",use_container_width=True,disabled=not has_permission("trip_write"),key="v289_apply"):
                 if not _purpose or not _dest: st.warning("출장목적과 출장지를 입력해 주세요.")
@@ -4649,8 +4661,17 @@ if active_tab == 10:
 
     with _trip_ui_tabs[2]:
         st.markdown("#### ✅ 출장 승인관리")
-        if _v289_df.empty: st.info("처리할 출장 내역이 없습니다.")
+        if _v289_df.empty:
+            st.info("처리할 출장 내역이 없습니다.")
         else:
+            _as=_v289_df.get("apply_status",pd.Series([""]*len(_v289_df))).astype(str)
+            _aw=_v289_df[_as.isin(["신청","승인대기"])].copy()
+            if not _aw.empty:
+                st.markdown("##### 🔔 승인처리 필요")
+                _ac=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","transport_type","apply_status"] if c in _aw.columns]
+                display_table_kr(_aw[_ac],use_container_width=True,hide_index=True)
+            else:
+                st.success("현재 승인대기 중인 출장 신청이 없습니다.")
             _aid=st.selectbox("처리할 출장",_v289_df["id"].tolist(),key="v289_aid")
             _ar=_v289_df[_v289_df["id"]==_aid].iloc[0]
             st.write(f"**출장자:** {_ar.get('emp_name','')}　 **출장지:** {_ar.get('destination','')}　 **현재상태:** {_ar.get('apply_status','')}")
@@ -4727,16 +4748,25 @@ if active_tab == 10:
 
     with _trip_ui_tabs[5]:
         st.markdown("#### 📎 증빙관리")
-        try:
-            _files=pd.DataFrame(supabase.table("business_trip_files").select("*").order("id",desc=True).execute().data or [])
-        except Exception:
-            _files=pd.DataFrame()
-        if _files.empty:
-            st.info("등록된 출장 증빙이 없습니다.")
+        if _v289_df.empty:
+            st.info("출장 내역이 없습니다.")
         else:
-            _fcols=[c for c in ["id","trip_id","file_type","file_name","created_at"] if c in _files.columns]
-            display_table_kr(_files[_fcols],use_container_width=True,hide_index=True)
-        st.caption("사진·영수증·수료증의 업로드/교체 및 복명서 사진 자동삽입은 아래 통합 상세업무에서 처리합니다.")
+            _fid=st.selectbox("증빙 확인할 출장",_v289_df["id"].tolist(),
+                format_func=lambda x:f"#{x} | {_v289_df.loc[_v289_df['id']==x,'emp_name'].iloc[0]} | {_v289_df.loc[_v289_df['id']==x,'destination'].iloc[0]}",
+                key="v317_file_trip")
+            try:
+                _files=pd.DataFrame(
+                    supabase.table("business_trip_files").select("*")
+                    .eq("trip_id",int(_fid)).order("id",desc=True).execute().data or []
+                )
+            except Exception:
+                _files=pd.DataFrame()
+            if _files.empty:
+                st.info("선택한 출장에 등록된 증빙이 없습니다.")
+            else:
+                _fcols=[c for c in ["id","file_type","file_name","created_at"] if c in _files.columns]
+                display_table_kr(_files[_fcols],use_container_width=True,hide_index=True)
+            st.caption("증빙 업로드·교체와 복명서 사진 자동삽입은 아래 '복명·정산·증빙·문서출력'에서 처리합니다.")
 
     with _trip_ui_tabs[6]:
         st.markdown("#### 📊 월별현황")
@@ -4754,15 +4784,10 @@ if active_tab == 10:
             display_table_kr(_mon[_cols],use_container_width=True,hide_index=True)
 
     st.divider()
-    st.divider()
-    st.markdown("### 📄 출장 복명·증빙·출력 상세업무")
-    st.caption("복명내용 입력, 여비정산, 출장사진·영수증·수료증, A4 출장신청서·복명서 출력은 아래 통합 상세업무에서 처리합니다.")
-    st.info("출장 업무를 별도 메뉴로 이동하지 않고 이 '출장 관리' 화면에서 이어서 처리하도록 통합했습니다.")
 
-
-    with st.expander("🧾 복명·여비정산·증빙·A4 출력 상세업무 열기", expanded=False):
+    with st.expander("🧾 복명·정산·증빙·문서출력", expanded=False):
         st.header("📄 출장 복명·증빙 상세업무")
-        st.info("출장 통합관리의 상세업무 화면입니다. 복명서 작성·여비 입력·A4 출력·사진/영수증 첨부·월별 Excel 기능을 제공합니다.")
+        st.info("출장 복명내용, 여비정산, 증빙첨부 및 문서출력을 처리합니다.")
 
         try:
             trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
@@ -4857,7 +4882,7 @@ if active_tab == 10:
                     st.rerun()
 
         st.divider()
-        with st.expander("📚 출장·여비·교육 결과보고 규정 바로보기", expanded=False):
+        with st.expander("📚 출장 관련 규정 바로보기", expanded=False):
             st.markdown("""
         **출장 복무규정**
         - **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
@@ -5329,7 +5354,7 @@ if active_tab == 10:
 # -------------------------------------------------------------------
 if active_tab == 11:
     st.header("🚗 출장 관리")
-    st.info("출장 복명·규정 업무는 '출장 관리' 메뉴로 통합되었습니다. 왼쪽 메뉴에서 출장 관리를 선택해 주세요.")
+    st.info("출장 관련 업무는 '출장 관리'에서 처리합니다.")
 
 # -------------------------------------------------------------------
 # TAB 12: 계정 · 권한 관리 (관리자 전용)
