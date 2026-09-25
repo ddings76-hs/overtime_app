@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.4.1"
+APP_VERSION = "v30.4.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
@@ -3048,10 +3048,10 @@ html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic N
 .toolbar {{ text-align:right; margin:0 0 6px 0; }}
 .toolbar button {{ padding:7px 14px; border:0; border-radius:5px; cursor:pointer; }}
 .sheet {{ width:186mm; min-height:270mm; margin:0 auto; border:1.5px solid #111; padding:11mm 10mm; }}
-.head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8mm; }}
-.brand {{ min-width:42mm; }}
-.title {{ flex:1; text-align:center; font-size:24px; font-weight:700; letter-spacing:4px; padding-top:8mm; }}
-.approval {{ border-collapse:collapse; width:62mm; font-size:11px; text-align:center; }}
+.head {{ position:relative; width:100%; height:31mm; }}
+.brand {{ position:absolute; left:0; top:0; width:42mm; min-height:25mm; }}
+.title {{ position:absolute; left:50%; top:8mm; transform:translateX(-50%); width:90mm; text-align:center; font-size:21px; line-height:1.15; font-weight:700; letter-spacing:1px; white-space:nowrap !important; word-break:keep-all !important; }}
+.approval {{ position:absolute; right:0; top:0; border-collapse:collapse; width:62mm; font-size:11px; text-align:center; }}
 .approval th,.approval td {{ border:1px solid #222; padding:4px 3px; }}
 .approval .sign {{ height:18mm; }}
 .main {{ width:100%; border-collapse:collapse; margin-top:13mm; font-size:13px; }}
