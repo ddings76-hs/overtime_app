@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v29.0"
+APP_VERSION = "v30.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v29.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v29.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -2771,142 +2771,189 @@ if active_tab == 3:
                         st.rerun()
 
 # -------------------------------------------------------------------
-# TAB 4: 개인별 연차 관리 & 전 직원 연차 요약표
+# TAB 4: 연차 통합관리 v30.0
 # -------------------------------------------------------------------
 if active_tab == 4:
-    st.header("🌴 개인별 연차 관리 & 전 직원 연차 요약표")
-    
-    emp_res = supabase.table("employees").select("*").execute()
-    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = scope_employee_master(df_emp)
+    st.header("🌴 연차 통합관리")
+    st.caption("연차 현황·신청·사용내역·직원별 대장·기간통계를 한 화면에서 관리합니다.")
 
-    df_emp = scope_employee_master(df_emp)
-    if df_emp.empty:
-        st.warning("등록된 직원이 없다.")
-    else:
-        col_l1, col_l2 = st.columns([1, 1])
-        
-        with col_l1:
-            st.subheader("1. 연차/휴가 신청서 작성")
-            emp_leave_list = df_emp['emp_name'] + " (" + df_emp['position'] + " / " + df_emp['emp_id'] + ")"
-            selected_l_emp = st.selectbox("직원 선택", emp_leave_list, key="leave_emp_select")
-            selected_l_id = selected_l_emp.split("/")[-1].replace(")", "").strip()
-            l_emp_info = df_emp[df_emp['emp_id'] == selected_l_id].iloc[0]
+    try:
+        _lv_er=supabase.table("employees").select("*").execute()
+        _lv_emp=pd.DataFrame(_lv_er.data or [])
+        _lv_emp=scope_employee_master(_lv_emp)
+    except Exception:
+        _lv_emp=pd.DataFrame()
 
-            leave_type = st.selectbox("휴가 종류", ["연차 (1일)", "오전반차 (0.5일)", "오후반차 (0.5일)", "병가", "경조휴가", "특별휴가"])
-            
-            l_start_date = st.date_input("휴가 시작일", datetime.now(), key="l_s_date")
-            l_end_date = st.date_input("휴가 종료일", datetime.now(), key="l_e_date")
-            
-            if "반차" in leave_type:
-                used_days = 0.5
-            else:
-                used_days = float((l_end_date - l_start_date).days + 1)
+    try:
+        _lv_rr=supabase.table("leave_records").select("*").order("id",desc=True).execute()
+        _lv_all=pd.DataFrame(_lv_rr.data or [])
+        _lv_all=scope_dataframe_to_current_employee(_lv_all)
+    except Exception:
+        _lv_all=pd.DataFrame()
 
-            leave_reason = st.text_area("휴가 사유", key="l_reason")
-
-            if st.button("연차 신청서 제출 및 DB 저장"):
-                leave_data = {
-                    "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "emp_id": l_emp_info['emp_id'], "emp_name": l_emp_info['emp_name'],
-                    "dept": l_emp_info['dept'], "position": l_emp_info['position'],
-                    "leave_type": leave_type, "start_date": str(l_start_date),
-                    "end_date": str(l_end_date), "used_days": used_days, "reason": leave_reason
-                }
-                supabase.table("leave_records").insert(leave_data).execute()
-                st.success("연차 신청 내역이 Supabase DB에 저장되었다.")
-                st.rerun()
-
-        with col_l2:
-            st.subheader("2. 개인별 연차 현황 요약 및 삭제")
-            l_res = supabase.table("leave_records").select("*").eq("emp_id", l_emp_info['emp_id']).order("id", desc=True).execute()
-            df_leave_all = pd.DataFrame(l_res.data) if l_res.data else pd.DataFrame()
-
-            used_annual = df_leave_all[df_leave_all['leave_type'].str.contains("연차|반차", na=False)]['used_days'].sum() if not df_leave_all.empty else 0.0
-            total_annual = l_emp_info['total_annual_leave']
-            remaining_annual = total_annual - used_annual
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("총 부여 연차", f"{total_annual} 일")
-            m2.metric("사용 연차", f"{used_annual} 일")
-            m3.metric("잔여 연차", f"{remaining_annual} 일")
-
-            st.write(f"**[{l_emp_info['emp_name']}] 개인 신청 이력**")
-            if not df_leave_all.empty:
-                display_table_kr(df_leave_all[['id', 'apply_dt', 'leave_type', 'start_date', 'end_date', 'used_days', 'reason']], use_container_width=True)
-
-                st.divider()
-                st.write("**🗑️ 연차 신청 내역 삭제**")
-                del_leave_options = [f"ID {r['id']} | [{r['start_date']}] {r['leave_type']} ({r['used_days']}일)" for _, r in df_leave_all.iterrows()]
-                selected_del_str = st.selectbox("삭제할 내역 선택", del_leave_options, key="del_leave_sel")
-                selected_del_id = int(selected_del_str.split("|")[0].replace("ID", "").strip())
-
-                if st.button("선택한 연차 내역 삭제", type="primary"):
-                    supabase.table("leave_records").delete().eq("id", selected_del_id).execute()
-                    st.success("해당 연차 내역이 정상적으로 삭제되었다.")
-                    st.rerun()
-
-        st.divider()
-        st.header("📋 센터 등록 직원 전체 연차 내역 요약표")
-        
-        all_l_res = supabase.table("leave_records").select("*").execute()
-        df_all_leaves = pd.DataFrame(all_l_res.data) if all_l_res.data else pd.DataFrame()
-
-        summary_rows = []
-        for idx, emp_row in df_emp.iterrows():
-            emp_l_records = df_all_leaves[df_all_leaves['emp_id'] == emp_row['emp_id']] if not df_all_leaves.empty else pd.DataFrame()
-            u_annual = emp_l_records[emp_l_records['leave_type'].str.contains("연차|반차", na=False)]['used_days'].sum() if not emp_l_records.empty else 0.0
-            tot_annual = emp_row['total_annual_leave']
-            rem_annual = tot_annual - u_annual
-            
-            summary_rows.append({
-                "사번": emp_row['emp_id'], "이름": emp_row['emp_name'], "부서": emp_row['dept'], "직위": emp_row['position'],
-                "총 부여 연차": tot_annual, "사용 연차": u_annual, "잔여 연차": rem_annual,
-                "사용률 (%)": round((u_annual / tot_annual * 100), 1) if tot_annual > 0 else 0.0
+    # 공통 요약자료
+    _lv_summary=[]
+    if not _lv_emp.empty:
+        for _,_e in _lv_emp.iterrows():
+            _eid=str(_e.get("emp_id",""))
+            _rec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _annual=_rec[_rec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _rec.empty and "leave_type" in _rec.columns) else pd.DataFrame()
+            _used=pd.to_numeric(_annual.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _annual.empty else 0.0
+            _total=float(_e.get("total_annual_leave",0) or 0)
+            _lv_summary.append({
+                "사번":_eid,"이름":str(_e.get("emp_name","")),"부서":str(_e.get("dept","")),
+                "직위":str(_e.get("position","")),"총 부여 연차":_total,"사용 연차":float(_used),
+                "잔여 연차":float(_total-_used),"사용률 (%)":round((_used/_total*100),1) if _total>0 else 0.0
             })
+    _lv_sum=pd.DataFrame(_lv_summary)
 
-        df_summary_all = pd.DataFrame(summary_rows)
+    if not _lv_sum.empty:
+        _c1,_c2,_c3,_c4=st.columns(4)
+        _c1.metric("관리 직원",f"{len(_lv_sum):,}명")
+        _c2.metric("총 부여 연차",f"{_lv_sum['총 부여 연차'].sum():,.1f}일")
+        _c3.metric("사용 연차",f"{_lv_sum['사용 연차'].sum():,.1f}일")
+        _c4.metric("잔여 연차",f"{_lv_sum['잔여 연차'].sum():,.1f}일")
 
-        output_leave = io.BytesIO()
-        with pd.ExcelWriter(output_leave, engine='openpyxl') as writer:
-            excel_view_df(df_summary_all).to_excel(writer, index=False, sheet_name="전직원_연차_요약")
-            worksheet = writer.sheets["전직원_연차_요약"]
-            style_excel_sheet(worksheet)
+    _lv_tabs=st.tabs(["📋 연차현황","📝 연차신청","🗂️ 사용내역","👤 직원별 연차대장","📊 기간·월별 통계"])
 
-            header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-            header_font = Font(name="맑은 고딕", size=11, bold=True)
-            body_font = Font(name="맑은 고딕", size=10)
+    with _lv_tabs[0]:
+        st.markdown("#### 📋 전 직원 연차현황")
+        if _lv_sum.empty:
+            st.info("표시할 직원 연차자료가 없습니다.")
+        else:
+            q1,q2=st.columns(2)
+            _qname=q1.text_input("직원 검색",key="v300_leave_name")
+            _qstatus=q2.selectbox("잔여연차 기준",["전체","잔여 있음","소진","초과사용"],key="v300_leave_status")
+            _view=_lv_sum.copy()
+            if _qname:
+                _view=_view[_view["이름"].astype(str).str.contains(_qname,case=False,na=False)|_view["사번"].astype(str).str.contains(_qname,case=False,na=False)]
+            if _qstatus=="잔여 있음": _view=_view[_view["잔여 연차"]>0]
+            elif _qstatus=="소진": _view=_view[_view["잔여 연차"]==0]
+            elif _qstatus=="초과사용": _view=_view[_view["잔여 연차"]<0]
+            display_table_kr(_view,use_container_width=True,hide_index=True)
 
-            thin_border = Border(
-                left=Side(style='thin', color='000000'), right=Side(style='thin', color='000000'),
-                top=Side(style='thin', color='000000'), bottom=Side(style='thin', color='000000')
-            )
-            align_center = Alignment(horizontal='center', vertical='center')
-            align_right = Alignment(horizontal='right', vertical='center')
+            output_leave=io.BytesIO()
+            with pd.ExcelWriter(output_leave,engine="openpyxl") as writer:
+                excel_view_df(_view).to_excel(writer,index=False,sheet_name="연차현황")
+                ws=writer.sheets["연차현황"]; style_excel_sheet(ws)
+                thin=Border(left=Side(style="thin"),right=Side(style="thin"),top=Side(style="thin"),bottom=Side(style="thin"))
+                for row in ws.iter_rows():
+                    for cell in row:
+                        cell.border=thin
+                        cell.alignment=Alignment(horizontal="center",vertical="center")
+                for col in ws.columns:
+                    max_len=max(len(str(c.value or "")) for c in col)
+                    ws.column_dimensions[get_column_letter(col[0].column)].width=max(12,min(max_len+4,28))
+            st.download_button("📥 현재 연차현황 Excel",output_leave.getvalue(),
+                               file_name=f"연차현황_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="v300_leave_excel")
 
-            for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
-                for cell in row:
-                    cell.border = thin_border
-                    if cell.row == 1:
-                        cell.fill = header_fill; cell.font = header_font; cell.alignment = align_center
-                    else:
-                        cell.font = body_font
-                        cell.alignment = align_right if cell.column in [5, 6, 7, 8] else align_center
+    with _lv_tabs[1]:
+        st.markdown("#### 📝 연차·휴가 신청")
+        if _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _opts={f"{r.get('emp_name','')} ({r.get('position','')} / {r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _ek=st.selectbox("직원 선택",list(_opts.keys()),key="v300_leave_emp")
+            _ei=_opts[_ek]
+            _eid=str(_ei.get("emp_id",""))
+            _erec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _ea=_erec[_erec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _erec.empty and "leave_type" in _erec.columns) else pd.DataFrame()
+            _eu=pd.to_numeric(_ea.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _ea.empty else 0
+            _etot=float(_ei.get("total_annual_leave",0) or 0)
+            m1,m2,m3=st.columns(3)
+            m1.metric("부여",f"{_etot:,.1f}일"); m2.metric("사용",f"{_eu:,.1f}일"); m3.metric("잔여",f"{_etot-_eu:,.1f}일")
 
-            for col in worksheet.columns:
-                max_len = max(sum(2 if ord(c) > 127 else 1 for c in str(cell.value or '')) for cell in col)
-                col_letter = get_column_letter(col[0].column)
-                worksheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
+            _type=st.selectbox("휴가 종류",["연차 (1일)","오전반차 (0.5일)","오후반차 (0.5일)","병가","경조휴가","특별휴가"],key="v300_leave_type")
+            d1,d2=st.columns(2)
+            _sd=d1.date_input("휴가 시작일",datetime.now().date(),key="v300_leave_sd")
+            _ed=d2.date_input("휴가 종료일",datetime.now().date(),key="v300_leave_ed")
+            _days=0.5 if "반차" in _type else float((_ed-_sd).days+1)
+            st.metric("신청 일수",f"{_days:,.1f}일")
+            _reason=st.text_area("휴가 사유",key="v300_leave_reason")
+            if st.button("📝 연차 신청 저장",type="primary",use_container_width=True,key="v300_leave_save"):
+                if _ed<_sd: st.warning("휴가 종료일은 시작일보다 빠를 수 없습니다.")
+                elif ("연차" in _type or "반차" in _type) and _days>(_etot-_eu):
+                    st.warning(f"잔여 연차({_etot-_eu:,.1f}일)보다 신청 일수({_days:,.1f}일)가 많습니다.")
+                else:
+                    supabase.table("leave_records").insert({
+                        "apply_dt":datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "emp_id":_eid,"emp_name":str(_ei.get("emp_name","")),
+                        "dept":str(_ei.get("dept","")),"position":str(_ei.get("position","")),
+                        "leave_type":_type,"start_date":str(_sd),"end_date":str(_ed),
+                        "used_days":float(_days),"reason":_reason
+                    }).execute()
+                    st.success("연차 신청내역을 저장했습니다."); st.rerun()
 
-        excel_leave_data = output_leave.getvalue()
+    with _lv_tabs[2]:
+        st.markdown("#### 🗂️ 연차·휴가 사용내역")
+        if _lv_all.empty:
+            st.info("등록된 연차·휴가 내역이 없습니다.")
+        else:
+            f1,f2=st.columns(2)
+            _fn=f1.text_input("직원명/사번 검색",key="v300_hist_name")
+            _ft=f2.selectbox("휴가 종류",["전체"]+sorted(_lv_all["leave_type"].dropna().astype(str).unique().tolist()),key="v300_hist_type")
+            _hist=_lv_all.copy()
+            if _fn:
+                _mask=pd.Series(False,index=_hist.index)
+                for c in ["emp_name","emp_id"]:
+                    if c in _hist.columns: _mask|=_hist[c].astype(str).str.contains(_fn,case=False,na=False)
+                _hist=_hist[_mask]
+            if _ft!="전체": _hist=_hist[_hist["leave_type"].astype(str)==_ft]
+            _cols=[c for c in ["id","apply_dt","emp_id","emp_name","dept","position","leave_type","start_date","end_date","used_days","reason"] if c in _hist.columns]
+            display_table_kr(_hist[_cols],use_container_width=True,hide_index=True)
 
-        st.download_button(
-            label="📥 전 직원 연차 내역 요약표 엑셀 다운로드 (.xlsx)",
-            data=excel_leave_data, file_name=f"전직원_연차요약_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            if has_permission("leave_write") and not _hist.empty:
+                st.divider()
+                _did=st.selectbox("삭제할 내역 ID",_hist["id"].tolist(),key="v300_leave_delid")
+                _confirm=st.checkbox("선택한 연차·휴가 내역 삭제 확인",key="v300_leave_delconfirm")
+                if st.button("🗑️ 선택 내역 삭제",disabled=not _confirm,key="v300_leave_delete"):
+                    supabase.table("leave_records").delete().eq("id",int(_did)).execute()
+                    write_audit_log("연차 내역 삭제","leave_records",_did)
+                    st.success("삭제했습니다."); st.rerun()
 
-        display_table_kr(df_summary_all, use_container_width=True)
+    with _lv_tabs[3]:
+        st.markdown("#### 👤 직원별 연차대장")
+        if _lv_emp.empty:
+            st.info("직원 데이터가 없습니다.")
+        else:
+            _popt={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _pk=st.selectbox("직원",list(_popt.keys()),key="v300_person")
+            _pe=_popt[_pk]; _pid=str(_pe.get("emp_id",""))
+            _pr=_lv_all[_lv_all["emp_id"].astype(str)==_pid].copy() if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _pa=_pr[_pr["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _pr.empty and "leave_type" in _pr.columns) else pd.DataFrame()
+            _pu=pd.to_numeric(_pa.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _pa.empty else 0
+            _pt=float(_pe.get("total_annual_leave",0) or 0)
+            p1,p2,p3=st.columns(3)
+            p1.metric("총 부여",f"{_pt:,.1f}일"); p2.metric("사용",f"{_pu:,.1f}일"); p3.metric("잔여",f"{_pt-_pu:,.1f}일")
+            if not _pr.empty:
+                _cols=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _pr.columns]
+                display_table_kr(_pr[_cols],use_container_width=True,hide_index=True)
+
+    with _lv_tabs[4]:
+        st.markdown("#### 📊 기간·월별 연차 통계")
+        if _lv_all.empty:
+            st.info("통계 대상 자료가 없습니다.")
+        else:
+            _stat=_lv_all.copy()
+            _stat["_date"]=pd.to_datetime(_stat["start_date"],errors="coerce")
+            _years=sorted(_stat["_date"].dropna().dt.year.unique().tolist(),reverse=True)
+            if _years:
+                s1,s2=st.columns(2)
+                _yy=s1.selectbox("연도",_years,key="v300_stat_y")
+                _mm=s2.selectbox("월",["전체"]+list(range(1,13)),key="v300_stat_m")
+                _sv=_stat[_stat["_date"].dt.year==_yy]
+                if _mm!="전체": _sv=_sv[_sv["_date"].dt.month==int(_mm)]
+                _annual_sv=_sv[_sv["leave_type"].astype(str).str.contains("연차|반차",na=False)]
+                c1,c2,c3=st.columns(3)
+                c1.metric("휴가 건수",f"{len(_sv):,}건")
+                c2.metric("연차·반차 사용",f"{pd.to_numeric(_annual_sv.get('used_days',0),errors='coerce').fillna(0).sum():,.1f}일")
+                c3.metric("사용 직원",f"{_sv['emp_id'].nunique() if 'emp_id' in _sv.columns else 0:,}명")
+                if not _sv.empty:
+                    _agg=_sv.groupby(["emp_id","emp_name"],dropna=False)["used_days"].sum().reset_index()
+                    _agg.columns=["사번","이름","휴가 사용일수"]
+                    display_table_kr(_agg,use_container_width=True,hide_index=True)
 
 # -------------------------------------------------------------------
 # TAB 5: 연차 신청서 독립 출력 탭
