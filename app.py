@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.0"
+APP_VERSION = "v30.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.0", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.0")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -2791,6 +2791,16 @@ if active_tab == 4:
     except Exception:
         _lv_all=pd.DataFrame()
 
+    # v30.1 연차 발생·이월·조정 대장
+    try:
+        _lg_res=supabase.table("leave_grants").select("*").order("grant_date",desc=False).order("id",desc=False).execute()
+        _lv_grants=pd.DataFrame(_lg_res.data or [])
+        _lv_grants=scope_dataframe_to_current_employee(_lv_grants)
+        _grant_table_ok=True
+    except Exception:
+        _lv_grants=pd.DataFrame()
+        _grant_table_ok=False
+
     # 공통 요약자료
     _lv_summary=[]
     if not _lv_emp.empty:
@@ -2799,11 +2809,20 @@ if active_tab == 4:
             _rec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
             _annual=_rec[_rec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _rec.empty and "leave_type" in _rec.columns) else pd.DataFrame()
             _used=pd.to_numeric(_annual.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _annual.empty else 0.0
-            _total=float(_e.get("total_annual_leave",0) or 0)
+            _legacy_total=float(_e.get("total_annual_leave",0) or 0)
+            _eg=_lv_grants[_lv_grants["emp_id"].astype(str)==_eid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _eg.empty:
+                _eg["_days"]=pd.to_numeric(_eg.get("grant_days",0),errors="coerce").fillna(0)
+                _total=float(_eg["_days"].sum())
+                _source="발생대장"
+            else:
+                _total=_legacy_total
+                _source="기존설정"
             _lv_summary.append({
                 "사번":_eid,"이름":str(_e.get("emp_name","")),"부서":str(_e.get("dept","")),
                 "직위":str(_e.get("position","")),"총 부여 연차":_total,"사용 연차":float(_used),
-                "잔여 연차":float(_total-_used),"사용률 (%)":round((_used/_total*100),1) if _total>0 else 0.0
+                "잔여 연차":float(_total-_used),"사용률 (%)":round((_used/_total*100),1) if _total>0 else 0.0,
+                "산정기준":_source
             })
     _lv_sum=pd.DataFrame(_lv_summary)
 
@@ -2814,7 +2833,7 @@ if active_tab == 4:
         _c3.metric("사용 연차",f"{_lv_sum['사용 연차'].sum():,.1f}일")
         _c4.metric("잔여 연차",f"{_lv_sum['잔여 연차'].sum():,.1f}일")
 
-    _lv_tabs=st.tabs(["📋 연차현황","📝 연차신청","🗂️ 사용내역","👤 직원별 연차대장","📊 기간·월별 통계"])
+    _lv_tabs=st.tabs(["📋 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역","👤 직원별 연차대장","📊 기간·월별 통계"])
 
     with _lv_tabs[0]:
         st.markdown("#### 📋 전 직원 연차현황")
@@ -2850,6 +2869,84 @@ if active_tab == 4:
                                key="v300_leave_excel")
 
     with _lv_tabs[1]:
+        st.markdown("#### ➕ 연차 발생·이월·조정 관리")
+        if not _grant_table_ok:
+            st.warning("연차 발생대장 테이블이 없습니다. v30.1 SQL을 먼저 실행해 주세요.")
+        elif _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _gopts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _gk=st.selectbox("직원",list(_gopts.keys()),key="v301_grant_emp")
+            _ge=_gopts[_gk]; _gid=str(_ge.get("emp_id",""))
+            _gg=_lv_grants[_lv_grants["emp_id"].astype(str)==_gid].copy() if (not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+
+            if not _gg.empty:
+                _gg["_days"]=pd.to_numeric(_gg["grant_days"],errors="coerce").fillna(0)
+                _g_total=float(_gg["_days"].sum())
+                _carry=float(_gg.loc[_gg["grant_type"].astype(str)=="이월","_days"].sum())
+                _new=float(_gg.loc[_gg["grant_type"].astype(str)=="신규발생","_days"].sum())
+                _adj=float(_gg.loc[_gg["grant_type"].astype(str).isin(["조정","소멸"]),"_days"].sum())
+            else:
+                _g_total=_carry=_new=_adj=0.0
+
+            _used_rec=_lv_all[_lv_all["emp_id"].astype(str)==_gid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _used_ann=_used_rec[_used_rec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _used_rec.empty and "leave_type" in _used_rec.columns) else pd.DataFrame()
+            _g_used=float(pd.to_numeric(_used_ann.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()) if not _used_ann.empty else 0.0
+
+            g1,g2,g3,g4=st.columns(4)
+            g1.metric("이월",f"{_carry:,.1f}일")
+            g2.metric("신규발생",f"{_new:,.1f}일")
+            g3.metric("유효 부여합계",f"{_g_total:,.1f}일")
+            g4.metric("현재 잔여",f"{_g_total-_g_used:,.1f}일")
+
+            st.markdown("##### 발생·이월 등록")
+            a1,a2,a3=st.columns(3)
+            _gtype=a1.selectbox("구분",["이월","신규발생","조정","소멸"],key="v301_grant_type")
+            _gdate=a2.date_input("발생/처리일",datetime.now().date(),key="v301_grant_date")
+            _gdays=a3.number_input("일수",step=0.5,value=0.0,key="v301_grant_days")
+            b1,b2=st.columns(2)
+            _gyear=b1.number_input("귀속연도",min_value=2000,max_value=2100,value=datetime.now().year,step=1,key="v301_grant_year")
+            _has_expiry=b2.checkbox("사용기한 있음",key="v301_has_expiry")
+            _expiry=st.date_input("사용기한",datetime.now().date(),key="v301_expiry",disabled=not _has_expiry)
+            _gnote=st.text_input("비고 / 발생근거",key="v301_grant_note")
+            st.caption("조정은 증감 방향에 따라 +/− 일수로 입력할 수 있습니다. 소멸은 음수(-) 일수로 등록하면 잔액에서 차감됩니다.")
+
+            if st.button("💾 발생·이월 내역 등록",type="primary",use_container_width=True,key="v301_grant_save"):
+                if _gdays==0:
+                    st.warning("일수는 0일로 등록할 수 없습니다.")
+                elif _gtype in ["이월","신규발생"] and _gdays<0:
+                    st.warning("이월·신규발생 일수는 0보다 커야 합니다.")
+                elif _gtype=="소멸" and _gdays>0:
+                    st.warning("소멸은 음수(-) 일수로 입력해 주세요.")
+                else:
+                    supabase.table("leave_grants").insert({
+                        "emp_id":_gid,"emp_name":str(_ge.get("emp_name","")),
+                        "grant_year":int(_gyear),"grant_type":_gtype,
+                        "grant_date":str(_gdate),"grant_days":float(_gdays),
+                        "expiry_date":str(_expiry) if _has_expiry else None,
+                        "note":_gnote
+                    }).execute()
+                    write_audit_log(f"연차 {_gtype} 등록","leave_grants",_gid)
+                    st.success("연차 발생·이월 내역을 등록했습니다."); st.rerun()
+
+            st.markdown("##### 발생·이월 이력")
+            if _gg.empty:
+                st.info("등록된 발생·이월 이력이 없습니다.")
+                _legacy=float(_ge.get("total_annual_leave",0) or 0)
+                if _legacy:
+                    st.warning(f"현재 기존 직원설정의 총 연차 {_legacy:,.1f}일을 사용 중입니다. 발생대장으로 전환하려면 이월/신규발생 내역을 등록해 주세요.")
+            else:
+                _gcols=[c for c in ["id","grant_year","grant_type","grant_date","grant_days","expiry_date","note","created_at"] if c in _gg.columns]
+                display_table_kr(_gg[_gcols].sort_values(["grant_date","id"],ascending=[False,False]),use_container_width=True,hide_index=True)
+                if has_permission("leave_write"):
+                    _gdel=st.selectbox("삭제할 발생이력 ID",_gg["id"].tolist(),key="v301_grant_del")
+                    _gconfirm=st.checkbox("선택한 발생·이월 이력 삭제 확인",key="v301_grant_confirm")
+                    if st.button("🗑️ 발생이력 삭제",disabled=not _gconfirm,key="v301_grant_delete"):
+                        supabase.table("leave_grants").delete().eq("id",int(_gdel)).execute()
+                        write_audit_log("연차 발생이력 삭제","leave_grants",_gdel)
+                        st.success("삭제했습니다."); st.rerun()
+
+    with _lv_tabs[2]:
         st.markdown("#### 📝 연차·휴가 신청")
         if _lv_emp.empty:
             st.info("등록된 직원이 없습니다.")
@@ -2861,7 +2958,14 @@ if active_tab == 4:
             _erec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
             _ea=_erec[_erec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _erec.empty and "leave_type" in _erec.columns) else pd.DataFrame()
             _eu=pd.to_numeric(_ea.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _ea.empty else 0
-            _etot=float(_ei.get("total_annual_leave",0) or 0)
+            _eg=_lv_grants[_lv_grants["emp_id"].astype(str)==_eid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _eg.empty:
+                _etot=float(pd.to_numeric(_eg.get("grant_days",0),errors="coerce").fillna(0).sum())
+                _balance_source="발생·이월 대장"
+            else:
+                _etot=float(_ei.get("total_annual_leave",0) or 0)
+                _balance_source="기존 직원설정"
+            st.caption(f"연차 산정기준: {_balance_source}")
             m1,m2,m3=st.columns(3)
             m1.metric("부여",f"{_etot:,.1f}일"); m2.metric("사용",f"{_eu:,.1f}일"); m3.metric("잔여",f"{_etot-_eu:,.1f}일")
 
@@ -2886,7 +2990,7 @@ if active_tab == 4:
                     }).execute()
                     st.success("연차 신청내역을 저장했습니다."); st.rerun()
 
-    with _lv_tabs[2]:
+    with _lv_tabs[3]:
         st.markdown("#### 🗂️ 연차·휴가 사용내역")
         if _lv_all.empty:
             st.info("등록된 연차·휴가 내역이 없습니다.")
@@ -2913,7 +3017,7 @@ if active_tab == 4:
                     write_audit_log("연차 내역 삭제","leave_records",_did)
                     st.success("삭제했습니다."); st.rerun()
 
-    with _lv_tabs[3]:
+    with _lv_tabs[4]:
         st.markdown("#### 👤 직원별 연차대장")
         if _lv_emp.empty:
             st.info("직원 데이터가 없습니다.")
@@ -2924,14 +3028,15 @@ if active_tab == 4:
             _pr=_lv_all[_lv_all["emp_id"].astype(str)==_pid].copy() if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
             _pa=_pr[_pr["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _pr.empty and "leave_type" in _pr.columns) else pd.DataFrame()
             _pu=pd.to_numeric(_pa.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _pa.empty else 0
-            _pt=float(_pe.get("total_annual_leave",0) or 0)
+            _pg=_lv_grants[_lv_grants["emp_id"].astype(str)==_pid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            _pt=float(pd.to_numeric(_pg.get("grant_days",0),errors="coerce").fillna(0).sum()) if not _pg.empty else float(_pe.get("total_annual_leave",0) or 0)
             p1,p2,p3=st.columns(3)
             p1.metric("총 부여",f"{_pt:,.1f}일"); p2.metric("사용",f"{_pu:,.1f}일"); p3.metric("잔여",f"{_pt-_pu:,.1f}일")
             if not _pr.empty:
                 _cols=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _pr.columns]
                 display_table_kr(_pr[_cols],use_container_width=True,hide_index=True)
 
-    with _lv_tabs[4]:
+    with _lv_tabs[5]:
         st.markdown("#### 📊 기간·월별 연차 통계")
         if _lv_all.empty:
             st.info("통계 대상 자료가 없습니다.")
