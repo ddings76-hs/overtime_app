@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.4.3"
+APP_VERSION = "v31.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
@@ -2257,7 +2257,91 @@ window.addEventListener("load", function(){
 # TAB 2: 초과근무 사전 신청
 # -------------------------------------------------------------------
 if active_tab == 2:
-    st.header("1. 초과근무 / 휴일근무 사전 신청")
+    st.header("⏱️ 초과근무 통합관리")
+    st.caption("직원별 현황·사전신청·승인/실적처리·사용내역·급여연계 흐름으로 관리합니다.")
+
+    try:
+        _ot_all_res=supabase.table("overtime_records").select("*").order("id",desc=True).execute()
+        _ot_all=pd.DataFrame(_ot_all_res.data or [])
+        _ot_all=scope_dataframe_to_current_employee(_ot_all)
+    except Exception:
+        _ot_all=pd.DataFrame()
+
+    if not _ot_all.empty:
+        _oc1,_oc2,_oc3,_oc4=st.columns(4)
+        _ost=_ot_all.get("status",pd.Series([""]*len(_ot_all))).astype(str)
+        _oh=pd.to_numeric(_ot_all.get("actual_duration_hours",0),errors="coerce").fillna(0)
+        _op=pd.to_numeric(_ot_all.get("actual_pay",0),errors="coerce").fillna(0)
+        _oc1.metric("전체 신청",f"{len(_ot_all):,}건")
+        _oc2.metric("승인대기",f"{int((_ost=='신청').sum()):,}건")
+        _oc3.metric("누적 인정시간",f"{_oh.sum():,.1f}시간")
+        _oc4.metric("누적 계산수당",f"{_op.sum():,.0f}원")
+
+    _ot_ui_tabs=st.tabs(["👤 직원별 현황","📝 초과근무 신청","✅ 승인·실적처리","🗂️ 사용내역","💰 급여연계 현황"])
+
+    with _ot_ui_tabs[0]:
+        st.markdown("#### 👤 직원별 초과근무 현황")
+        if _ot_all.empty:
+            st.info("등록된 초과근무 내역이 없습니다.")
+        else:
+            _names=sorted(_ot_all["emp_name"].dropna().astype(str).unique().tolist()) if "emp_name" in _ot_all.columns else []
+            if _names:
+                _on=st.selectbox("직원 선택",_names,key="v310_ot_person")
+                _ov=_ot_all[_ot_all["emp_name"].astype(str)==_on].copy()
+                a,b,c=st.columns(3)
+                a.metric("신청 건수",f"{len(_ov):,}건")
+                b.metric("인정시간",f"{pd.to_numeric(_ov.get('actual_duration_hours',0),errors='coerce').fillna(0).sum():,.1f}시간")
+                c.metric("계산수당",f"{pd.to_numeric(_ov.get('actual_pay',0),errors='coerce').fillna(0).sum():,.0f}원")
+                _cols=[x for x in ["work_date","work_type","start_time","end_time","act_start_time","act_end_time","actual_duration_hours","actual_pay","status"] if x in _ov.columns]
+                display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
+
+    with _ot_ui_tabs[1]:
+        st.markdown("#### 📝 초과근무 / 휴일근무 사전 신청")
+        st.caption("아래 신청 입력영역에서 예정 근무일·시간·사유를 등록합니다.")
+
+    with _ot_ui_tabs[2]:
+        st.markdown("#### ✅ 승인·실적처리")
+        _pending=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="신청").sum()) if not _ot_all.empty else 0
+        st.metric("승인대기",f"{_pending:,}건")
+        st.info("실제 시작·종료시간, 인정시간, 수행내용과 승인상태 처리는 기존 검증된 '실제 수행 입력' 화면에서 계속 처리합니다.")
+
+    with _ot_ui_tabs[3]:
+        st.markdown("#### 🗂️ 초과근무 사용내역")
+        if _ot_all.empty:
+            st.info("조회할 내역이 없습니다.")
+        else:
+            q1,q2=st.columns(2)
+            _oq=q1.text_input("직원명/사번 검색",key="v310_ot_q")
+            _os=q2.selectbox("승인상태",["전체","신청","승인","반려"],key="v310_ot_status")
+            _ov=_ot_all.copy()
+            if _oq:
+                _mask=pd.Series(False,index=_ov.index)
+                for _c in ["emp_name","emp_id"]:
+                    if _c in _ov.columns: _mask|=_ov[_c].astype(str).str.contains(_oq,case=False,na=False)
+                _ov=_ov[_mask]
+            if _os!="전체": _ov=_ov[_ov["status"].astype(str)==_os]
+            _cols=[x for x in ["id","work_date","emp_id","emp_name","work_type","duration_hours","actual_duration_hours","actual_pay","status","reason"] if x in _ov.columns]
+            display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
+
+    with _ot_ui_tabs[4]:
+        st.markdown("#### 💰 급여연계 현황")
+        _today=datetime.now().date()
+        _py,_pm=_today.year,_today.month
+        _pd=datetime(_py,_pm,25).date()
+        _ps=(_pd.replace(day=1)-timedelta(days=1)).replace(day=25)
+        _pe=_pd-timedelta(days=1)
+        st.caption(f"현재 지급월 기준 산정기간: {_ps} ~ {_pe} (전월 25일 ~ 당월 24일)")
+        if not _ot_all.empty and "work_date" in _ot_all.columns:
+            _tmp=_ot_all.copy(); _tmp["_wd"]=pd.to_datetime(_tmp["work_date"],errors="coerce").dt.date
+            _pay=_tmp[(_tmp["_wd"]>=_ps)&(_tmp["_wd"]<=_pe)]
+            _approved=_pay[_pay["status"].astype(str)=="승인"] if "status" in _pay.columns else pd.DataFrame()
+            p1,p2,p3=st.columns(3)
+            p1.metric("산정기간 전체",f"{len(_pay):,}건")
+            p2.metric("승인건",f"{len(_approved):,}건")
+            p3.metric("승인수당",f"{pd.to_numeric(_approved.get('actual_pay',0),errors='coerce').fillna(0).sum():,.0f}원")
+
+    st.divider()
+    st.markdown("### 📝 사전 신청 입력")
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
     df_emp = scope_employee_master(df_emp)
@@ -2314,7 +2398,7 @@ if active_tab == 2:
 # TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계 (전월 25일~당월 24일 기준)
 # -------------------------------------------------------------------
 if active_tab == 3:
-    st.header("✅ 실제 초과/휴일근무 수행 내역 입력 & 급여 연계")
+    st.header("✅ 초과근무 승인·실적처리 및 급여연계")
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
@@ -2508,7 +2592,7 @@ if active_tab == 3:
         st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
 
         st.divider()
-        st.subheader("📊 월별 초과/휴일근무 일자별 내역 및 급여 연계")
+        st.subheader("💰 지급월별 초과근무 급여연계 상세")
 
         current_year = datetime.now().year
         c_y, c_m = st.columns(2)
