@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.4"
+APP_VERSION = "v30.4.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.4")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.4.1")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -3032,6 +3032,12 @@ if active_tab == 4:
                 except Exception:
                     _ad=_apply_date
                 _reason_print=str(_pr.get("reason","") or "").replace("<","&lt;").replace(">","&gt;")
+                _leave_type_raw=str(_pr.get("leave_type","") or "")
+                _leave_type_print={
+                    "연차 (1일)":"연차",
+                    "오전반차 (0.5일)":"오전반차",
+                    "오후반차 (0.5일)":"오후반차"
+                }.get(_leave_type_raw,_leave_type_raw)
 
                 _leave_doc=f"""
 <!doctype html><html><head><meta charset="utf-8">
@@ -3074,7 +3080,7 @@ html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic N
   </div>
   <table class="main">
     <tr><th>성 명</th><td>{_pr.get('emp_name','')} ({_pr.get('position','')})</td><th>소 속</th><td>{_pr.get('dept','')}</td></tr>
-    <tr><th>휴가구분</th><td colspan="3">{_pr.get('leave_type','')} &nbsp; (사용일수: {float(_pr.get('used_days',0) or 0):.1f}일)</td></tr>
+    <tr><th>휴가구분</th><td colspan="3">{_leave_type_print} &nbsp; (사용일수: {float(_pr.get('used_days',0) or 0):.1f}일)</td></tr>
     <tr><th>휴가기간</th><td colspan="3">{_pr.get('start_date','')} ~ {_pr.get('end_date','')}</td></tr>
     <tr><th>휴가사유</th><td colspan="3" class="reason">{_reason_print}</td></tr>
   </table>
