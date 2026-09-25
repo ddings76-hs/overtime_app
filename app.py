@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.0"
+APP_VERSION = "v31.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
 
@@ -2297,13 +2297,17 @@ if active_tab == 2:
 
     with _ot_ui_tabs[1]:
         st.markdown("#### 📝 초과근무 / 휴일근무 사전 신청")
-        st.caption("아래 신청 입력영역에서 예정 근무일·시간·사유를 등록합니다.")
+        st.caption("직원·근무일·예정시간·신청사유를 입력하여 사전 신청합니다.")
+        st.info("이 탭 아래의 **사전 신청 입력** 영역이 실제 저장 화면입니다. 신청 후 직원별 현황과 사용내역에 즉시 반영됩니다.")
 
     with _ot_ui_tabs[2]:
         st.markdown("#### ✅ 승인·실적처리")
         _pending=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="신청").sum()) if not _ot_all.empty else 0
-        st.metric("승인대기",f"{_pending:,}건")
-        st.info("실제 시작·종료시간, 인정시간, 수행내용과 승인상태 처리는 기존 검증된 '실제 수행 입력' 화면에서 계속 처리합니다.")
+        _approved_n=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="승인").sum()) if not _ot_all.empty else 0
+        aa,ab=st.columns(2)
+        aa.metric("승인대기",f"{_pending:,}건")
+        ab.metric("승인완료",f"{_approved_n:,}건")
+        st.info("왼쪽 메뉴의 **초과근무 승인·실적처리** 화면에서 실제 시작·종료시간, 인정시간, 수행내용과 승인상태를 처리합니다.")
 
     with _ot_ui_tabs[3]:
         st.markdown("#### 🗂️ 초과근무 사용내역")
@@ -2398,19 +2402,31 @@ if active_tab == 2:
 # TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계 (전월 25일~당월 24일 기준)
 # -------------------------------------------------------------------
 if active_tab == 3:
-    st.header("✅ 초과근무 승인·실적처리 및 급여연계")
+    st.header("✅ 초과근무 승인·실적처리")
+    st.caption("사전 신청 → 실제 수행시간 입력 → 인정시간 확정 → 승인 → 급여연계 순서로 처리합니다.")
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
 
     df_ot = scope_dataframe_to_current_employee(df_ot)
+
+    if not df_ot.empty:
+        _s=df_ot.get("status",pd.Series([""]*len(df_ot))).astype(str)
+        _hh=pd.to_numeric(df_ot.get("actual_duration_hours",0),errors="coerce").fillna(0)
+        _pp=pd.to_numeric(df_ot.get("actual_pay",0),errors="coerce").fillna(0)
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("전체",f"{len(df_ot):,}건")
+        c2.metric("승인대기",f"{int((_s=='신청').sum()):,}건")
+        c3.metric("승인 인정시간",f"{_hh[_s=='승인'].sum():,.1f}시간")
+        c4.metric("승인 수당",f"{_pp[_s=='승인'].sum():,.0f}원")
+
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
         col_ot1, col_ot2 = st.columns([3, 1])
         with col_ot1:
             ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {float(r['duration_hours']):.1f}h" for _, r in df_ot.iterrows()]
-            selected_ot_idx = st.selectbox("처리 및 출력할 초과근무 내역 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
+            selected_ot_idx = st.selectbox("승인·실적 처리할 신청 선택", range(len(ot_options)), format_func=lambda x: ot_options[x])
             target_ot = df_ot.iloc[selected_ot_idx]
         
         with col_ot2:
@@ -2448,7 +2464,7 @@ if active_tab == 3:
         if pd.isna(act_s_val) or not act_s_val: act_s_val = target_ot['start_time']
         if pd.isna(act_e_val) or not act_e_val: act_e_val = target_ot['end_time']
 
-        st.subheader(f"✏️ 실제 수행 시간 및 승인 상태 변경: {target_ot['emp_name']} ({target_ot['work_date']})")
+        st.subheader(f"✏️ 실제 수행·승인 처리: {target_ot['emp_name']} ({target_ot['work_date']})")
         
         # v27.2: 급여 마감 완료 기간의 초과근무는 과거 지급자료로 보호
         _ot_wd=pd.to_datetime(target_ot.get("work_date"),errors="coerce")
@@ -2500,6 +2516,7 @@ if active_tab == 3:
 
                 st.metric(label="실제 인정 시간", value=f"{recognized_hours:.1f} 시간")
                 act_pay = truncate_ten(recognized_hours * hourly_w * 1.5)
+                st.caption(f"수당 계산: 인정 {recognized_hours:.1f}시간 × 시간급 {float(hourly_w):,.0f}원 × 1.5 = {act_pay:,.0f}원")
                 
                 status_choice = st.selectbox("승인 상태", ["승인", "신청", "반려"], index=["승인", "신청", "반려"].index(target_ot['status']) if target_ot['status'] in ["승인", "신청", "반려"] else 0)
                 act_reason_input = st.text_input("실제 업무 수행 내용 / 확인 메모", value=target_ot['act_reason'] if pd.notna(target_ot['act_reason']) else '')
