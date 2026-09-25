@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.5"
+APP_VERSION = "v31.6"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -720,8 +720,7 @@ MENU_GROUPS = {
         ("연간 급여총괄", "12개월 누적 급여대장 요약"),
     ],
     "🚗 출장": [
-        ("출장 신청·관리", "출장신청·승인·현황 관리"),
-        ("출장 복명·규정", "복명·여비정산·증빙·복무규정"),
+        ("출장 관리", "신청·변경·승인·복명·정산·증빙·규정 통합관리"),
     ],
 }
 
@@ -730,7 +729,7 @@ MENU_TO_TAB = {
     "직원 관리": 1, "초과근무 신청": 2, "초과근무 실적": 3,
     "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
     "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
-    "출장 신청·관리": 10, "출장 복명·규정": 11, "계정·권한 관리": 12,
+    "출장 관리": 10, "출장 신청·관리": 10, "출장 복명·규정": 11, "계정·권한 관리": 12,
     "관리자 통계·보고서": 13
 }
 
@@ -739,11 +738,11 @@ ROLE_ALLOWED_MENUS = {
     "manager": {
         "대시보드", "관리자 통계·보고서",
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
-        "출장 신청·관리", "출장 복명·규정"
+        "출장 관리"
     },
     "employee": {
         "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
-        "급여명세서", "출장 신청·관리", "출장 복명·규정"
+        "급여명세서", "출장 관리"
     },
     "viewer": {"연차 신청서", "급여명세서", "출장 복명·규정"},
 }
@@ -4501,7 +4500,7 @@ if active_tab == 9:
 # -------------------------------------------------------------------
 if active_tab == 10:
     st.header("🚗 출장 통합관리")
-    st.caption("신청부터 변경·승인·복명·정산·증빙·월별현황까지 한 화면에서 관리합니다.")
+    st.caption("출장 신청 → 변경 → 승인 → 복명 → 정산 → 증빙 → 월별현황을 한 업무화면에서 관리합니다. 세부 복명·출력·규정도 이 화면에서 바로 연결합니다.")
 
     # v28.9: 출장 관련 규정을 시작페이지 최상단에 배치
     with st.expander("📖 출장 관련 복무규정 바로보기", expanded=False):
@@ -4688,7 +4687,9 @@ if active_tab == 10:
 
     with _trip_ui_tabs[3]:
         st.markdown("#### 📄 복명·보고")
-        if not _v289_df.empty:
+        if _v289_df.empty:
+            st.info("복명 처리할 출장 내역이 없습니다.")
+        else:
             _rp=_v289_df.get("report_status",pd.Series([""]*len(_v289_df))).astype(str)
             _rw=_v289_df[~_rp.isin(["완료","보고완료","제출완료"])].copy()
             st.metric("미보고",f"{len(_rw):,}건")
@@ -4696,7 +4697,15 @@ if active_tab == 10:
                 st.markdown("##### 🔔 복명서 작성 필요")
                 _rc=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","apply_status","report_status"] if c in _rw.columns]
                 display_table_kr(_rw[_rc],use_container_width=True,hide_index=True)
-            st.info("복명서 작성·사진 자동삽입·A4 출력은 '출장 복명·여비정산' 상세화면에서 처리합니다.")
+            _rid=st.selectbox("복명 처리할 출장",_v289_df["id"].tolist(),
+                format_func=lambda x:f"#{x} | {_v289_df.loc[_v289_df['id']==x,'emp_name'].iloc[0]} | {_v289_df.loc[_v289_df['id']==x,'destination'].iloc[0]}",
+                key="v316_report_trip")
+            _rr=_v289_df[_v289_df["id"]==_rid].iloc[0]
+            st.markdown(
+                f"**출장자:** {_rr.get('emp_name','')}　 **출장지:** {_rr.get('destination','')}　 "
+                f"**승인:** {_rr.get('apply_status','')}　 **복명:** {_rr.get('report_status','')}"
+            )
+            st.caption("아래 통합 상세업무 영역에서 복명내용·여비·증빙을 저장하고 출장신청서/복명서를 출력할 수 있습니다.")
 
     with _trip_ui_tabs[4]:
         st.markdown("#### 💳 정산관리")
@@ -4718,7 +4727,16 @@ if active_tab == 10:
 
     with _trip_ui_tabs[5]:
         st.markdown("#### 📎 증빙관리")
-        st.info("출장사진·영수증·수료증 업로드는 아래 '기존 증빙 호환영역'에 그대로 유지됩니다. 사진은 복명서에 자동 삽입됩니다.")
+        try:
+            _files=pd.DataFrame(supabase.table("business_trip_files").select("*").order("id",desc=True).execute().data or [])
+        except Exception:
+            _files=pd.DataFrame()
+        if _files.empty:
+            st.info("등록된 출장 증빙이 없습니다.")
+        else:
+            _fcols=[c for c in ["id","trip_id","file_type","file_name","created_at"] if c in _files.columns]
+            display_table_kr(_files[_fcols],use_container_width=True,hide_index=True)
+        st.caption("사진·영수증·수료증의 업로드/교체 및 복명서 사진 자동삽입은 아래 통합 상세업무에서 처리합니다.")
 
     with _trip_ui_tabs[6]:
         st.markdown("#### 📊 월별현황")
@@ -4737,577 +4755,581 @@ if active_tab == 10:
 
     st.divider()
     st.divider()
-    st.markdown("### 📄 복명·증빙 상세업무")
-    st.caption("복명서 작성·A4 출력·출장사진/영수증 첨부·월별 Excel은 기존 검증 로직을 유지한 상세업무 화면에서 처리합니다.")
-    st.info("왼쪽 메뉴의 **출장 복명·여비정산**에서 복명·증빙 상세기능을 사용할 수 있습니다. 신청·변경·승인·정산·월별 조회는 위 7개 탭에서 처리합니다.")
+    st.markdown("### 📄 출장 복명·증빙·출력 상세업무")
+    st.caption("복명내용 입력, 여비정산, 출장사진·영수증·수료증, A4 출장신청서·복명서 출력은 아래 통합 상세업무에서 처리합니다.")
+    st.info("출장 업무를 별도 메뉴로 이동하지 않고 이 '출장 관리' 화면에서 이어서 처리하도록 통합했습니다.")
 
-# -------------------------------------------------------------------
-# TAB 11: 출장 복명·복무규정
-# -------------------------------------------------------------------
-if active_tab == 11:
-    st.header("📄 출장 복명·증빙 상세업무")
-    st.info("출장 통합관리의 상세업무 화면입니다. 복명서 작성·여비 입력·A4 출력·사진/영수증 첨부·월별 Excel 기능을 제공합니다.")
 
-    try:
-        trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
-        df_trip2 = pd.DataFrame(trip_res2.data) if trip_res2.data else pd.DataFrame()
-        df_trip2 = scope_dataframe_to_current_employee(df_trip2)
-    except Exception:
-        df_trip2 = pd.DataFrame()
+    with st.expander("🧾 복명·여비정산·증빙·A4 출력 상세업무 열기", expanded=False):
+        st.header("📄 출장 복명·증빙 상세업무")
+        st.info("출장 통합관리의 상세업무 화면입니다. 복명서 작성·여비 입력·A4 출력·사진/영수증 첨부·월별 Excel 기능을 제공합니다.")
 
-    if not df_trip2.empty:
-        _d1,_d2,_d3,_d4=st.columns(4)
-        _dr=df_trip2.get("report_status",pd.Series([""]*len(df_trip2))).astype(str)
-        _ds=df_trip2.get("settlement_status",pd.Series([""]*len(df_trip2))).astype(str)
-        _d1.metric("출장",f"{len(df_trip2):,}건")
-        _d2.metric("미보고",f"{int((~_dr.isin(['완료','보고완료','제출완료'])).sum()):,}건")
-        _d3.metric("정산대기",f"{int((_ds=='정산대기').sum()):,}건")
-        _d4.metric("지급완료",f"{int((_ds=='지급완료').sum()):,}건")
+        try:
+            trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
+            df_trip2 = pd.DataFrame(trip_res2.data) if trip_res2.data else pd.DataFrame()
+            df_trip2 = scope_dataframe_to_current_employee(df_trip2)
+        except Exception:
+            df_trip2 = pd.DataFrame()
 
-    if df_trip2.empty:
-        st.info("출장 신청 내역이 없습니다. 먼저 출장 신청을 등록해 주세요.")
-    else:
-        approved_trip = df_trip2[df_trip2["apply_status"] == "승인"] if "apply_status" in df_trip2.columns else df_trip2
-        if approved_trip.empty:
-            st.info("승인된 출장 건이 없습니다.")
+        if not df_trip2.empty:
+            _d1,_d2,_d3,_d4=st.columns(4)
+            _dr=df_trip2.get("report_status",pd.Series([""]*len(df_trip2))).astype(str)
+            _ds=df_trip2.get("settlement_status",pd.Series([""]*len(df_trip2))).astype(str)
+            _d1.metric("출장",f"{len(df_trip2):,}건")
+            _d2.metric("미보고",f"{int((~_dr.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+            _d3.metric("정산대기",f"{int((_ds=='정산대기').sum()):,}건")
+            _d4.metric("지급완료",f"{int((_ds=='지급완료').sum()):,}건")
+
+        if df_trip2.empty:
+            st.info("출장 신청 내역이 없습니다. 먼저 출장 신청을 등록해 주세요.")
         else:
-            labels = {
-                int(r["id"]): f"#{int(r['id'])} | {r.get('emp_name','')} | {str(r.get('start_at',''))[:10]} | {r.get('destination','')}"
-                for _, r in approved_trip.iterrows()
-            }
-            rid = st.selectbox("복명할 출장 선택", list(labels.keys()), format_func=lambda x: labels[x])
-            rr = approved_trip[approved_trip["id"] == rid].iloc[0]
+            approved_trip = df_trip2[df_trip2["apply_status"] == "승인"] if "apply_status" in df_trip2.columns else df_trip2
+            if approved_trip.empty:
+                st.info("승인된 출장 건이 없습니다.")
+            else:
+                labels = {
+                    int(r["id"]): f"#{int(r['id'])} | {r.get('emp_name','')} | {str(r.get('start_at',''))[:10]} | {r.get('destination','')}"
+                    for _, r in approved_trip.iterrows()
+                }
+                rid = st.selectbox("복명할 출장 선택", list(labels.keys()), format_func=lambda x: labels[x])
+                rr = approved_trip[approved_trip["id"] == rid].iloc[0]
 
-            st.markdown("##### 📌 신청 내용 자동연계")
-            a,b,c,d = st.columns(4)
-            a.metric("출장자", str(rr.get("emp_name","")))
-            b.metric("출장지", str(rr.get("destination","")))
-            c.metric("이동수단", str(rr.get("transport_type","")))
-            d.metric("거리", f"{float(rr.get('distance_km',0) or 0):,.1f} km")
-            st.write("**출장목적:**", rr.get("purpose",""))
-            st.write("**출장시간:**", str(rr.get("start_at","")), "~", str(rr.get("end_at","")))
+                st.markdown("##### 📌 신청 내용 자동연계")
+                a,b,c,d = st.columns(4)
+                a.metric("출장자", str(rr.get("emp_name","")))
+                b.metric("출장지", str(rr.get("destination","")))
+                c.metric("이동수단", str(rr.get("transport_type","")))
+                d.metric("거리", f"{float(rr.get('distance_km',0) or 0):,.1f} km")
+                st.write("**출장목적:**", rr.get("purpose",""))
+                st.write("**출장시간:**", str(rr.get("start_at","")), "~", str(rr.get("end_at","")))
 
-            participants = st.text_input("참석자", value=str(rr.get("participants","") or ""))
-            default_report = """[참여 목적]
+                participants = st.text_input("참석자", value=str(rr.get("participants","") or ""))
+                default_report = """[참여 목적]
 
-[참여 내용]
+        [참여 내용]
 
-[주요 교육·업무 내용]
+        [주요 교육·업무 내용]
 
-[업무 적용 및 결과]
-"""
-            report_content = st.text_area(
-                "출장 보고 내용",
-                value=str(rr.get("report_content","") or default_report),
-                height=280
+        [업무 적용 및 결과]
+        """
+                report_content = st.text_area(
+                    "출장 보고 내용",
+                    value=str(rr.get("report_content","") or default_report),
+                    height=280
+                )
+
+                st.markdown("##### 💰 여비 정산")
+                e1,e2,e3,e4 = st.columns(4)
+                with e1:
+                    transport_cost = st.number_input("교통비/자가차량 운임", min_value=0, step=1000, value=int(rr.get("transport_cost",0) or 0))
+                with e2:
+                    toll_cost = st.number_input("통행료", min_value=0, step=1000, value=int(rr.get("toll_cost",0) or 0))
+                with e3:
+                    lodging_cost = st.number_input("숙박비", min_value=0, step=1000, value=int(rr.get("lodging_cost",0) or 0))
+                with e4:
+                    other_cost = st.number_input("기타 증빙경비", min_value=0, step=1000, value=int(rr.get("other_cost",0) or 0))
+
+                f1,f2 = st.columns(2)
+                with f1:
+                    daily_cost = st.number_input("일비", min_value=0, step=1000, value=int(rr.get("daily_cost", rr.get("rule_base_amount",0)) or 0))
+                with f2:
+                    meal_cost = st.number_input("식비", min_value=0, step=1000, value=int(rr.get("meal_cost",0) or 0))
+
+                total_trip_cost = int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
+                st.metric("정산 합계", f"{total_trip_cost:,}원")
+                st.caption("국내여비 기준표: 모든 직원 일비 25,000원/일, 식비 20,000원/일, 숙박료 실비(광역시 상한 80,000원, 그 밖의 지역 70,000원). 별도 단시간 출장여비 기준도 함께 적용되므로 담당자 확인 후 확정하도록 구성했습니다.")
+
+                if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True, disabled=not has_permission("trip_settle")):
+                    supabase.table("business_trips").update({
+                        "participants": participants,
+                        "report_content": report_content,
+                        "transport_cost": int(transport_cost),
+                        "toll_cost": int(toll_cost),
+                        "lodging_cost": int(lodging_cost),
+                        "other_cost": int(other_cost),
+                        "daily_cost": int(daily_cost),
+                        "meal_cost": int(meal_cost),
+                        "total_cost": total_trip_cost,
+                        "report_status": "완료",
+                        "settlement_status": "정산대기"
+                    }).eq("id", rid).execute()
+                    st.success("출장 복명 및 정산내용을 저장했습니다.")
+                    st.rerun()
+
+        st.divider()
+        with st.expander("📚 출장·여비·교육 결과보고 규정 바로보기", expanded=False):
+            st.markdown("""
+        **출장 복무규정**
+        - **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
+        - **제26조 출장 중 사정변경**: 목적지 변경·기간 연장 시 사전승인, 부득이한 경우 귀원 즉시 사후승인
+        - **제27조 출장보고**: 귀원 후 지체 없이 출장보고서 제출
+        - **제28조 출장여비**: 「여비관리 세칙」 적용
+
+        **여비관리 세칙 주요 기준**
+        - 여비는 출장 계획의 경로와 방법에 따라 계산
+        - 다른 기관에서 여비가 지급되면 해당 금액만큼 감액
+        - 센터 교통수단 또는 요금이 들지 않는 교통수단 이용 시 자동차운임 미지급
+        - 출장여행시간 **4시간 이상 20,000원 / 4시간 미만 10,000원**
+        - 보행 가능 거리나 **2시간 이내는 실교통비 지급 가능**
+        - 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
+        - 국내여비 기준표: 일비 **25,000원/일**, 식비 **20,000원/일**
+        - 숙박료: 실비, 상한 **광역시 80,000원 / 그 밖의 지역 70,000원**
+        - 자가차량 운임: 총거리(km)와 유류비 기준으로 산정하며 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
+        - 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
+
+        **교육·연수 결과보고**
+        - 위탁교육자는 **교육이수 후 5일 이내** 보고서 제출
+        - 교재·출석표·수료증 첨부
+        - 소속부서장을 경유하여 센터장에게 제출
+        - 정당한 사유 없이 기한 내 수료증·보고서를 제출하지 않으면 규정상 교육 미이수로 볼 수 있음
+            """)
+
+
+        st.divider()
+        st.markdown("### 📄 복명·보고 출력")
+        st.subheader("출장신청서 · 출장복명서 A4 출력")
+
+        if not df_trip2.empty:
+            print_ids = df_trip2["id"].tolist()
+            print_id = st.selectbox(
+                "출력할 출장 선택",
+                print_ids,
+                format_func=lambda x: f"#{x} | {df_trip2.loc[df_trip2['id']==x, 'emp_name'].iloc[0]} | {str(df_trip2.loc[df_trip2['id']==x, 'start_at'].iloc[0])[:10]}",
+                key="trip_print_id"
             )
+            pr = df_trip2[df_trip2["id"] == print_id].iloc[0]
 
-            st.markdown("##### 💰 여비 정산")
-            e1,e2,e3,e4 = st.columns(4)
-            with e1:
-                transport_cost = st.number_input("교통비/자가차량 운임", min_value=0, step=1000, value=int(rr.get("transport_cost",0) or 0))
-            with e2:
-                toll_cost = st.number_input("통행료", min_value=0, step=1000, value=int(rr.get("toll_cost",0) or 0))
-            with e3:
-                lodging_cost = st.number_input("숙박비", min_value=0, step=1000, value=int(rr.get("lodging_cost",0) or 0))
-            with e4:
-                other_cost = st.number_input("기타 증빙경비", min_value=0, step=1000, value=int(rr.get("other_cost",0) or 0))
+            def _fmt_dt(v):
+                try:
+                    d = pd.to_datetime(v)
+                    return d.strftime("%Y년 %m월 %d일 %H:%M")
+                except:
+                    return str(v or "")
 
-            f1,f2 = st.columns(2)
-            with f1:
-                daily_cost = st.number_input("일비", min_value=0, step=1000, value=int(rr.get("daily_cost", rr.get("rule_base_amount",0)) or 0))
-            with f2:
-                meal_cost = st.number_input("식비", min_value=0, step=1000, value=int(rr.get("meal_cost",0) or 0))
+            # 현재 센터에서 사용하던 출장신청서 형식 기반
+            trip_apply_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:white;}}
+            .toolbar {{margin-bottom:8px;}}
+            .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
+            .paper {{width:190mm;min-height:260mm;margin:auto;padding:8mm 8mm;background:#fff;}}
+            .form-table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;}}
+            .form-table td,.form-table th {{border:1px solid #111;padding:7px 6px;height:34px;vertical-align:middle;}}
+            .title {{font-size:20px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
+            .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
+            .center {{text-align:center;}} .left {{text-align:left;}}
+            .notice {{margin-top:18px;padding-top:14px;border-top:1px dashed #222;font-size:12px;}}
+            @page {{size:A4 portrait;margin:8mm;}}
+            @media print {{
+              .toolbar {{display:none!important;}}
+              .paper {{width:auto;min-height:auto;padding:0;}}
+              *,td,th {{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            }}
+            </style>
+            <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장신청서 인쇄</button></div>
+            <div class="paper">
+              <div style="font-size:11px;margin-bottom:4px;">[서식 제1호]</div>
+              <table class="form-table">
+                <tr><td colspan="7" class="title">출장신청서</td></tr>
+                <tr>
+                  <td colspan="3" rowspan="2"></td>
+                  <td rowspan="2" class="label" style="width:7%;">결<br>재</td>
+                  <td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td>
+                </tr>
+                <tr><td style="height:42px;"></td><td></td><td></td></tr>
+                <tr>
+                  <td class="label" style="width:16%;">성 명</td>
+                  <td class="center">{pr.get('emp_name','')}</td>
+                  <td class="label">직 위</td>
+                  <td colspan="4" class="center">{pr.get('position','')}</td>
+                </tr>
+                <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+                <tr><td class="label">출장시간</td><td colspan="6" class="center">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+                <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">부 서</td><td colspan="3">{pr.get('department','')}</td></tr>
+                <tr>
+                  <td class="label">이동사항</td>
+                  <td colspan="2" class="center">{pr.get('transport_type','')}</td>
+                  <td class="label">거리구분</td>
+                  <td colspan="3" class="center">{float(pr.get('distance_km',0) or 0):,.1f} km</td>
+                </tr>
+              <tr><td colspan="7" class="sign" style="text-align:center;line-height:1.8;padding:12px;">
+                  위와 같이 출장을 신청합니다.<br>
+                  {pd.to_datetime(pr.get('start_at')).strftime('%Y년 %m월 %d일') if pr.get('start_at') else ''}<br>
+                  신청자 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)
+                </td></tr>
+              </table>
+              <div class="notice">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
+            </div>
+            """
 
-            total_trip_cost = int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
-            st.metric("정산 합계", f"{total_trip_cost:,}원")
-            st.caption("국내여비 기준표: 모든 직원 일비 25,000원/일, 식비 20,000원/일, 숙박료 실비(광역시 상한 80,000원, 그 밖의 지역 70,000원). 별도 단시간 출장여비 기준도 함께 적용되므로 담당자 확인 후 확정하도록 구성했습니다.")
-
-            if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True, disabled=not has_permission("trip_settle")):
-                supabase.table("business_trips").update({
-                    "participants": participants,
-                    "report_content": report_content,
-                    "transport_cost": int(transport_cost),
-                    "toll_cost": int(toll_cost),
-                    "lodging_cost": int(lodging_cost),
-                    "other_cost": int(other_cost),
-                    "daily_cost": int(daily_cost),
-                    "meal_cost": int(meal_cost),
-                    "total_cost": total_trip_cost,
-                    "report_status": "완료",
-                    "settlement_status": "정산대기"
-                }).eq("id", rid).execute()
-                st.success("출장 복명 및 정산내용을 저장했습니다.")
-                st.rerun()
-
-    st.divider()
-    with st.expander("📚 출장·여비·교육 결과보고 규정 바로보기", expanded=False):
-        st.markdown("""
-**출장 복무규정**
-- **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
-- **제26조 출장 중 사정변경**: 목적지 변경·기간 연장 시 사전승인, 부득이한 경우 귀원 즉시 사후승인
-- **제27조 출장보고**: 귀원 후 지체 없이 출장보고서 제출
-- **제28조 출장여비**: 「여비관리 세칙」 적용
-
-**여비관리 세칙 주요 기준**
-- 여비는 출장 계획의 경로와 방법에 따라 계산
-- 다른 기관에서 여비가 지급되면 해당 금액만큼 감액
-- 센터 교통수단 또는 요금이 들지 않는 교통수단 이용 시 자동차운임 미지급
-- 출장여행시간 **4시간 이상 20,000원 / 4시간 미만 10,000원**
-- 보행 가능 거리나 **2시간 이내는 실교통비 지급 가능**
-- 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
-- 국내여비 기준표: 일비 **25,000원/일**, 식비 **20,000원/일**
-- 숙박료: 실비, 상한 **광역시 80,000원 / 그 밖의 지역 70,000원**
-- 자가차량 운임: 총거리(km)와 유류비 기준으로 산정하며 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
-- 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
-
-**교육·연수 결과보고**
-- 위탁교육자는 **교육이수 후 5일 이내** 보고서 제출
-- 교재·출석표·수료증 첨부
-- 소속부서장을 경유하여 센터장에게 제출
-- 정당한 사유 없이 기한 내 수료증·보고서를 제출하지 않으면 규정상 교육 미이수로 볼 수 있음
-        """)
-
-
-    st.divider()
-    st.markdown("### 📄 복명·보고 출력")
-    st.subheader("출장신청서 · 출장복명서 A4 출력")
-
-    if not df_trip2.empty:
-        print_ids = df_trip2["id"].tolist()
-        print_id = st.selectbox(
-            "출력할 출장 선택",
-            print_ids,
-            format_func=lambda x: f"#{x} | {df_trip2.loc[df_trip2['id']==x, 'emp_name'].iloc[0]} | {str(df_trip2.loc[df_trip2['id']==x, 'start_at'].iloc[0])[:10]}",
-            key="trip_print_id"
-        )
-        pr = df_trip2[df_trip2["id"] == print_id].iloc[0]
-
-        def _fmt_dt(v):
+            # 현재 센터에서 사용하던 출장복명서 형식 기반
+            report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
+            # v28.6: 원 출장 ID에 연결된 사전/사후승인 변경이력
+            _trip_change_html=""
             try:
-                d = pd.to_datetime(v)
-                return d.strftime("%Y년 %m월 %d일 %H:%M")
-            except:
-                return str(v or "")
+                _chg_client=supabase_admin if supabase_admin is not None else supabase
+                _chg_rows=_chg_client.table("business_trip_changes").select("*").eq("trip_id",int(pr.get("id"))).order("created_at").execute().data or []
+                if _chg_rows:
+                    _chg_items=[]
+                    for _ch in _chg_rows:
+                        _txt=f"{str(_ch.get('change_type','변경'))} · {str(_ch.get('approval_type','') or '')} {str(_ch.get('approval_status','') or '')}"
+                        if _ch.get("new_destination"): _txt+=f" · 변경행선지: {_ch.get('new_destination')}"
+                        if _ch.get("new_start_at") or _ch.get("new_end_at"):
+                            _ns=pd.to_datetime(_ch.get("new_start_at"),errors="coerce")
+                            _ne=pd.to_datetime(_ch.get("new_end_at"),errors="coerce")
+                            if pd.notna(_ns) and pd.notna(_ne): _txt+=f" · 변경시간: {_ns.strftime('%Y-%m-%d %H:%M')} ~ {_ne.strftime('%Y-%m-%d %H:%M')}"
+                        if _ch.get("change_reason"): _txt+=f" · 사유: {_ch.get('change_reason')}"
+                        _chg_items.append(f"<div style='margin:2px 0;'>• {_txt}</div>")
+                    _trip_change_html="<div style='margin-top:8px;padding:7px;border:1px solid #aaa;'><b>[출장 변경·승인 이력]</b>"+"".join(_chg_items)+"</div>"
+            except Exception:
+                _trip_change_html=""
 
-        # 현재 센터에서 사용하던 출장신청서 형식 기반
-        trip_apply_html = f"""
-        <style>
-        * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
-        body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:white;}}
-        .toolbar {{margin-bottom:8px;}}
-        .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
-        .paper {{width:190mm;min-height:260mm;margin:auto;padding:8mm 8mm;background:#fff;}}
-        .form-table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;}}
-        .form-table td,.form-table th {{border:1px solid #111;padding:7px 6px;height:34px;vertical-align:middle;}}
-        .title {{font-size:20px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
-        .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
-        .center {{text-align:center;}} .left {{text-align:left;}}
-        .notice {{margin-top:18px;padding-top:14px;border-top:1px dashed #222;font-size:12px;}}
-        @page {{size:A4 portrait;margin:8mm;}}
-        @media print {{
-          .toolbar {{display:none!important;}}
-          .paper {{width:auto;min-height:auto;padding:0;}}
-          *,td,th {{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
-        }}
-        </style>
-        <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장신청서 인쇄</button></div>
-        <div class="paper">
-          <div style="font-size:11px;margin-bottom:4px;">[서식 제1호]</div>
-          <table class="form-table">
-            <tr><td colspan="7" class="title">출장신청서</td></tr>
-            <tr>
-              <td colspan="3" rowspan="2"></td>
-              <td rowspan="2" class="label" style="width:7%;">결<br>재</td>
-              <td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td>
-            </tr>
-            <tr><td style="height:42px;"></td><td></td><td></td></tr>
-            <tr>
-              <td class="label" style="width:16%;">성 명</td>
-              <td class="center">{pr.get('emp_name','')}</td>
-              <td class="label">직 위</td>
-              <td colspan="4" class="center">{pr.get('position','')}</td>
-            </tr>
-            <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
-            <tr><td class="label">출장시간</td><td colspan="6" class="center">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
-            <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">부 서</td><td colspan="3">{pr.get('department','')}</td></tr>
-            <tr>
-              <td class="label">이동사항</td>
-              <td colspan="2" class="center">{pr.get('transport_type','')}</td>
-              <td class="label">거리구분</td>
-              <td colspan="3" class="center">{float(pr.get('distance_km',0) or 0):,.1f} km</td>
-            </tr>
-          <tr><td colspan="7" class="sign" style="text-align:center;line-height:1.8;padding:12px;">
-              위와 같이 출장을 신청합니다.<br>
-              {pd.to_datetime(pr.get('start_at')).strftime('%Y년 %m월 %d일') if pr.get('start_at') else ''}<br>
-              신청자 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)
-            </td></tr>
-          </table>
-          <div class="notice">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
-        </div>
+            # v28.5: 복명서의 실제 출력대상(pr) ID와 첨부파일을 직접 연결
+            _trip_attach_html = ""
+            _trip_extra_attach_html = ""
+            _trip_files = []
+            _photo_blocks = []
+            _extra_blocks = []
+            _trip_id_for_report = int(pr.get("id")) if pr.get("id") is not None else None
+            _attach_error = ""
+
+            try:
+                _files_client = supabase_admin if supabase_admin is not None else supabase
+                _files_res = _files_client.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
+                _trip_files = _files_res.data or []
+
+                # v28.5: signed URL 대신 서버에서 파일을 읽어 data URI로 삽입.
+                # Streamlit iframe/인쇄창에서도 private Storage 이미지를 확실히 표시하기 위함.
+                import base64 as _trip_b64
+                for _f in _trip_files:
+                    _ft = str(_f.get("file_type","")).strip()
+                    _path = _f.get("storage_path")
+                    _name = _f.get("file_name") or "첨부파일"
+                    if not _path:
+                        continue
+
+                    _ext = str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
+                    _is_image = _ext in ["jpg","jpeg","png","webp"]
+                    if _is_image:
+                        try:
+                            _raw = _files_client.storage.from_("business-trip-files").download(_path)
+                            _mime = "image/jpeg" if _ext in ["jpg","jpeg"] else ("image/png" if _ext=="png" else "image/webp")
+                            _data_uri = f"data:{_mime};base64,{_trip_b64.b64encode(_raw).decode('ascii')}"
+                        except Exception as _img_e:
+                            _data_uri = None
+                            _attach_error += f"{_name}: {_img_e}; "
+
+                        if _data_uri:
+                            _img_html = f'<img src="{_data_uri}" style="max-width:100%;max-height:205px;object-fit:contain;">'
+                            if _ft == "출장사진":
+                                _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;">{_img_html}<div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
+                            else:
+                                _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div>{_img_html}<div style="font-size:9px;">{_name}</div></div>')
+                    else:
+                        _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
+            except Exception as _attach_e:
+                _attach_error = str(_attach_e)
+
+            _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
+            if _extra_blocks:
+                _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
+
+            st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
+            if _attach_error:
+                st.warning(f"첨부파일 읽기 확인: {_attach_error[:300]}")
+
+            trip_report_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:#fff;}}
+            .toolbar {{margin-bottom:8px;}} .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
+            .paper {{width:190mm;min-height:270mm;margin:auto;padding:6mm;background:#fff;}}
+            table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;}}
+            td {{border:1px solid #111;padding:6px;vertical-align:middle;}}
+            .title {{font-size:19px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
+            .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
+            .report {{height:92mm;vertical-align:top!important;line-height:1.55;}}
+            .photo {{height:58mm;text-align:center;color:#777;vertical-align:middle!important;background:#fafafa!important;}}
+            .sign {{text-align:center;line-height:1.8;padding:12px;}}
+            @page {{size:A4 portrait;margin:7mm;}}
+            @media print {{
+                    /* v23.3.1: 숨겨진 기존 화면이 인쇄 공간을 차지하지 않도록 제거 */
+                    [data-testid="stSidebar"], header, footer {{display:none !important;}}
+                    [data-testid="stMainBlockContainer"] {{padding:0 !important; margin:0 !important; max-width:none !important;}}
+            
+                    body {{margin:0 !important; padding:0 !important;}}
+                    .hr-card {{margin:0 !important;}}
+        #hr-card-print {{position:fixed !important; left:10mm !important; top:10mm !important; z-index:999999 !important;}}
+                    #hr-card-print ~ * {{display:none !important;}}.toolbar{{display:none!important}} .paper{{width:auto;min-height:auto;padding:0}} *,td{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}}}
+            </style>
+            <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장복명서 인쇄</button></div>
+            <div class="paper">
+            <table>
+              <tr><td colspan="7" class="title">출장복명서</td></tr>
+              <tr><td colspan="3" rowspan="2"></td><td rowspan="2" class="label">결<br>재</td><td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td></tr>
+              <tr><td style="height:36px"></td><td></td><td></td></tr>
+              <tr><td class="label">성 명</td><td>{pr.get('emp_name','')}</td><td class="label">직 위</td><td colspan="4">{pr.get('position','')}</td></tr>
+              <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+              <tr><td class="label">참 석 자</td><td colspan="6">{pr.get('participants','')}</td></tr>
+              <tr><td class="label">출장시간</td><td colspan="6">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+              <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
+              <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
+              <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
+              <tr>
+                    <td class="label">변경 이력</td>
+                    <td colspan="5" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
+                </tr>
+                <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
+              <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
+            </table>
+            <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
+            </div>
+            {_trip_extra_attach_html}
         """
 
-        # 현재 센터에서 사용하던 출장복명서 형식 기반
-        report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
-        # v28.6: 원 출장 ID에 연결된 사전/사후승인 변경이력
-        _trip_change_html=""
-        try:
-            _chg_client=supabase_admin if supabase_admin is not None else supabase
-            _chg_rows=_chg_client.table("business_trip_changes").select("*").eq("trip_id",int(pr.get("id"))).order("created_at").execute().data or []
-            if _chg_rows:
-                _chg_items=[]
-                for _ch in _chg_rows:
-                    _txt=f"{str(_ch.get('change_type','변경'))} · {str(_ch.get('approval_type','') or '')} {str(_ch.get('approval_status','') or '')}"
-                    if _ch.get("new_destination"): _txt+=f" · 변경행선지: {_ch.get('new_destination')}"
-                    if _ch.get("new_start_at") or _ch.get("new_end_at"):
-                        _ns=pd.to_datetime(_ch.get("new_start_at"),errors="coerce")
-                        _ne=pd.to_datetime(_ch.get("new_end_at"),errors="coerce")
-                        if pd.notna(_ns) and pd.notna(_ne): _txt+=f" · 변경시간: {_ns.strftime('%Y-%m-%d %H:%M')} ~ {_ne.strftime('%Y-%m-%d %H:%M')}"
-                    if _ch.get("change_reason"): _txt+=f" · 사유: {_ch.get('change_reason')}"
-                    _chg_items.append(f"<div style='margin:2px 0;'>• {_txt}</div>")
-                _trip_change_html="<div style='margin-top:8px;padding:7px;border:1px solid #aaa;'><b>[출장 변경·승인 이력]</b>"+"".join(_chg_items)+"</div>"
-        except Exception:
-            _trip_change_html=""
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.components.v1.html(trip_apply_html, height=55, scrolling=False)
+            with pc2:
+                st.components.v1.html(trip_report_html, height=55, scrolling=False)
 
-        # v28.5: 복명서의 실제 출력대상(pr) ID와 첨부파일을 직접 연결
-        _trip_attach_html = ""
-        _trip_extra_attach_html = ""
-        _trip_files = []
-        _photo_blocks = []
-        _extra_blocks = []
-        _trip_id_for_report = int(pr.get("id")) if pr.get("id") is not None else None
-        _attach_error = ""
-
-        try:
-            _files_client = supabase_admin if supabase_admin is not None else supabase
-            _files_res = _files_client.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
-            _trip_files = _files_res.data or []
-
-            # v28.5: signed URL 대신 서버에서 파일을 읽어 data URI로 삽입.
-            # Streamlit iframe/인쇄창에서도 private Storage 이미지를 확실히 표시하기 위함.
-            import base64 as _trip_b64
-            for _f in _trip_files:
-                _ft = str(_f.get("file_type","")).strip()
-                _path = _f.get("storage_path")
-                _name = _f.get("file_name") or "첨부파일"
-                if not _path:
-                    continue
-
-                _ext = str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
-                _is_image = _ext in ["jpg","jpeg","png","webp"]
-                if _is_image:
-                    try:
-                        _raw = _files_client.storage.from_("business-trip-files").download(_path)
-                        _mime = "image/jpeg" if _ext in ["jpg","jpeg"] else ("image/png" if _ext=="png" else "image/webp")
-                        _data_uri = f"data:{_mime};base64,{_trip_b64.b64encode(_raw).decode('ascii')}"
-                    except Exception as _img_e:
-                        _data_uri = None
-                        _attach_error += f"{_name}: {_img_e}; "
-
-                    if _data_uri:
-                        _img_html = f'<img src="{_data_uri}" style="max-width:100%;max-height:205px;object-fit:contain;">'
-                        if _ft == "출장사진":
-                            _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;">{_img_html}<div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
-                        else:
-                            _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div>{_img_html}<div style="font-size:9px;">{_name}</div></div>')
+        st.divider()
+        st.markdown("### 📎 증빙관리 업무")
+        st.subheader("출장 사진 · 영수증 · 수료증 첨부")
+        st.caption("출장별 증빙파일을 Supabase Storage의 business-trip-files 버킷에 저장합니다.")
+        if not df_trip2.empty:
+            file_trip_id = st.selectbox("증빙을 연결할 출장 ID", df_trip2["id"].tolist(), key="trip_file_id")
+            file_type = st.selectbox("증빙 종류", ["출장사진","교통영수증","주차/통행료 영수증","교육수료증","교육자료","기타"])
+            uploaded_trip_files = st.file_uploader(
+                "파일 선택",
+                type=["jpg","jpeg","png","pdf"],
+                accept_multiple_files=True,
+                key="trip_files"
+            )
+            if st.button("📤 출장 증빙 업로드", use_container_width=True, disabled=not has_permission("file_upload")):
+                if not uploaded_trip_files:
+                    st.warning("업로드할 파일을 선택해 주세요.")
                 else:
-                    _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
-        except Exception as _attach_e:
-            _attach_error = str(_attach_e)
+                    # 버킷 목록 조회는 anon 권한에서 실제 버킷이 있어도 빈 목록이 반환될 수 있으므로
+                    # 사전 존재검사를 하지 않고 실제 업로드 결과로 판단합니다.
+                    ok, fail = 0, 0
+                    for uf in uploaded_trip_files:
+                        # Supabase Storage object key는 ASCII 기반으로 생성.
+                        # 한글 원본 파일명은 DB file_name에 그대로 보존합니다.
+                        original_name = str(uf.name)
+                        ext = Path(original_name).suffix.lower()
+                        if not re.fullmatch(r"\.[a-z0-9]{1,10}", ext):
+                            mime_ext = {
+                                "image/jpeg": ".jpg",
+                                "image/png": ".png",
+                                "application/pdf": ".pdf",
+                            }
+                            ext = mime_ext.get(str(uf.type).lower(), ".bin")
 
-        _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
-        if _extra_blocks:
-            _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
+                        object_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uuid.uuid4().hex[:10]}{ext}"
+                        storage_path = f"trip-{int(file_trip_id)}/{object_name}"
 
-        st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
-        if _attach_error:
-            st.warning(f"첨부파일 읽기 확인: {_attach_error[:300]}")
-
-        trip_report_html = f"""
-        <style>
-        * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
-        body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:#fff;}}
-        .toolbar {{margin-bottom:8px;}} .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
-        .paper {{width:190mm;min-height:270mm;margin:auto;padding:6mm;background:#fff;}}
-        table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;}}
-        td {{border:1px solid #111;padding:6px;vertical-align:middle;}}
-        .title {{font-size:19px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
-        .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
-        .report {{height:92mm;vertical-align:top!important;line-height:1.55;}}
-        .photo {{height:58mm;text-align:center;color:#777;vertical-align:middle!important;background:#fafafa!important;}}
-        .sign {{text-align:center;line-height:1.8;padding:12px;}}
-        @page {{size:A4 portrait;margin:7mm;}}
-        @media print {{
-                /* v23.3.1: 숨겨진 기존 화면이 인쇄 공간을 차지하지 않도록 제거 */
-                [data-testid="stSidebar"], header, footer {{display:none !important;}}
-                [data-testid="stMainBlockContainer"] {{padding:0 !important; margin:0 !important; max-width:none !important;}}
-                
-                body {{margin:0 !important; padding:0 !important;}}
-                .hr-card {{margin:0 !important;}}
-#hr-card-print {{position:fixed !important; left:10mm !important; top:10mm !important; z-index:999999 !important;}}
-                #hr-card-print ~ * {{display:none !important;}}.toolbar{{display:none!important}} .paper{{width:auto;min-height:auto;padding:0}} *,td{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}}}
-        </style>
-        <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장복명서 인쇄</button></div>
-        <div class="paper">
-        <table>
-          <tr><td colspan="7" class="title">출장복명서</td></tr>
-          <tr><td colspan="3" rowspan="2"></td><td rowspan="2" class="label">결<br>재</td><td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td></tr>
-          <tr><td style="height:36px"></td><td></td><td></td></tr>
-          <tr><td class="label">성 명</td><td>{pr.get('emp_name','')}</td><td class="label">직 위</td><td colspan="4">{pr.get('position','')}</td></tr>
-          <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
-          <tr><td class="label">참 석 자</td><td colspan="6">{pr.get('participants','')}</td></tr>
-          <tr><td class="label">출장시간</td><td colspan="6">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
-          <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
-          <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
-          <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
-          <tr>
-                <td class="label">변경 이력</td>
-                <td colspan="5" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
-            </tr>
-            <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
-          <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
-        </table>
-        <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
-        </div>
-        {_trip_extra_attach_html}
-"""
-
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            st.components.v1.html(trip_apply_html, height=55, scrolling=False)
-        with pc2:
-            st.components.v1.html(trip_report_html, height=55, scrolling=False)
-
-    st.divider()
-    st.markdown("### 📎 증빙관리 업무")
-    st.subheader("출장 사진 · 영수증 · 수료증 첨부")
-    st.caption("출장별 증빙파일을 Supabase Storage의 business-trip-files 버킷에 저장합니다.")
-    if not df_trip2.empty:
-        file_trip_id = st.selectbox("증빙을 연결할 출장 ID", df_trip2["id"].tolist(), key="trip_file_id")
-        file_type = st.selectbox("증빙 종류", ["출장사진","교통영수증","주차/통행료 영수증","교육수료증","교육자료","기타"])
-        uploaded_trip_files = st.file_uploader(
-            "파일 선택",
-            type=["jpg","jpeg","png","pdf"],
-            accept_multiple_files=True,
-            key="trip_files"
-        )
-        if st.button("📤 출장 증빙 업로드", use_container_width=True, disabled=not has_permission("file_upload")):
-            if not uploaded_trip_files:
-                st.warning("업로드할 파일을 선택해 주세요.")
-            else:
-                # 버킷 목록 조회는 anon 권한에서 실제 버킷이 있어도 빈 목록이 반환될 수 있으므로
-                # 사전 존재검사를 하지 않고 실제 업로드 결과로 판단합니다.
-                ok, fail = 0, 0
-                for uf in uploaded_trip_files:
-                    # Supabase Storage object key는 ASCII 기반으로 생성.
-                    # 한글 원본 파일명은 DB file_name에 그대로 보존합니다.
-                    original_name = str(uf.name)
-                    ext = Path(original_name).suffix.lower()
-                    if not re.fullmatch(r"\.[a-z0-9]{1,10}", ext):
-                        mime_ext = {
-                            "image/jpeg": ".jpg",
-                            "image/png": ".png",
-                            "application/pdf": ".pdf",
-                        }
-                        ext = mime_ext.get(str(uf.type).lower(), ".bin")
-
-                    object_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uuid.uuid4().hex[:10]}{ext}"
-                    storage_path = f"trip-{int(file_trip_id)}/{object_name}"
-
-                    try:
-                        # v28.3: admin/manager uploads through the configured server-side secret client.
-                        # This avoids browser/session JWT loss causing storage.objects RLS failures.
-                        _trip_storage_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
-                        _trip_storage_client.storage.from_(TRIP_STORAGE_BUCKET).upload(
-                            storage_path,
-                            uf.getvalue(),
-                            {"content-type": uf.type or "application/octet-stream", "upsert": "false"}
-                        )
-                        _trip_db_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
-                        _trip_db_client.table("business_trip_files").insert({
-                            "trip_id": int(file_trip_id),
-                            "file_type": file_type,
-                            "file_name": original_name,
-                            "storage_path": storage_path
-                        }).execute()
-                        ok += 1
-                    except Exception as e:
-                        fail += 1
-                        err = str(e)
-                        if "row-level security" in err.lower() or "unauthorized" in err.lower() or "403" in err:
-                            st.error(
-                                f"'{uf.name}' 업로드 실패: Storage 업로드 권한이 없습니다. "
-                                "Supabase의 storage.objects 정책을 적용해 주세요."
+                        try:
+                            # v28.3: admin/manager uploads through the configured server-side secret client.
+                            # This avoids browser/session JWT loss causing storage.objects RLS failures.
+                            _trip_storage_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                            _trip_storage_client.storage.from_(TRIP_STORAGE_BUCKET).upload(
+                                storage_path,
+                                uf.getvalue(),
+                                {"content-type": uf.type or "application/octet-stream", "upsert": "false"}
                             )
-                        elif "Bucket not found" in err or "404" in err:
-                            st.error(
-                                f"'{uf.name}' 업로드 실패: 앱이 연결된 Supabase 프로젝트에서 "
-                                f"'{TRIP_STORAGE_BUCKET}' 버킷을 찾지 못했습니다. "
-                                "현재 앱의 SUPABASE_URL과 버킷을 만든 프로젝트가 같은지 확인해 주세요."
-                            )
-                        elif "InvalidKey" in err or "Invalid key" in err:
-                            st.error(
-                                f"'{uf.name}' 업로드 실패: Storage 객체 경로가 유효하지 않습니다. "
-                                "v9에서는 원본 한글 파일명 대신 안전한 영문 객체키를 자동 생성합니다."
-                            )
-                        else:
-                            st.error(f"'{uf.name}' 업로드 실패: {err}")
+                            _trip_db_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                            _trip_db_client.table("business_trip_files").insert({
+                                "trip_id": int(file_trip_id),
+                                "file_type": file_type,
+                                "file_name": original_name,
+                                "storage_path": storage_path
+                            }).execute()
+                            ok += 1
+                        except Exception as e:
+                            fail += 1
+                            err = str(e)
+                            if "row-level security" in err.lower() or "unauthorized" in err.lower() or "403" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: Storage 업로드 권한이 없습니다. "
+                                    "Supabase의 storage.objects 정책을 적용해 주세요."
+                                )
+                            elif "Bucket not found" in err or "404" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: 앱이 연결된 Supabase 프로젝트에서 "
+                                    f"'{TRIP_STORAGE_BUCKET}' 버킷을 찾지 못했습니다. "
+                                    "현재 앱의 SUPABASE_URL과 버킷을 만든 프로젝트가 같은지 확인해 주세요."
+                                )
+                            elif "InvalidKey" in err or "Invalid key" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: Storage 객체 경로가 유효하지 않습니다. "
+                                    "v9에서는 원본 한글 파일명 대신 안전한 영문 객체키를 자동 생성합니다."
+                                )
+                            else:
+                                st.error(f"'{uf.name}' 업로드 실패: {err}")
 
-                if ok:
-                    st.success(f"✅ {ok}개 출장 증빙파일을 저장했습니다.")
-                if fail:
-                    st.warning(f"⚠️ {fail}개 파일 업로드에 실패했습니다.")
-        try:
-            f_res = supabase.table("business_trip_files").select("*").eq("trip_id", int(file_trip_id)).order("id", desc=True).execute()
-            df_files = pd.DataFrame(f_res.data) if f_res.data else pd.DataFrame()
-            if not df_files.empty:
-                display_table_kr(df_files[[c for c in ["file_type","file_name","created_at"] if c in df_files.columns]], use_container_width=True, hide_index=True)
-        except Exception:
-            pass
+                    if ok:
+                        st.success(f"✅ {ok}개 출장 증빙파일을 저장했습니다.")
+                    if fail:
+                        st.warning(f"⚠️ {fail}개 파일 업로드에 실패했습니다.")
+            try:
+                f_res = supabase.table("business_trip_files").select("*").eq("trip_id", int(file_trip_id)).order("id", desc=True).execute()
+                df_files = pd.DataFrame(f_res.data) if f_res.data else pd.DataFrame()
+                if not df_files.empty:
+                    display_table_kr(df_files[[c for c in ["file_type","file_name","created_at"] if c in df_files.columns]], use_container_width=True, hide_index=True)
+            except Exception:
+                pass
 
-    st.divider()
-    st.markdown("### 📝 출장 변경 업무")
-    st.subheader("출장 변경 · 사전/사후승인 이력")
-    if not df_trip2.empty:
-        change_trip_id = st.selectbox("변경할 출장 ID", df_trip2["id"].tolist(), key="trip_change_id")
-        change_type = st.selectbox("변경 구분", ["목적지 변경","출장기간 변경","이동수단 변경","기타"])
-        change_reason = st.text_area("변경 사유 / 보고 내용", key="trip_change_reason")
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            new_destination = st.text_input("변경 출장지(해당 시)", key="trip_new_dest")
-        with cc2:
-            approval_type = st.radio("승인 구분", ["사전승인","사후승인"], horizontal=True, key="trip_approval_type")
-        _ctr = df_trip2[df_trip2["id"] == change_trip_id].iloc[0]
-        _os = pd.to_datetime(_ctr.get("start_at"), errors="coerce")
-        _oe = pd.to_datetime(_ctr.get("end_at"), errors="coerce")
-        _change_time_enabled = st.checkbox("출장기간/시간 변경", value=(change_type=="출장기간 변경"), key="trip_change_time_enabled")
-        _new_start_at = _new_end_at = None
-        if _change_time_enabled:
-            st.caption(f"현재 출장시간: {_os.strftime('%Y-%m-%d %H:%M') if pd.notna(_os) else '-'} ~ {_oe.strftime('%Y-%m-%d %H:%M') if pd.notna(_oe) else '-'}")
-            tc1,tc2=st.columns(2)
-            with tc1:
-                _nsd=st.date_input("변경 시작일",_os.date() if pd.notna(_os) else datetime.now().date(),key="trip_new_start_date")
-                _nst=st.time_input("변경 시작시간",_os.time() if pd.notna(_os) else time(9,0),key="trip_new_start_time")
-            with tc2:
-                _ned=st.date_input("변경 종료일",_oe.date() if pd.notna(_oe) else datetime.now().date(),key="trip_new_end_date")
-                _net=st.time_input("변경 종료시간",_oe.time() if pd.notna(_oe) else time(18,0),key="trip_new_end_time")
-            _new_start_at=datetime.combine(_nsd,_nst)
-            _new_end_at=datetime.combine(_ned,_net)
-            if _new_end_at <= _new_start_at: st.error("변경 종료일시는 시작일시보다 늦어야 합니다.")
-        if st.button("📝 출장 변경 신청 기록", use_container_width=True):
-            if not change_reason:
-                st.warning("변경 사유를 입력해 주세요.")
-            elif _change_time_enabled and (_new_start_at is None or _new_end_at is None or _new_end_at <= _new_start_at):
-                st.warning("올바른 변경 시작·종료일시를 입력해 주세요.")
-            else:
-                supabase.table("business_trip_changes").insert({
-                    "trip_id": int(change_trip_id),
-                    "change_type": change_type,
-                    "change_reason": change_reason,
-                    "new_destination": new_destination,
-                    "new_start_at": _new_start_at.isoformat() if _new_start_at else None,
-                    "new_end_at": _new_end_at.isoformat() if _new_end_at else None,
-                    "approval_type": approval_type,
-                    "approval_status": "신청"
-                }).execute()
-                st.success("출장 변경/승인 이력을 등록했습니다.")
-                st.rerun()
+        st.divider()
+        st.markdown("### 📝 출장 변경 업무")
+        st.subheader("출장 변경 · 사전/사후승인 이력")
+        if not df_trip2.empty:
+            change_trip_id = st.selectbox("변경할 출장 ID", df_trip2["id"].tolist(), key="trip_change_id")
+            change_type = st.selectbox("변경 구분", ["목적지 변경","출장기간 변경","이동수단 변경","기타"])
+            change_reason = st.text_area("변경 사유 / 보고 내용", key="trip_change_reason")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                new_destination = st.text_input("변경 출장지(해당 시)", key="trip_new_dest")
+            with cc2:
+                approval_type = st.radio("승인 구분", ["사전승인","사후승인"], horizontal=True, key="trip_approval_type")
+            _ctr = df_trip2[df_trip2["id"] == change_trip_id].iloc[0]
+            _os = pd.to_datetime(_ctr.get("start_at"), errors="coerce")
+            _oe = pd.to_datetime(_ctr.get("end_at"), errors="coerce")
+            _change_time_enabled = st.checkbox("출장기간/시간 변경", value=(change_type=="출장기간 변경"), key="trip_change_time_enabled")
+            _new_start_at = _new_end_at = None
+            if _change_time_enabled:
+                st.caption(f"현재 출장시간: {_os.strftime('%Y-%m-%d %H:%M') if pd.notna(_os) else '-'} ~ {_oe.strftime('%Y-%m-%d %H:%M') if pd.notna(_oe) else '-'}")
+                tc1,tc2=st.columns(2)
+                with tc1:
+                    _nsd=st.date_input("변경 시작일",_os.date() if pd.notna(_os) else datetime.now().date(),key="trip_new_start_date")
+                    _nst=st.time_input("변경 시작시간",_os.time() if pd.notna(_os) else time(9,0),key="trip_new_start_time")
+                with tc2:
+                    _ned=st.date_input("변경 종료일",_oe.date() if pd.notna(_oe) else datetime.now().date(),key="trip_new_end_date")
+                    _net=st.time_input("변경 종료시간",_oe.time() if pd.notna(_oe) else time(18,0),key="trip_new_end_time")
+                _new_start_at=datetime.combine(_nsd,_nst)
+                _new_end_at=datetime.combine(_ned,_net)
+                if _new_end_at <= _new_start_at: st.error("변경 종료일시는 시작일시보다 늦어야 합니다.")
+            if st.button("📝 출장 변경 신청 기록", use_container_width=True):
+                if not change_reason:
+                    st.warning("변경 사유를 입력해 주세요.")
+                elif _change_time_enabled and (_new_start_at is None or _new_end_at is None or _new_end_at <= _new_start_at):
+                    st.warning("올바른 변경 시작·종료일시를 입력해 주세요.")
+                else:
+                    supabase.table("business_trip_changes").insert({
+                        "trip_id": int(change_trip_id),
+                        "change_type": change_type,
+                        "change_reason": change_reason,
+                        "new_destination": new_destination,
+                        "new_start_at": _new_start_at.isoformat() if _new_start_at else None,
+                        "new_end_at": _new_end_at.isoformat() if _new_end_at else None,
+                        "approval_type": approval_type,
+                        "approval_status": "신청"
+                    }).execute()
+                    st.success("출장 변경/승인 이력을 등록했습니다.")
+                    st.rerun()
 
-        try:
-            ch_res = supabase.table("business_trip_changes").select("*").eq("trip_id", int(change_trip_id)).order("id", desc=True).execute()
-            df_ch = pd.DataFrame(ch_res.data) if ch_res.data else pd.DataFrame()
-            if not df_ch.empty:
-                display_table_kr(df_ch, use_container_width=True, hide_index=True)
-                pending = df_ch[df_ch["approval_status"]=="신청"] if "approval_status" in df_ch.columns else pd.DataFrame()
-                if not pending.empty:
-                    ch_id = st.selectbox("승인 처리할 변경 ID", pending["id"].tolist(), key="trip_change_approve_id")
-                    ca1,ca2 = st.columns(2)
-                    with ca1:
-                        if st.button("✅ 변경 승인", use_container_width=True, disabled=not has_permission("trip_approve")):
-                            _ch_target=pending[pending["id"]==ch_id].iloc[0]
-                            supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id",ch_id).execute()
-                            _tu={}
-                            if pd.notna(_ch_target.get("new_destination")) and str(_ch_target.get("new_destination")).strip(): _tu["destination"]=str(_ch_target.get("new_destination")).strip()
-                            if pd.notna(_ch_target.get("new_start_at")) and _ch_target.get("new_start_at"): _tu["start_at"]=str(_ch_target.get("new_start_at"))
-                            if pd.notna(_ch_target.get("new_end_at")) and _ch_target.get("new_end_at"): _tu["end_at"]=str(_ch_target.get("new_end_at"))
-                            if _tu:
-                                _tu["updated_at"]=datetime.now().isoformat()
-                                supabase.table("business_trips").update(_tu).eq("id",int(_ch_target["trip_id"])).execute()
-                            write_audit_log("출장 변경 승인","business_trip_changes",ch_id)
-                            st.success("변경 승인 및 원 출장 현재정보 반영을 완료했습니다.")
-                            st.rerun()
-                    with ca2:
-                        if st.button("↩️ 변경 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
-                            supabase.table("business_trip_changes").update({"approval_status":"반려","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
-                            st.rerun()
-        except Exception:
-            st.caption("출장 변경이력 테이블을 생성하면 이력이 표시됩니다.")
+            try:
+                ch_res = supabase.table("business_trip_changes").select("*").eq("trip_id", int(change_trip_id)).order("id", desc=True).execute()
+                df_ch = pd.DataFrame(ch_res.data) if ch_res.data else pd.DataFrame()
+                if not df_ch.empty:
+                    display_table_kr(df_ch, use_container_width=True, hide_index=True)
+                    pending = df_ch[df_ch["approval_status"]=="신청"] if "approval_status" in df_ch.columns else pd.DataFrame()
+                    if not pending.empty:
+                        ch_id = st.selectbox("승인 처리할 변경 ID", pending["id"].tolist(), key="trip_change_approve_id")
+                        ca1,ca2 = st.columns(2)
+                        with ca1:
+                            if st.button("✅ 변경 승인", use_container_width=True, disabled=not has_permission("trip_approve")):
+                                _ch_target=pending[pending["id"]==ch_id].iloc[0]
+                                supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id",ch_id).execute()
+                                _tu={}
+                                if pd.notna(_ch_target.get("new_destination")) and str(_ch_target.get("new_destination")).strip(): _tu["destination"]=str(_ch_target.get("new_destination")).strip()
+                                if pd.notna(_ch_target.get("new_start_at")) and _ch_target.get("new_start_at"): _tu["start_at"]=str(_ch_target.get("new_start_at"))
+                                if pd.notna(_ch_target.get("new_end_at")) and _ch_target.get("new_end_at"): _tu["end_at"]=str(_ch_target.get("new_end_at"))
+                                if _tu:
+                                    _tu["updated_at"]=datetime.now().isoformat()
+                                    supabase.table("business_trips").update(_tu).eq("id",int(_ch_target["trip_id"])).execute()
+                                write_audit_log("출장 변경 승인","business_trip_changes",ch_id)
+                                st.success("변경 승인 및 원 출장 현재정보 반영을 완료했습니다.")
+                                st.rerun()
+                        with ca2:
+                            if st.button("↩️ 변경 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
+                                supabase.table("business_trip_changes").update({"approval_status":"반려","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
+                                st.rerun()
+            except Exception:
+                st.caption("출장 변경이력 테이블을 생성하면 이력이 표시됩니다.")
 
-    st.divider()
-    st.markdown("### 📊 월별현황 업무")
-    st.subheader("월별 출장관리대장 · Excel")
-    if not df_trip2.empty:
-        tmp = df_trip2.copy()
-        tmp["_start"] = pd.to_datetime(tmp["start_at"], errors="coerce")
-        years = sorted(tmp["_start"].dropna().dt.year.unique().tolist(), reverse=True)
-        if years:
-            gy, gm = st.columns(2)
-            with gy:
-                ledger_year = st.selectbox("조회 연도", years, key="trip_ledger_year")
-            with gm:
-                ledger_month = st.selectbox("조회 월", list(range(1,13)), index=datetime.now().month-1, key="trip_ledger_month")
-            ledger = tmp[(tmp["_start"].dt.year==ledger_year)&(tmp["_start"].dt.month==ledger_month)].copy()
-            ledger_cols = [c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","total_cost","apply_status","report_status","settlement_status"] if c in ledger.columns]
-            display_table_kr(ledger[ledger_cols], use_container_width=True, hide_index=True)
+        st.divider()
+        st.markdown("### 📊 월별현황 업무")
+        st.subheader("월별 출장관리대장 · Excel")
+        if not df_trip2.empty:
+            tmp = df_trip2.copy()
+            tmp["_start"] = pd.to_datetime(tmp["start_at"], errors="coerce")
+            years = sorted(tmp["_start"].dropna().dt.year.unique().tolist(), reverse=True)
+            if years:
+                gy, gm = st.columns(2)
+                with gy:
+                    ledger_year = st.selectbox("조회 연도", years, key="trip_ledger_year")
+                with gm:
+                    ledger_month = st.selectbox("조회 월", list(range(1,13)), index=datetime.now().month-1, key="trip_ledger_month")
+                ledger = tmp[(tmp["_start"].dt.year==ledger_year)&(tmp["_start"].dt.month==ledger_month)].copy()
+                ledger_cols = [c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","total_cost","apply_status","report_status","settlement_status"] if c in ledger.columns]
+                display_table_kr(ledger[ledger_cols], use_container_width=True, hide_index=True)
 
-            lm1,lm2,lm3,lm4 = st.columns(4)
-            lm1.metric("출장 건수", f"{len(ledger)}건")
-            lm2.metric("복명 완료", f"{int((ledger['report_status']=='완료').sum()) if 'report_status' in ledger else 0}건")
-            lm3.metric("총 출장거리", f"{pd.to_numeric(ledger.get('distance_km',0),errors='coerce').fillna(0).sum():,.2f}km")
-            lm4.metric("총 출장비", f"{pd.to_numeric(ledger.get('total_cost',0),errors='coerce').fillna(0).sum():,.0f}원")
+                lm1,lm2,lm3,lm4 = st.columns(4)
+                lm1.metric("출장 건수", f"{len(ledger)}건")
+                lm2.metric("복명 완료", f"{int((ledger['report_status']=='완료').sum()) if 'report_status' in ledger else 0}건")
+                lm3.metric("총 출장거리", f"{pd.to_numeric(ledger.get('distance_km',0),errors='coerce').fillna(0).sum():,.2f}km")
+                lm4.metric("총 출장비", f"{pd.to_numeric(ledger.get('total_cost',0),errors='coerce').fillna(0).sum():,.0f}원")
 
-            trip_xlsx = io.BytesIO()
-            wb = Workbook()
-            ws = wb.active
-            ws.title = f"{ledger_year}-{ledger_month:02d}_출장대장"
-            title_fill = PatternFill("solid", fgColor="D9EAF7")
-            header_fill = PatternFill("solid", fgColor="FFF2CC")
-            done_fill = PatternFill("solid", fgColor="E2F0D9")
-            thin = Side(style="thin", color="808080")
-            bd = Border(left=thin,right=thin,top=thin,bottom=thin)
-            ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=len(ledger_cols))
-            ws.cell(1,1,f"{ledger_year}년 {ledger_month}월 출장관리대장")
-            ws.cell(1,1).font = Font(name="맑은 고딕",size=16,bold=True)
-            ws.cell(1,1).fill = title_fill
-            ws.cell(1,1).alignment = Alignment(horizontal="center")
-            labels = {"id":"No","start_at":"출장시작","end_at":"출장종료","emp_name":"성명","position":"직위","purpose":"출장목적",
-                      "destination":"출장지","transport_type":"이동수단","distance_km":"거리(km)","total_cost":"출장비",
-                      "apply_status":"승인","report_status":"복명","settlement_status":"정산"}
-            for ci,cname in enumerate(ledger_cols,1):
-                c=ws.cell(3,ci,labels.get(cname,cname)); c.fill=header_fill;c.font=Font(name="맑은 고딕",bold=True);c.border=bd;c.alignment=Alignment(horizontal="center")
-            for ri,(_,row) in enumerate(ledger.iterrows(),4):
+                trip_xlsx = io.BytesIO()
+                wb = Workbook()
+                ws = wb.active
+                ws.title = f"{ledger_year}-{ledger_month:02d}_출장대장"
+                title_fill = PatternFill("solid", fgColor="D9EAF7")
+                header_fill = PatternFill("solid", fgColor="FFF2CC")
+                done_fill = PatternFill("solid", fgColor="E2F0D9")
+                thin = Side(style="thin", color="808080")
+                bd = Border(left=thin,right=thin,top=thin,bottom=thin)
+                ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=len(ledger_cols))
+                ws.cell(1,1,f"{ledger_year}년 {ledger_month}월 출장관리대장")
+                ws.cell(1,1).font = Font(name="맑은 고딕",size=16,bold=True)
+                ws.cell(1,1).fill = title_fill
+                ws.cell(1,1).alignment = Alignment(horizontal="center")
+                labels = {"id":"No","start_at":"출장시작","end_at":"출장종료","emp_name":"성명","position":"직위","purpose":"출장목적",
+                          "destination":"출장지","transport_type":"이동수단","distance_km":"거리(km)","total_cost":"출장비",
+                          "apply_status":"승인","report_status":"복명","settlement_status":"정산"}
                 for ci,cname in enumerate(ledger_cols,1):
-                    val=row[cname]
-                    if cname in ["start_at","end_at"]:
-                        try: val=pd.to_datetime(val).strftime("%Y-%m-%d %H:%M")
-                        except: pass
-                    c=ws.cell(ri,ci,val);c.border=bd;c.font=Font(name="맑은 고딕",size=9)
-                    if str(row.get("report_status",""))=="완료": c.fill=done_fill
-                    c.alignment=Alignment(horizontal="center" if cname not in ["purpose","destination"] else "left")
-                    if cname=="total_cost": c.number_format='#,##0"원"'
-                    if cname=="distance_km": c.number_format='0.0"km"'
-            widths=[7,18,18,11,11,30,22,12,11,13,10,10,10]
-            for i,w in enumerate(widths[:len(ledger_cols)],1): ws.column_dimensions[get_column_letter(i)].width=w
-            ws.sheet_view.showGridLines=False
-            ws.page_setup.orientation="landscape";ws.page_setup.fitToWidth=1;ws.page_setup.fitToHeight=0
-            ws.sheet_properties.pageSetUpPr.fitToPage=True
-            wb.save(trip_xlsx)
-            st.download_button("📥 월별 출장관리대장 Excel 다운로드",trip_xlsx.getvalue(),file_name=f"{ledger_year}-{ledger_month:02d}_출장관리대장.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+                    c=ws.cell(3,ci,labels.get(cname,cname)); c.fill=header_fill;c.font=Font(name="맑은 고딕",bold=True);c.border=bd;c.alignment=Alignment(horizontal="center")
+                for ri,(_,row) in enumerate(ledger.iterrows(),4):
+                    for ci,cname in enumerate(ledger_cols,1):
+                        val=row[cname]
+                        if cname in ["start_at","end_at"]:
+                            try: val=pd.to_datetime(val).strftime("%Y-%m-%d %H:%M")
+                            except: pass
+                        c=ws.cell(ri,ci,val);c.border=bd;c.font=Font(name="맑은 고딕",size=9)
+                        if str(row.get("report_status",""))=="완료": c.fill=done_fill
+                        c.alignment=Alignment(horizontal="center" if cname not in ["purpose","destination"] else "left")
+                        if cname=="total_cost": c.number_format='#,##0"원"'
+                        if cname=="distance_km": c.number_format='0.0"km"'
+                widths=[7,18,18,11,11,30,22,12,11,13,10,10,10]
+                for i,w in enumerate(widths[:len(ledger_cols)],1): ws.column_dimensions[get_column_letter(i)].width=w
+                ws.sheet_view.showGridLines=False
+                ws.page_setup.orientation="landscape";ws.page_setup.fitToWidth=1;ws.page_setup.fitToHeight=0
+                ws.sheet_properties.pageSetUpPr.fitToPage=True
+                wb.save(trip_xlsx)
+                st.download_button("📥 월별 출장관리대장 Excel 다운로드",trip_xlsx.getvalue(),file_name=f"{ledger_year}-{ledger_month:02d}_출장관리대장.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 
 
 
 
 
+# -------------------------------------------------------------------
+# TAB 11: 구버전 메뉴 호환 안내
+# -------------------------------------------------------------------
+if active_tab == 11:
+    st.header("🚗 출장 관리")
+    st.info("출장 복명·규정 업무는 '출장 관리' 메뉴로 통합되었습니다. 왼쪽 메뉴에서 출장 관리를 선택해 주세요.")
 
 # -------------------------------------------------------------------
 # TAB 12: 계정 · 권한 관리 (관리자 전용)
