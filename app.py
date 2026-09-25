@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v30.2"
+APP_VERSION = "v30.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.2", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.2")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -2826,47 +2826,45 @@ if active_tab == 4:
             })
     _lv_sum=pd.DataFrame(_lv_summary)
 
-    if not _lv_sum.empty:
-        _c1,_c2,_c3,_c4=st.columns(4)
-        _c1.metric("관리 직원",f"{len(_lv_sum):,}명")
-        _c2.metric("총 부여 연차",f"{_lv_sum['총 부여 연차'].sum():,.1f}일")
-        _c3.metric("사용 연차",f"{_lv_sum['사용 연차'].sum():,.1f}일")
-        _c4.metric("잔여 연차",f"{_lv_sum['잔여 연차'].sum():,.1f}일")
-
-    _lv_tabs=st.tabs(["📋 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역","👤 직원별 연차대장","📊 기간·월별 통계"])
+    _lv_tabs=st.tabs(["👤 직원별 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역"])
 
     with _lv_tabs[0]:
-        st.markdown("#### 📋 전 직원 연차현황")
-        if _lv_sum.empty:
-            st.info("표시할 직원 연차자료가 없습니다.")
+        st.markdown("#### 👤 직원별 연차현황")
+        if _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
         else:
-            q1,q2=st.columns(2)
-            _qname=q1.text_input("직원 검색",key="v300_leave_name")
-            _qstatus=q2.selectbox("잔여연차 기준",["전체","잔여 있음","소진","초과사용"],key="v300_leave_status")
-            _view=_lv_sum.copy()
-            if _qname:
-                _view=_view[_view["이름"].astype(str).str.contains(_qname,case=False,na=False)|_view["사번"].astype(str).str.contains(_qname,case=False,na=False)]
-            if _qstatus=="잔여 있음": _view=_view[_view["잔여 연차"]>0]
-            elif _qstatus=="소진": _view=_view[_view["잔여 연차"]==0]
-            elif _qstatus=="초과사용": _view=_view[_view["잔여 연차"]<0]
-            display_table_kr(_view,use_container_width=True,hide_index=True)
+            _sopts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _sk=st.selectbox("직원 선택",list(_sopts.keys()),key="v303_status_emp")
+            _se=_sopts[_sk]; _sid=str(_se.get("emp_id",""))
+            _sr=_lv_all[_lv_all["emp_id"].astype(str)==_sid].copy() if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _sa=_sr[_sr["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _sr.empty and "leave_type" in _sr.columns) else pd.DataFrame()
+            _su=float(pd.to_numeric(_sa.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()) if not _sa.empty else 0.0
 
-            output_leave=io.BytesIO()
-            with pd.ExcelWriter(output_leave,engine="openpyxl") as writer:
-                excel_view_df(_view).to_excel(writer,index=False,sheet_name="연차현황")
-                ws=writer.sheets["연차현황"]; style_excel_sheet(ws)
-                thin=Border(left=Side(style="thin"),right=Side(style="thin"),top=Side(style="thin"),bottom=Side(style="thin"))
-                for row in ws.iter_rows():
-                    for cell in row:
-                        cell.border=thin
-                        cell.alignment=Alignment(horizontal="center",vertical="center")
-                for col in ws.columns:
-                    max_len=max(len(str(c.value or "")) for c in col)
-                    ws.column_dimensions[get_column_letter(col[0].column)].width=max(12,min(max_len+4,28))
-            st.download_button("📥 현재 연차현황 Excel",output_leave.getvalue(),
-                               file_name=f"연차현황_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="v300_leave_excel")
+            _sg=_lv_grants[_lv_grants["emp_id"].astype(str)==_sid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _sg.empty:
+                _stotal=float(pd.to_numeric(_sg.get("grant_days",0),errors="coerce").fillna(0).sum())
+                _ssource="발생·이월 대장"
+            else:
+                _stotal=float(_se.get("total_annual_leave",0) or 0)
+                _ssource="기존 직원설정"
+
+            st.caption(f"{_se.get('emp_name','')} / {_se.get('dept','')} / {_se.get('position','')} · 산정기준: {_ssource}")
+            s1,s2,s3=st.columns(3)
+            s1.metric("총 부여 연차",f"{_stotal:,.1f}일")
+            s2.metric("사용 연차",f"{_su:,.1f}일")
+            s3.metric("잔여 연차",f"{_stotal-_su:,.1f}일")
+
+            if not _sg.empty:
+                st.markdown("##### 발생·이월 현황")
+                _gc=[c for c in ["grant_year","grant_type","grant_date","grant_days","expiry_date","note"] if c in _sg.columns]
+                display_table_kr(_sg[_gc].sort_values("grant_date",ascending=False),use_container_width=True,hide_index=True)
+
+            st.markdown("##### 연차·휴가 사용이력")
+            if _sr.empty:
+                st.info("사용이력이 없습니다.")
+            else:
+                _sc=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _sr.columns]
+                display_table_kr(_sr[_sc],use_container_width=True,hide_index=True)
 
     with _lv_tabs[1]:
         st.markdown("#### ➕ 연차 발생·이월·조정 관리")
@@ -3012,6 +3010,82 @@ if active_tab == 4:
                     }).execute()
                     st.success("연차 신청내역을 저장했습니다."); st.rerun()
 
+            # v30.4: 연차신청 화면에서 최근 저장 신청서를 A4 한 페이지로 바로 출력
+            st.divider()
+            st.markdown("##### 🖨️ 연차 신청서 바로 출력")
+            _print_rec=_erec.copy() if not _erec.empty else pd.DataFrame()
+            if _print_rec.empty:
+                st.info("선택한 직원의 저장된 연차·휴가 신청내역이 없습니다. 신청 저장 후 바로 출력할 수 있습니다.")
+            else:
+                _print_rec=_print_rec.sort_values("id",ascending=False) if "id" in _print_rec.columns else _print_rec
+                _pmap={}
+                for _,_r in _print_rec.iterrows():
+                    _lbl=f"{_r.get('start_date','')} | {_r.get('leave_type','')} | {_r.get('used_days',0)}일"
+                    _pmap[_lbl]=_r
+                _plabel=st.selectbox("출력할 신청내역",list(_pmap.keys()),key="v304_leave_print_sel")
+                _pr=_pmap[_plabel]
+
+                _logo=f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height:32px;">' if st.session_state.logo_b64 else ''
+                _apply_date=str(_pr.get("apply_dt",""))[:10]
+                try:
+                    _ad=pd.to_datetime(_apply_date).strftime("%Y. %m. %d.")
+                except Exception:
+                    _ad=_apply_date
+                _reason_print=str(_pr.get("reason","") or "").replace("<","&lt;").replace(">","&gt;")
+
+                _leave_doc=f"""
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+@page {{ size:A4 portrait; margin:12mm; }}
+* {{ box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif; color:#111; background:#fff; }}
+.toolbar {{ text-align:right; margin:0 0 6px 0; }}
+.toolbar button {{ padding:7px 14px; border:0; border-radius:5px; cursor:pointer; }}
+.sheet {{ width:186mm; min-height:270mm; margin:0 auto; border:1.5px solid #111; padding:11mm 10mm; }}
+.head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:8mm; }}
+.brand {{ min-width:42mm; }}
+.title {{ flex:1; text-align:center; font-size:24px; font-weight:700; letter-spacing:4px; padding-top:8mm; }}
+.approval {{ border-collapse:collapse; width:62mm; font-size:11px; text-align:center; }}
+.approval th,.approval td {{ border:1px solid #222; padding:4px 3px; }}
+.approval .sign {{ height:18mm; }}
+.main {{ width:100%; border-collapse:collapse; margin-top:13mm; font-size:13px; }}
+.main th,.main td {{ border:1px solid #222; padding:4mm 3mm; }}
+.main th {{ width:23%; background:#f5f5f5; text-align:center; }}
+.reason {{ height:36mm; vertical-align:top; }}
+.statement {{ text-align:center; margin-top:24mm; font-size:14px; }}
+.date {{ text-align:center; margin-top:10mm; font-size:13px; }}
+.signer {{ text-align:right; margin-top:20mm; padding-right:8mm; font-size:14px; font-weight:700; }}
+.org {{ text-align:center; margin-top:28mm; font-size:17px; font-weight:700; }}
+@media print {{
+  .toolbar {{ display:none !important; }}
+  .sheet {{ border:1.5px solid #111; width:100%; min-height:0; margin:0; page-break-inside:avoid; }}
+  body {{ overflow:visible; }}
+}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">🖨️ 한 페이지 인쇄</button></div>
+<div class="sheet">
+  <div class="head">
+    <div class="brand">{_logo}</div>
+    <div class="title">휴 가 (연 차) 신 청 서</div>
+    <table class="approval">
+      <tr><th rowspan="2" style="width:9mm;">결<br>재</th><th>담 당</th><th>대 리</th><th>센터장</th></tr>
+      <tr><td class="sign"></td><td class="sign"></td><td class="sign"></td></tr>
+    </table>
+  </div>
+  <table class="main">
+    <tr><th>성 명</th><td>{_pr.get('emp_name','')} ({_pr.get('position','')})</td><th>소 속</th><td>{_pr.get('dept','')}</td></tr>
+    <tr><th>휴가구분</th><td colspan="3">{_pr.get('leave_type','')} &nbsp; (사용일수: {float(_pr.get('used_days',0) or 0):.1f}일)</td></tr>
+    <tr><th>휴가기간</th><td colspan="3">{_pr.get('start_date','')} ~ {_pr.get('end_date','')}</td></tr>
+    <tr><th>휴가사유</th><td colspan="3" class="reason">{_reason_print}</td></tr>
+  </table>
+  <div class="statement">위와 같이 휴가(연차)를 신청합니다.</div>
+  <div class="date">{_ad}</div>
+  <div class="signer">신청인: {_pr.get('emp_name','')} (인)</div>
+  <div class="org">화성시장기요양지원센터장 귀하</div>
+</div></body></html>
+"""
+                st.components.v1.html(_leave_doc,height=820,scrolling=True)
+
     with _lv_tabs[3]:
         st.markdown("#### 🗂️ 연차·휴가 사용내역")
         if _lv_all.empty:
@@ -3046,49 +3120,6 @@ if active_tab == 4:
                     supabase.table("leave_records").delete().eq("id",int(_did)).execute()
                     write_audit_log("연차 신청 삭제","leave_records",_did)
                     st.success("선택한 연차·휴가 신청을 삭제했습니다."); st.rerun()
-
-    with _lv_tabs[4]:
-        st.markdown("#### 👤 직원별 연차대장")
-        if _lv_emp.empty:
-            st.info("직원 데이터가 없습니다.")
-        else:
-            _popt={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
-            _pk=st.selectbox("직원",list(_popt.keys()),key="v300_person")
-            _pe=_popt[_pk]; _pid=str(_pe.get("emp_id",""))
-            _pr=_lv_all[_lv_all["emp_id"].astype(str)==_pid].copy() if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
-            _pa=_pr[_pr["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _pr.empty and "leave_type" in _pr.columns) else pd.DataFrame()
-            _pu=pd.to_numeric(_pa.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _pa.empty else 0
-            _pg=_lv_grants[_lv_grants["emp_id"].astype(str)==_pid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
-            _pt=float(pd.to_numeric(_pg.get("grant_days",0),errors="coerce").fillna(0).sum()) if not _pg.empty else float(_pe.get("total_annual_leave",0) or 0)
-            p1,p2,p3=st.columns(3)
-            p1.metric("총 부여",f"{_pt:,.1f}일"); p2.metric("사용",f"{_pu:,.1f}일"); p3.metric("잔여",f"{_pt-_pu:,.1f}일")
-            if not _pr.empty:
-                _cols=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _pr.columns]
-                display_table_kr(_pr[_cols],use_container_width=True,hide_index=True)
-
-    with _lv_tabs[5]:
-        st.markdown("#### 📊 기간·월별 연차 통계")
-        if _lv_all.empty:
-            st.info("통계 대상 자료가 없습니다.")
-        else:
-            _stat=_lv_all.copy()
-            _stat["_date"]=pd.to_datetime(_stat["start_date"],errors="coerce")
-            _years=sorted(_stat["_date"].dropna().dt.year.unique().tolist(),reverse=True)
-            if _years:
-                s1,s2=st.columns(2)
-                _yy=s1.selectbox("연도",_years,key="v300_stat_y")
-                _mm=s2.selectbox("월",["전체"]+list(range(1,13)),key="v300_stat_m")
-                _sv=_stat[_stat["_date"].dt.year==_yy]
-                if _mm!="전체": _sv=_sv[_sv["_date"].dt.month==int(_mm)]
-                _annual_sv=_sv[_sv["leave_type"].astype(str).str.contains("연차|반차",na=False)]
-                c1,c2,c3=st.columns(3)
-                c1.metric("휴가 건수",f"{len(_sv):,}건")
-                c2.metric("연차·반차 사용",f"{pd.to_numeric(_annual_sv.get('used_days',0),errors='coerce').fillna(0).sum():,.1f}일")
-                c3.metric("사용 직원",f"{_sv['emp_id'].nunique() if 'emp_id' in _sv.columns else 0:,}명")
-                if not _sv.empty:
-                    _agg=_sv.groupby(["emp_id","emp_name"],dropna=False)["used_days"].sum().reset_index()
-                    _agg.columns=["사번","이름","휴가 사용일수"]
-                    display_table_kr(_agg,use_container_width=True,hide_index=True)
 
 # -------------------------------------------------------------------
 # TAB 5: 연차 신청서 독립 출력 탭
