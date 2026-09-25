@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v28.9"
+APP_VERSION = "v29.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v28.9", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v29.0", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v28.9")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v29.0")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -4366,223 +4366,17 @@ if active_tab == 10:
             display_table_kr(_mon[_cols],use_container_width=True,hide_index=True)
 
     st.divider()
-    st.caption("아래 영역은 v28.7의 복명서 출력·사진첨부·Excel 등 검증된 기능을 유지하기 위한 호환영역입니다.")
-    st.markdown("### 🔧 기존 복명·출력·증빙 호환영역")
-    _work1,_work2,_work3,_work4,_work5,_work6,_work7=st.tabs([
-        "📝 신청·변경","✅ 승인관리","📄 복명·보고","💳 정산관리","📎 증빙관리","📊 월별현황","📖 규정"
-    ])
-
-
-    # 테이블 존재 여부 안내
-    try:
-        trip_res = supabase.table("business_trips").select("*").order("id", desc=True).execute()
-        df_trips = pd.DataFrame(trip_res.data) if trip_res.data else pd.DataFrame()
-        df_trips = scope_dataframe_to_current_employee(df_trips)
-        trip_table_ok = True
-    except Exception:
-        df_trips = pd.DataFrame()
-        trip_table_ok = False
-
-    if not trip_table_ok:
-        st.warning("⚠️ 출장관리 DB 테이블이 아직 없습니다. 아래 'Supabase SQL'을 먼저 실행해 주세요.")
-
-    emp_trip_res = supabase.table("employees").select("*").execute()
-    df_trip_emp = pd.DataFrame(emp_trip_res.data) if emp_trip_res.data else pd.DataFrame()
-    df_trip_emp = scope_employee_master(df_trip_emp)
-
-    df_trip_emp = scope_employee_master(df_trip_emp)
-    st.markdown("### 📝 신청·변경 업무")
-    st.subheader("📝 신규 출장 신청")
-    if df_trip_emp.empty:
-        st.info("직원 데이터가 없습니다.")
-    else:
-        # employees 실제 스키마(emp_name, dept)에 맞춰 출장자 연계
-        emp_opts = {
-            f"{str(r.get('emp_name','')).strip()} ({str(r.get('emp_id','')).strip()})": r
-            for _, r in df_trip_emp.iterrows()
-            if str(r.get("emp_name","")).strip()
-        }
-        if not emp_opts:
-            st.warning("직원 DB의 emp_name 컬럼에서 출장자를 찾지 못했습니다.")
-            st.stop()
-        trip_emp_key = st.selectbox("출장자", list(emp_opts.keys()), key="trip_emp")
-        trip_emp = emp_opts[trip_emp_key]
-
-        tc1, tc2, tc3 = st.columns(3)
-        with tc1:
-            st.text_input("성명", value=str(trip_emp.get("emp_name","")), disabled=True)
-        with tc2:
-            st.text_input("직위", value=str(trip_emp.get("position","")), disabled=True)
-        with tc3:
-            st.text_input("부서", value=str(trip_emp.get("dept","")), disabled=True)
-
-        trip_type = st.radio("출장 구분", ["일반출장", "교육·연수출장"], horizontal=True)
-        purpose = st.text_input("출장목적", placeholder="예: 장기요양기관 회계 교육 참석")
-        dc1, dc2 = st.columns(2)
-        with dc1:
-            start_date = st.date_input("출장 시작일", key="trip_start_date")
-            start_time = st.time_input("시작시간", value=time(9,0), key="trip_start_time")
-        with dc2:
-            end_date = st.date_input("출장 종료일", key="trip_end_date")
-            end_time = st.time_input("종료시간", value=time(18,0), key="trip_end_time")
-
-        destination = st.text_input("출장지")
-        mv1, mv2, mv3 = st.columns(3)
-        with mv1:
-            transport = st.selectbox("이동수단", ["대중교통", "자차", "센터차량", "동승", "도보", "기타"])
-        with mv2:
-            distance_km = st.number_input("총 거리(km)", min_value=0.0, step=1.0)
-        with mv3:
-            fuel_type = st.selectbox("자차 유종", ["해당없음", "가솔린", "디젤", "LPG"], disabled=(transport != "자차"))
-
-        st.markdown("##### 💰 여비 기준 확인")
-        start_dt = datetime.combine(start_date, start_time)
-        end_dt = datetime.combine(end_date, end_time)
-        trip_hours = max(0, (end_dt - start_dt).total_seconds() / 3600)
-        if trip_hours >= 4:
-            base_trip_pay = 20000
-            rule_text = "출장여행시간 4시간 이상 → 20,000원"
-        elif trip_hours > 2:
-            base_trip_pay = 10000
-            rule_text = "출장여행시간 4시간 미만 → 10,000원"
-        else:
-            base_trip_pay = 0
-            rule_text = "2시간 이내/보행 가능 거리 → 실교통비 지급 가능"
-
-        if transport == "센터차량":
-            base_trip_pay = max(0, base_trip_pay - 10000)
-            rule_text += " / 센터차량 사용 → 기준금액에서 10,000원 감액"
-
-        rc1, rc2 = st.columns(2)
-        with rc1:
-            st.info(rule_text)
-        with rc2:
-            st.metric("규정 기준 여비(참고)", f"{base_trip_pay:,}원")
-
-        st.caption("※ 자가차량 운임은 여비관리 세칙상 총거리×기준단가 방식입니다. 유류 기준가격 입력 없이 임의 계산하지 않고 정산 단계에서 증빙·기준단가를 확인하도록 설계했습니다.")
-        note = st.text_area("비고 / 출장 사전 특이사항")
-
-        if st.button("🚗 출장 신청 등록", type="primary", use_container_width=True, disabled=not has_permission("trip_write")):
-            if not trip_table_ok:
-                st.error("먼저 Supabase에 business_trips 테이블을 생성해 주세요.")
-            elif not purpose or not destination:
-                st.warning("출장목적과 출장지를 입력해 주세요.")
-            elif end_dt <= start_dt:
-                st.warning("출장 종료일시는 시작일시보다 늦어야 합니다.")
-            else:
-                payload = {
-                    "emp_id": str(trip_emp.get("emp_id","")),
-                    "emp_name": str(trip_emp.get("emp_name","")),
-                    "department": str(trip_emp.get("dept","")),
-                    "position": str(trip_emp.get("position","")),
-                    "trip_type": trip_type,
-                    "purpose": purpose,
-                    "start_at": start_dt.isoformat(),
-                    "end_at": end_dt.isoformat(),
-                    "destination": destination,
-                    "transport_type": transport,
-                    "distance_km": float(distance_km),
-                    "fuel_type": fuel_type,
-                    "rule_base_amount": int(base_trip_pay),
-                    "note": note,
-                    "apply_status": "신청",
-                    "report_status": "미작성",
-                    "settlement_status": "미정산"
-                }
-                supabase.table("business_trips").insert(payload).execute()
-                st.success("출장 신청이 등록되었습니다.")
-                st.rerun()
-
     st.divider()
-    # 과거 출장자료의 빈 이름/부서는 emp_id 기준으로 화면에서 자동 보정
-    if trip_table_ok and not df_trips.empty and not df_trip_emp.empty and "emp_id" in df_trips.columns:
-        emp_lookup = df_trip_emp.set_index(df_trip_emp["emp_id"].astype(str))
-        for idx, tr in df_trips.iterrows():
-            eid = str(tr.get("emp_id",""))
-            if eid in emp_lookup.index:
-                er = emp_lookup.loc[eid]
-                if isinstance(er, pd.DataFrame):
-                    er = er.iloc[0]
-                if not str(tr.get("emp_name","") or "").strip():
-                    df_trips.at[idx, "emp_name"] = str(er.get("emp_name",""))
-                if not str(tr.get("department","") or "").strip():
-                    df_trips.at[idx, "department"] = str(er.get("dept",""))
-                if not str(tr.get("position","") or "").strip():
-                    df_trips.at[idx, "position"] = str(er.get("position",""))
-
-    st.markdown("### ✅ 승인관리 업무")
-    st.subheader("📊 출장 현황 / 승인 관리")
-    if trip_table_ok and not df_trips.empty:
-        show_cols = [c for c in ["id","start_at","emp_name","position","purpose","destination","transport_type",
-                                 "distance_km","rule_base_amount","apply_status","report_status","settlement_status"]
-                     if c in df_trips.columns]
-        display_table_kr(df_trips[show_cols], use_container_width=True, hide_index=True)
-
-        trip_ids = df_trips["id"].tolist()
-        sel_trip_id = st.selectbox("처리할 출장 ID", trip_ids, key="trip_manage_id")
-        mc1, mc2, mc3 = st.columns(3)
-        with mc1:
-            if st.button("✅ 출장 승인(명령)", use_container_width=True, disabled=not has_permission("trip_approve")):
-                supabase.table("business_trips").update({"apply_status":"승인"}).eq("id", sel_trip_id).execute()
-                write_audit_log("출장 승인", "business_trips", sel_trip_id)
-                st.success("출장명령/승인 처리했습니다.")
-                st.rerun()
-        with mc2:
-            if st.button("↩️ 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
-                supabase.table("business_trips").update({"apply_status":"반려"}).eq("id", sel_trip_id).execute()
-                write_audit_log("출장 반려", "business_trips", sel_trip_id)
-                st.rerun()
-        with mc3:
-            if st.button("❌ 출장 취소", use_container_width=True, disabled=not has_permission("trip_approve")):
-                supabase.table("business_trips").update({"apply_status":"취소"}).eq("id", sel_trip_id).execute()
-                write_audit_log("출장 취소", "business_trips", sel_trip_id)
-                st.rerun()
-
-        st.markdown("#### 💳 정산상태 변경")
-        _sel_trip_row = df_trips[df_trips["id"] == sel_trip_id].iloc[0]
-        _settle_options = ["미정산","정산대기","정산완료","지급완료"]
-        _current_settle = str(_sel_trip_row.get("settlement_status","미정산") or "미정산")
-        _settle_idx = _settle_options.index(_current_settle) if _current_settle in _settle_options else 0
-        _new_settle = st.selectbox("정산상태", _settle_options, index=_settle_idx, key="trip_settlement_change")
-        if st.button("💾 정산상태 저장", use_container_width=True, disabled=not has_permission("trip_approve")):
-            supabase.table("business_trips").update({"settlement_status":_new_settle}).eq("id",sel_trip_id).execute()
-            write_audit_log(f"출장 정산상태 변경: {_new_settle}", "business_trips", sel_trip_id)
-            st.success(f"정산상태를 '{_new_settle}'로 변경했습니다.")
-            st.rerun()
-
-        st.markdown("#### 🗑️ 취소 출장 삭제")
-        _is_cancelled = str(_sel_trip_row.get("apply_status","")) == "취소"
-        if not _is_cancelled:
-            st.caption("출장신청 상태가 '취소'인 건만 삭제할 수 있습니다.")
-        _confirm_trip_delete = st.checkbox("선택한 취소 출장과 연결된 증빙파일까지 영구 삭제하는 것에 동의합니다.", key="confirm_cancelled_trip_delete", disabled=not _is_cancelled)
-        if st.button("🗑️ 취소 출장 영구 삭제", type="primary", use_container_width=True,
-                     disabled=(not _is_cancelled or not _confirm_trip_delete or CURRENT_ROLE!="admin")):
-            # Delete attached Storage objects first, then child DB rows, then trip.
-            try:
-                _del_client = supabase_admin if supabase_admin is not None else supabase
-                _fr = _del_client.table("business_trip_files").select("*").eq("trip_id",sel_trip_id).execute()
-                _paths=[str(x.get("storage_path")) for x in (_fr.data or []) if x.get("storage_path")]
-                if _paths:
-                    _del_client.storage.from_(TRIP_STORAGE_BUCKET).remove(_paths)
-                _del_client.table("business_trip_files").delete().eq("trip_id",sel_trip_id).execute()
-                _del_client.table("business_trip_changes").delete().eq("trip_id",sel_trip_id).execute()
-                _del_client.table("business_trips").delete().eq("id",sel_trip_id).eq("apply_status","취소").execute()
-                write_audit_log("취소 출장 영구 삭제", "business_trips", sel_trip_id)
-                st.success("취소 출장과 연결 증빙자료를 삭제했습니다.")
-                st.rerun()
-            except Exception as _e:
-                st.error(f"취소 출장 삭제 실패: {_e}")
-        if CURRENT_ROLE!="admin" and _is_cancelled:
-            st.caption("영구 삭제는 관리자만 가능합니다.")
-    elif trip_table_ok:
-        st.info("등록된 출장 내역이 없습니다.")
+    st.markdown("### 📄 복명·증빙 상세업무")
+    st.caption("복명서 작성·A4 출력·출장사진/영수증 첨부·월별 Excel은 기존 검증 로직을 유지한 상세업무 화면에서 처리합니다.")
+    st.info("왼쪽 메뉴의 **출장 복명·여비정산**에서 복명·증빙 상세기능을 사용할 수 있습니다. 신청·변경·승인·정산·월별 조회는 위 7개 탭에서 처리합니다.")
 
 # -------------------------------------------------------------------
 # TAB 11: 출장 복명·복무규정
 # -------------------------------------------------------------------
 if active_tab == 11:
-    st.header("📋 출장 복명·여비정산")
-    st.info("v28.8부터 출장 업무는 '출장 신청·관리'의 7개 탭 통합화면을 기준으로 운영합니다. 기존 복명·정산 화면은 호환을 위해 유지합니다.")
+    st.header("📄 출장 복명·증빙 상세업무")
+    st.info("출장 통합관리의 상세업무 화면입니다. 복명서 작성·여비 입력·A4 출력·사진/영수증 첨부·월별 Excel 기능을 제공합니다.")
 
     try:
         trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
@@ -4590,6 +4384,15 @@ if active_tab == 11:
         df_trip2 = scope_dataframe_to_current_employee(df_trip2)
     except Exception:
         df_trip2 = pd.DataFrame()
+
+    if not df_trip2.empty:
+        _d1,_d2,_d3,_d4=st.columns(4)
+        _dr=df_trip2.get("report_status",pd.Series([""]*len(df_trip2))).astype(str)
+        _ds=df_trip2.get("settlement_status",pd.Series([""]*len(df_trip2))).astype(str)
+        _d1.metric("출장",f"{len(df_trip2):,}건")
+        _d2.metric("미보고",f"{int((~_dr.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+        _d3.metric("정산대기",f"{int((_ds=='정산대기').sum()):,}건")
+        _d4.metric("지급완료",f"{int((_ds=='지급완료').sum()):,}건")
 
     if df_trip2.empty:
         st.info("출장 신청 내역이 없습니다. 먼저 출장 신청을 등록해 주세요.")
@@ -4668,7 +4471,7 @@ if active_tab == 11:
                 st.rerun()
 
     st.divider()
-    st.subheader("📚 시스템에서 확인하는 출장·여비 규정")
+    st.markdown("##### 📚 출장·여비 세부규정")
     reg_tab1, reg_tab2, reg_tab3 = st.tabs(["출장 복무규정", "여비관리 세칙", "교육·연수 결과보고"])
     with reg_tab1:
         st.markdown("""
