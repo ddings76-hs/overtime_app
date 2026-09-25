@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.2"
+APP_VERSION = "v31.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v30.4.1", layout="wide")
+st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v30.4.1")
+st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v31.4")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -709,7 +709,7 @@ MENU_GROUPS = {
         ("계정·권한 관리", "직원 계정 생성·권한 부여·비밀번호 초기화"),
     ],
     "⏱️ 근태": [
-        ("초과근무 신청", "초과·휴일근무 사전 신청"),
+        ("초과근무 신청", "초과·휴일근무 사전 신청 및 신청내역 조회"),
         ("초과근무 실적", "실제 수행내역·승인·월별 급여 연계"),
     ],
     "💰 급여": [
@@ -2258,7 +2258,7 @@ window.addEventListener("load", function(){
 # -------------------------------------------------------------------
 if active_tab == 2:
     st.header("⏱️ 초과근무 통합관리")
-    st.caption("직원별 현황·사전신청·승인/실적처리·사용내역·급여연계 흐름으로 관리합니다.")
+    st.caption("직원별 현황·사전신청·신청내역을 관리합니다. 승인·실적처리와 급여연계는 초과근무 실적 메뉴에서 처리합니다.")
 
     try:
         _ot_all_res=supabase.table("overtime_records").select("*").order("id",desc=True).execute()
@@ -2281,7 +2281,7 @@ if active_tab == 2:
     # 단일 업무영역 선택 방식으로 변경하여 선택한 화면만 렌더링합니다.
     _ot_view=st.radio(
         "초과근무 업무",
-        ["👤 직원별 현황","📝 초과근무 신청","✅ 승인·실적처리","🗂️ 사용내역","💰 급여연계 현황"],
+        ["👤 직원별 현황","📝 초과근무 신청","📋 신청내역"],
         horizontal=True,
         key="v312_ot_view",
         label_visibility="collapsed"
@@ -2308,17 +2308,8 @@ if active_tab == 2:
         st.caption("직원·근무일·예정시간·신청사유를 입력하여 사전 신청합니다.")
         st.caption("아래에서 사전 신청 내용을 입력하고 제출합니다.")
 
-    if _ot_view=="✅ 승인·실적처리":
-        st.markdown("#### ✅ 승인·실적처리")
-        _pending=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="신청").sum()) if not _ot_all.empty else 0
-        _approved_n=int((_ot_all.get("status",pd.Series(dtype=str)).astype(str)=="승인").sum()) if not _ot_all.empty else 0
-        aa,ab=st.columns(2)
-        aa.metric("승인대기",f"{_pending:,}건")
-        ab.metric("승인완료",f"{_approved_n:,}건")
-        st.info("왼쪽 메뉴의 **초과근무 승인·실적처리** 화면에서 실제 시작·종료시간, 인정시간, 수행내용과 승인상태를 처리합니다.")
-
-    if _ot_view=="🗂️ 사용내역":
-        st.markdown("#### 🗂️ 초과근무 사용내역")
+    if _ot_view=="📋 신청내역":
+        st.markdown("#### 📋 초과근무 신청내역")
         if _ot_all.empty:
             st.info("조회할 내역이 없습니다.")
         else:
@@ -2335,22 +2326,44 @@ if active_tab == 2:
             _cols=[x for x in ["id","work_date","emp_id","emp_name","work_type","duration_hours","actual_duration_hours","actual_pay","status","reason"] if x in _ov.columns]
             display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
 
-    if _ot_view=="💰 급여연계 현황":
-        st.markdown("#### 💰 급여연계 현황")
-        _today=datetime.now().date()
-        _py,_pm=_today.year,_today.month
-        _pd=datetime(_py,_pm,25).date()
-        _ps=(_pd.replace(day=1)-timedelta(days=1)).replace(day=25)
-        _pe=_pd-timedelta(days=1)
-        st.caption(f"현재 지급월 기준 산정기간: {_ps} ~ {_pe} (전월 25일 ~ 당월 24일)")
-        if not _ot_all.empty and "work_date" in _ot_all.columns:
-            _tmp=_ot_all.copy(); _tmp["_wd"]=pd.to_datetime(_tmp["work_date"],errors="coerce").dt.date
-            _pay=_tmp[(_tmp["_wd"]>=_ps)&(_tmp["_wd"]<=_pe)]
-            _approved=_pay[_pay["status"].astype(str)=="승인"] if "status" in _pay.columns else pd.DataFrame()
-            p1,p2,p3=st.columns(3)
-            p1.metric("산정기간 전체",f"{len(_pay):,}건")
-            p2.metric("승인건",f"{len(_approved):,}건")
-            p3.metric("승인수당",f"{pd.to_numeric(_approved.get('actual_pay',0),errors='coerce').fillna(0).sum():,.0f}원")
+            if has_permission("attendance_write") and not _ov.empty:
+                st.divider()
+                st.markdown("##### 🗑️ 신청내역 삭제")
+                _delmap={}
+                for _,_r in _ov.iterrows():
+                    _lbl=f"ID {_r.get('id')} | {_r.get('emp_name','')} | {_r.get('work_date','')} | {_r.get('work_type','')} | {_r.get('status','')}"
+                    _delmap[_lbl]=_r
+                _dl=st.selectbox("삭제할 신청내역",list(_delmap.keys()),key="v314_ot_del")
+                _dr=_delmap[_dl]
+                _did=int(_dr.get("id"))
+                _dw=pd.to_datetime(_dr.get("work_date"),errors="coerce")
+                _locked=False
+                _lock_month=""
+                if pd.notna(_dw):
+                    _wd=_dw.date()
+                    if _wd.day>=25:
+                        _ny=_wd.year+1 if _wd.month==12 else _wd.year
+                        _nm=1 if _wd.month==12 else _wd.month+1
+                    else:
+                        _ny,_nm=_wd.year,_wd.month
+                    _lock_month=f"{_ny:04d}-{_nm:02d}"
+                    try:
+                        _cl=supabase.table("payroll_monthly_closings").select("status").eq("pay_month",_lock_month).execute()
+                        _locked=bool(_cl.data and str(_cl.data[0].get("status",""))=="finalized")
+                    except Exception:
+                        _locked=False
+                if _locked:
+                    st.warning(f"이 신청은 {_lock_month} 급여가 마감되어 삭제할 수 없습니다. 급여 마감을 먼저 취소해야 합니다.")
+                else:
+                    _dc=st.checkbox("선택한 초과근무 신청을 삭제하는 것을 확인했습니다.",key="v314_ot_del_confirm")
+                    if st.button("🗑️ 선택 신청 삭제",type="primary",disabled=not _dc,key="v314_ot_delete"):
+                        try:
+                            supabase.table("overtime_records").delete().eq("id",_did).execute()
+                            write_audit_log("초과근무 신청 삭제","overtime_records",_did)
+                            st.success("선택한 초과근무 신청을 삭제했습니다.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(f"신청 삭제 실패: {_e}")
 
     if _ot_view=="📝 초과근무 신청":
         st.divider()
