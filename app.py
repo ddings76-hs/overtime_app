@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.4"
+APP_VERSION = "v31.5"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -2426,7 +2426,7 @@ if active_tab == 2:
 # -------------------------------------------------------------------
 if active_tab == 3:
     st.header("✅ 초과근무 승인·실적처리")
-    st.caption("사전 신청 → 실제 수행시간 입력 → 인정시간 확정 → 승인 → 급여연계 순서로 처리합니다.")
+    st.caption("① 승인대기 확인 → ② 실제 수행시간 입력 → ③ 인정시간·수당 확인 → ④ 승인완료 → ⑤ 급여연계 확인 순서로 처리합니다.")
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
@@ -2446,6 +2446,15 @@ if active_tab == 3:
     if df_ot.empty:
         st.info("등록된 초과근무 신청 내역이 없다.")
     else:
+        _pending_ot=df_ot[df_ot.get("status",pd.Series([""]*len(df_ot))).astype(str)=="신청"].copy()
+        if not _pending_ot.empty:
+            st.markdown("#### 🔔 승인·실적처리 대기")
+            _pcols=[c for c in ["id","work_date","emp_id","emp_name","work_type","start_time","end_time","duration_hours","reason","status"] if c in _pending_ot.columns]
+            display_table_kr(_pending_ot[_pcols],use_container_width=True,hide_index=True)
+            st.caption("처리할 신청을 아래에서 선택한 뒤 실제 수행시간과 승인상태를 입력합니다.")
+        else:
+            st.success("현재 승인·실적처리 대기 중인 신청이 없습니다.")
+        st.markdown("#### ✏️ 실제 수행시간·승인 처리")
         col_ot1, col_ot2 = st.columns([3, 1])
         with col_ot1:
             ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {float(r['duration_hours']):.1f}h" for _, r in df_ot.iterrows()]
@@ -4510,6 +4519,13 @@ if active_tab == 10:
 출장여비는 「여비관리 세칙」에 따릅니다.
         """)
 
+    _rq1,_rq2,_rq3,_rq4=st.columns(4)
+    _rq1.metric("4시간 이상","20,000원")
+    _rq2.metric("4시간 미만","10,000원")
+    _rq3.metric("국내출장 일비","25,000원/일")
+    _rq4.metric("국내출장 식비","20,000원/일")
+    st.caption("센터차량 이용 시 단시간 출장여비 10,000원 감액 · 숙박 실비 상한: 광역시 80,000원 / 그 밖의 지역 70,000원")
+
     _trip_ui_tabs = st.tabs([
         "📋 출장현황", "📝 신청·변경", "✅ 승인관리",
         "📄 복명·보고", "💳 정산관리", "📎 증빙관리", "📊 월별현황"
@@ -4672,14 +4688,25 @@ if active_tab == 10:
 
     with _trip_ui_tabs[3]:
         st.markdown("#### 📄 복명·보고")
-        st.info("기존에 정상 확인된 사진 자동삽입 A4 복명서 출력 기능은 아래 '기존 복명·출력 호환영역'에서 그대로 유지됩니다.")
         if not _v289_df.empty:
             _rp=_v289_df.get("report_status",pd.Series([""]*len(_v289_df))).astype(str)
-            st.metric("미보고",f"{int((~_rp.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+            _rw=_v289_df[~_rp.isin(["완료","보고완료","제출완료"])].copy()
+            st.metric("미보고",f"{len(_rw):,}건")
+            if not _rw.empty:
+                st.markdown("##### 🔔 복명서 작성 필요")
+                _rc=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","apply_status","report_status"] if c in _rw.columns]
+                display_table_kr(_rw[_rc],use_container_width=True,hide_index=True)
+            st.info("복명서 작성·사진 자동삽입·A4 출력은 '출장 복명·여비정산' 상세화면에서 처리합니다.")
 
     with _trip_ui_tabs[4]:
         st.markdown("#### 💳 정산관리")
         if not _v289_df.empty:
+            _ss=_v289_df.get("settlement_status",pd.Series([""]*len(_v289_df))).astype(str)
+            _sw=_v289_df[~_ss.isin(["정산완료","지급완료"])].copy()
+            if not _sw.empty:
+                st.markdown("##### 🔔 정산처리 필요")
+                _sc=[c for c in ["id","emp_name","destination","start_at","total_cost","settlement_status"] if c in _sw.columns]
+                display_table_kr(_sw[_sc],use_container_width=True,hide_index=True)
             _sid=st.selectbox("정산할 출장",_v289_df["id"].tolist(),key="v289_sid")
             _sr=_v289_df[_v289_df["id"]==_sid].iloc[0]
             _opts=["미정산","정산대기","정산완료","지급완료"]
@@ -4814,17 +4841,14 @@ if active_tab == 11:
                 st.rerun()
 
     st.divider()
-    st.markdown("##### 📚 출장·여비 세부규정")
-    reg_tab1, reg_tab2, reg_tab3 = st.tabs(["출장 복무규정", "여비관리 세칙", "교육·연수 결과보고"])
-    with reg_tab1:
+    with st.expander("📚 출장·여비·교육 결과보고 규정 바로보기", expanded=False):
         st.markdown("""
+**출장 복무규정**
 - **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
 - **제26조 출장 중 사정변경**: 목적지 변경·기간 연장 시 사전승인, 부득이한 경우 귀원 즉시 사후승인
 - **제27조 출장보고**: 귀원 후 지체 없이 출장보고서 제출
 - **제28조 출장여비**: 「여비관리 세칙」 적용
-        """)
-    with reg_tab2:
-        st.markdown("""
+
 **여비관리 세칙 주요 기준**
 - 여비는 출장 계획의 경로와 방법에 따라 계산
 - 다른 기관에서 여비가 지급되면 해당 금액만큼 감액
@@ -4834,13 +4858,11 @@ if active_tab == 11:
 - 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
 - 국내여비 기준표: 일비 **25,000원/일**, 식비 **20,000원/일**
 - 숙박료: 실비, 상한 **광역시 80,000원 / 그 밖의 지역 70,000원**
-- 자가차량 운임: **총거리(km) × 기준단가**, 유종별 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
+- 자가차량 운임: 총거리(km)와 유류비 기준으로 산정하며 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
 - 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
-        """)
-    with reg_tab3:
-        st.markdown("""
-**제90조 결과보고**
-- 위탁교육자는 **교육이수 후 5일 이내** 보고서를 제출
+
+**교육·연수 결과보고**
+- 위탁교육자는 **교육이수 후 5일 이내** 보고서 제출
 - 교재·출석표·수료증 첨부
 - 소속부서장을 경유하여 센터장에게 제출
 - 정당한 사유 없이 기한 내 수료증·보고서를 제출하지 않으면 규정상 교육 미이수로 볼 수 있음
