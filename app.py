@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.7"
+APP_VERSION = "v31.8"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -4785,9 +4785,16 @@ if active_tab == 10:
 
     st.divider()
 
-    with st.expander("🧾 복명·정산·증빙·문서출력", expanded=False):
-        st.header("📄 출장 복명·증빙 상세업무")
-        st.info("출장 복명내용, 여비정산, 증빙첨부 및 문서출력을 처리합니다.")
+    st.divider()
+    st.markdown("#### 🧾 출장 상세업무")
+    _trip_detail_open=st.radio(
+        "상세업무 선택",
+        ["닫기","복명·정산·증빙·문서출력"],
+        horizontal=True,
+        key="v318_trip_detail_open",
+        label_visibility="collapsed"
+    )
+    if _trip_detail_open=="복명·정산·증빙·문서출력":
 
         try:
             trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
