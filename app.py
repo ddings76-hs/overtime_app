@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.9"
+APP_VERSION = "v32.0"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -4516,19 +4516,37 @@ if active_tab == 10:
 
 **제28조(출장여비)**  
 출장여비는 「여비관리 세칙」에 따릅니다.
+
+---
+
+### 💰 2026 여비업무 적용기준
+
+| 구분 | 기준 |
+|---|---|
+| **근무지 내 국내출장** | 같은 시·군 안의 출장 또는 여행거리 12km 미만 |
+| **4시간 이상** | 20,000원 정액 |
+| **4시간 미만** | 10,000원 정액 |
+| **공용차량 이용** | 근무지 내 정액에서 10,000원 감액 |
+| **근무지 외 국내출장** | 운임·식비·숙박비·일비 정산 |
+| **근무지 외 일비** | 25,000원/일 |
+| **근무지 외 식비** | 25,000원/일 |
+
+**차량 이용 기준**
+- 센터차량을 직접 운전하거나 **센터차량에 동승**한 경우 공용차량 이용으로 처리하여 근무지 내 출장여비에서 10,000원을 감액합니다.
+- 개인차량 동승은 공용차량 동승과 구분하여 처리합니다.
+- 근무지 내 출장은 원칙적으로 정액 외 운임·일비·식비·숙박비를 별도로 지급하지 않습니다. 불가피한 유료도로 통행료 등은 별도 확인합니다.
+- 다른 시·군이고 여행거리 12km 이상이어도 교통여건 등을 고려해 기관장이 근무지 내 출장으로 처리할 수 있는 예외가 있으므로 최종 정산 시 확인합니다.
         """)
 
-    _rq1,_rq2,_rq3,_rq4=st.columns(4)
-    _rq1.metric("4시간 이상","20,000원")
-    _rq2.metric("4시간 미만","10,000원")
-    _rq3.metric("국내출장 일비","25,000원/일")
-    _rq4.metric("근무지외 식비","25,000원/일")
-    st.caption("센터차량 이용 시 단시간 출장여비 10,000원 감액 · 숙박 실비 상한: 광역시 80,000원 / 그 밖의 지역 70,000원")
-
-    _trip_ui_tabs = st.tabs([
-        "📋 출장현황", "📝 신청·변경", "✅ 승인관리",
-        "📄 복명·보고", "💳 정산관리", "📎 증빙관리", "📊 월별현황"
-    ])
+    st.markdown("### 🧭 출장 업무 선택")
+    st.caption("아래 업무를 눌러 필요한 화면만 열어 확인하고 처리할 수 있습니다.")
+    _trip_view=st.radio(
+        "출장 세부업무",
+        ["📋 출장현황","📝 신청·변경","✅ 승인관리","📄 복명·보고","💳 여비정산","📎 증빙관리","📊 월별현황"],
+        horizontal=True,
+        key="v320_trip_view",
+        label_visibility="collapsed"
+    )
 
     # 출장 원장
     try:
@@ -4556,8 +4574,9 @@ if active_tab == 10:
     except Exception:
         _v289_emp=pd.DataFrame()
 
-    with _trip_ui_tabs[0]:
-        st.markdown("#### 📋 출장현황")
+    if _trip_view=="📋 출장현황":
+        st.markdown("### 📋 출장현황")
+        st.caption("출장 신청부터 승인·복명·정산까지 현재 진행상태를 확인합니다.")
         if _v289_df.empty:
             st.info("등록된 출장 내역이 없습니다.")
         else:
@@ -4578,8 +4597,10 @@ if active_tab == 10:
             _cols=[c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","apply_status","report_status","settlement_status"] if c in _show.columns]
             display_table_kr(_show[_cols],use_container_width=True,hide_index=True)
 
-    with _trip_ui_tabs[1]:
-        st.markdown("#### 📝 신규 출장 신청")
+    if _trip_view=="📝 신청·변경":
+        st.markdown("### 📝 출장 신청·변경")
+        st.caption("새 출장을 신청하거나 등록된 출장의 일정·출장지 변경을 요청합니다.")
+        st.markdown("#### 신규 출장 신청")
         if _v289_emp.empty:
             st.info("직원 데이터가 없습니다.")
         else:
@@ -4601,13 +4622,13 @@ if active_tab == 10:
                 _et=st.time_input("종료시간",value=time(18,0),key="v289_et")
             _dest=st.text_input("출장지",key="v289_dest")
             m1,m2,m3=st.columns(3)
-            _transport=m1.selectbox("이동수단",["대중교통","자차","센터차량","동승","도보","기타"],key="v289_transport")
+            _transport=m1.selectbox("이동수단",["대중교통","자차","센터차량","센터차량 동승","개인차량 동승","도보","기타"],key="v289_transport")
             _distance=m2.number_input("총 거리(km)",min_value=0.0,step=1.0,key="v289_distance")
             _fuel=m3.selectbox("자차 유종",["해당없음","가솔린","디젤","LPG"],disabled=(_transport!="자차"),key="v289_fuel")
             _sdt=datetime.combine(_sd,_st); _edt=datetime.combine(_ed,_et)
             _hours=max(0,(_edt-_sdt).total_seconds()/3600)
             _base=20000 if _hours>=4 else 10000
-            if _transport=="센터차량": _base=max(0,_base-10000)
+            if _transport in ["센터차량","센터차량 동승"]: _base=max(0,_base-10000)
             st.metric("단시간 출장여비 기준(참고)",f"{_base:,}원")
             st.caption("근무지 내 출장으로 판정되는 경우의 정액 참고값입니다. 최종 근무지 내·외 판정은 같은 시·군 여부와 여행거리 12km 기준을 함께 확인합니다.")
             _note=st.text_area("비고 / 출장 사전 특이사항",key="v289_note")
@@ -4658,8 +4679,9 @@ if active_tab == 10:
                     }).execute()
                     st.success("출장 변경신청을 등록했습니다."); st.rerun()
 
-    with _trip_ui_tabs[2]:
-        st.markdown("#### ✅ 출장 승인관리")
+    if _trip_view=="✅ 승인관리":
+        st.markdown("### ✅ 출장 승인관리")
+        st.caption("승인대기 출장과 변경요청을 확인하고 처리합니다.")
         if _v289_df.empty:
             st.info("처리할 출장 내역이 없습니다.")
         else:
@@ -4705,8 +4727,9 @@ if active_tab == 10:
                 else: st.success("승인대기 중인 출장변경 신청이 없습니다.")
             except Exception as _e: st.caption(f"변경승인 목록 확인: {_e}")
 
-    with _trip_ui_tabs[3]:
-        st.markdown("#### 📄 복명·보고")
+    if _trip_view=="📄 복명·보고":
+        st.markdown("### 📄 복명·보고")
+        st.caption("승인된 출장의 수행결과와 복명 처리대상을 확인합니다.")
         if _v289_df.empty:
             st.info("복명 처리할 출장 내역이 없습니다.")
         else:
@@ -4727,8 +4750,9 @@ if active_tab == 10:
             )
             st.caption("아래 통합 상세업무 영역에서 복명내용·여비·증빙을 저장하고 출장신청서/복명서를 출력할 수 있습니다.")
 
-    with _trip_ui_tabs[4]:
-        st.markdown("#### 💳 정산관리")
+    if _trip_view=="💳 여비정산":
+        st.markdown("### 💳 여비정산")
+        st.caption("복명 후 여비 정산상태와 지급 진행상황을 확인합니다.")
         if not _v289_df.empty:
             _ss=_v289_df.get("settlement_status",pd.Series([""]*len(_v289_df))).astype(str)
             _sw=_v289_df[~_ss.isin(["정산완료","지급완료"])].copy()
@@ -4745,8 +4769,9 @@ if active_tab == 10:
                 supabase.table("business_trips").update({"settlement_status":_new}).eq("id",_sid).execute()
                 write_audit_log(f"출장 정산상태 변경: {_new}","business_trips",_sid); st.success("저장했습니다."); st.rerun()
 
-    with _trip_ui_tabs[5]:
-        st.markdown("#### 📎 증빙관리")
+    if _trip_view=="📎 증빙관리":
+        st.markdown("### 📎 증빙관리")
+        st.caption("출장별 사진·영수증·수료증 등 등록된 증빙을 확인합니다.")
         if _v289_df.empty:
             st.info("출장 내역이 없습니다.")
         else:
@@ -4767,8 +4792,9 @@ if active_tab == 10:
                 display_table_kr(_files[_fcols],use_container_width=True,hide_index=True)
             st.caption("증빙 업로드·교체와 복명서 사진 자동삽입은 아래 '복명·정산·증빙·문서출력'에서 처리합니다.")
 
-    with _trip_ui_tabs[6]:
-        st.markdown("#### 📊 월별현황")
+    if _trip_view=="📊 월별현황":
+        st.markdown("### 📊 월별현황")
+        st.caption("월별 출장 건수와 여비 현황을 확인합니다.")
         if not _v289_df.empty and "start_at" in _v289_df.columns:
             _tmp=_v289_df.copy(); _tmp["_dt"]=pd.to_datetime(_tmp["start_at"],errors="coerce")
             z1,z2=st.columns(2)
@@ -4867,7 +4893,7 @@ if active_tab == 10:
                 st.info(f"**판정: {_scope}** · 출장시간 {_hours:,.1f}시간 · 등록거리 {_dist:,.1f}km · {_days}일/{_nights}박")
                 st.caption("2026 공무원 여비 기준: 같은 시·군 안의 출장 또는 여행거리 12km 미만은 근무지 내 출장입니다. 근무지 외 출장은 다른 시·군이면서 여행거리 12km 이상인 경우입니다.")
 
-                _public_vehicle=str(rr.get("transport_type",""))=="센터차량"
+                _public_vehicle=str(rr.get("transport_type","")) in ["센터차량","센터차량 동승"]
                 if _is_local:
                     _local_base=20000 if _hours>=4 else 10000
                     _local_default=max(0,_local_base-(10000 if _public_vehicle else 0))
