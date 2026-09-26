@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.3"
+APP_VERSION = "v32.4"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -636,6 +636,33 @@ def filter_employees_for_work(df, reference_date=None):
 
 def can_manage_all_records():
     return CURRENT_ROLE in ("admin", "manager")
+
+def workflow_button_nav(title, options, key, caption="", max_per_row=4):
+    """작은 라디오/탭 대신 사용하는 큰 업무선택 버튼."""
+    if key not in st.session_state or st.session_state.get(key) not in options:
+        st.session_state[key]=options[0]
+
+    with st.container(border=True):
+        st.markdown(f"#### 🧭 {title}")
+        if caption:
+            st.caption(caption)
+
+        for start in range(0,len(options),max_per_row):
+            row_opts=options[start:start+max_per_row]
+            cols=st.columns(len(row_opts))
+            for idx,(col,opt) in enumerate(zip(cols,row_opts),start=start):
+                selected=st.session_state.get(key)==opt
+                label=f"✅ {opt}" if selected else opt
+                with col:
+                    if st.button(
+                        label,
+                        key=f"{key}_btn_{idx}",
+                        type="primary" if selected else "secondary",
+                        use_container_width=True
+                    ):
+                        st.session_state[key]=opt
+
+    return st.session_state.get(key,options[0])
 
 def write_audit_log(action, target_type="", target_id="", detail=""):
     """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
@@ -2386,14 +2413,12 @@ if active_tab == 2:
         _oc3.metric("누적 인정시간",f"{_oh.sum():,.1f}시간")
         _oc4.metric("누적 계산수당",f"{_op.sum():,.0f}원")
 
-    # v31.2: st.tabs는 모든 탭 코드를 동시에 실행하므로 실제 입력폼 분리에 부적합.
-    # 단일 업무영역 선택 방식으로 변경하여 선택한 화면만 렌더링합니다.
-    _ot_view=st.radio(
-        "초과근무 업무",
+    _ot_view=workflow_button_nav(
+        "초과근무 업무 선택",
         ["👤 직원별 현황","📝 초과근무 신청","📋 신청내역"],
-        horizontal=True,
-        key="v312_ot_view",
-        label_visibility="collapsed"
+        key="v324_ot_view",
+        caption="확인하거나 처리할 업무를 큰 버튼으로 선택해 주세요.",
+        max_per_row=3
     )
 
     if _ot_view=="👤 직원별 현황":
@@ -3066,9 +3091,15 @@ if active_tab == 4:
             })
     _lv_sum=pd.DataFrame(_lv_summary)
 
-    _lv_tabs=st.tabs(["👤 직원별 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역"])
+    _lv_view=workflow_button_nav(
+        "연차 업무 선택",
+        ["👤 직원별 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역"],
+        key="v324_leave_view",
+        caption="직원별 현황 확인, 연차 발생·이월, 신청, 사용내역 중 필요한 업무를 선택해 주세요.",
+        max_per_row=4
+    )
 
-    with _lv_tabs[0]:
+    if _lv_view=="👤 직원별 연차현황":
         st.markdown("#### 👤 직원별 연차현황")
         if _lv_emp.empty:
             st.info("등록된 직원이 없습니다.")
@@ -3106,7 +3137,7 @@ if active_tab == 4:
                 _sc=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _sr.columns]
                 display_table_kr(_sr[_sc],use_container_width=True,hide_index=True)
 
-    with _lv_tabs[1]:
+    if _lv_view=="➕ 발생·이월":
         st.markdown("#### ➕ 연차 발생·이월·조정 관리")
         if not _grant_table_ok:
             st.warning("연차 발생대장 테이블이 없습니다. v30.1 SQL을 먼저 실행해 주세요.")
@@ -3184,7 +3215,7 @@ if active_tab == 4:
                         write_audit_log("연차 발생이력 삭제","leave_grants",_gdel)
                         st.success("삭제했습니다."); st.rerun()
 
-    with _lv_tabs[2]:
+    if _lv_view=="📝 연차신청":
         st.markdown("#### 📝 연차·휴가 신청")
         if _lv_emp.empty:
             st.info("등록된 직원이 없습니다.")
@@ -3332,7 +3363,7 @@ html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic N
 """
                 st.components.v1.html(_leave_doc,height=820,scrolling=True)
 
-    with _lv_tabs[3]:
+    if _lv_view=="🗂️ 사용내역":
         st.markdown("#### 🗂️ 연차·휴가 사용내역")
         if _lv_all.empty:
             st.info("등록된 연차·휴가 내역이 없습니다.")
@@ -4647,14 +4678,12 @@ if active_tab == 10:
 - 다른 시·군이고 여행거리 12km 이상이어도 교통여건 등을 고려해 기관장이 근무지 내 출장으로 처리할 수 있는 예외가 있으므로 최종 정산 시 확인합니다.
         """)
 
-    st.markdown("### 🧭 출장 업무 선택")
-    st.caption("아래 업무를 눌러 필요한 화면만 열어 확인하고 처리할 수 있습니다.")
-    _trip_view=st.radio(
-        "출장 세부업무",
+    _trip_view=workflow_button_nav(
+        "출장 업무 선택",
         ["📋 출장현황","📝 신청·변경","✅ 승인관리","📄 복명·보고","💳 여비정산","📎 증빙관리","📊 월별현황"],
-        horizontal=True,
-        key="v320_trip_view",
-        label_visibility="collapsed"
+        key="v324_trip_view",
+        caption="출장 현황부터 신청·승인·복명·정산·증빙까지 원하는 업무를 선택해 주세요.",
+        max_per_row=4
     )
 
     # 출장 원장
