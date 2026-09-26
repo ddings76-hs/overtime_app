@@ -21,9 +21,9 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.0"
+APP_VERSION = "v32.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
-st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
+st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
 # -------------------------------------------------------------------
 # Supabase 클라우드 DB 연결 설정 (Secrets 참조)
@@ -335,7 +335,7 @@ def payload_hash(snapshot, accounting_export):
 if 'logo_b64' not in st.session_state:
     st.session_state.logo_b64 = ""
 
-st.title("🏢 장기요양지원센터 통합 업무관리 시스템 · v31.4")
+st.caption(f"화성시장기요양지원센터 · {APP_VERSION}")
 
 # 사이드바: 회사 로고 업로드 기능
 with st.sidebar:
@@ -615,6 +615,24 @@ def scope_dataframe_to_current_employee(df, emp_col="emp_id"):
 def scope_employee_master(df):
     """직원 계정에서는 employees 마스터도 본인 행만 노출."""
     return scope_dataframe_to_current_employee(df, "emp_id")
+
+def filter_employees_for_work(df, reference_date=None):
+    """업무 입력 선택용 직원: 기준일에 재직 중인 직원만 반환."""
+    if df is None or df.empty:
+        return df
+    out=df.copy()
+    ref=pd.to_datetime(reference_date if reference_date is not None else datetime.now().date(),errors="coerce")
+    if pd.isna(ref):
+        ref=pd.Timestamp(datetime.now().date())
+    if "hire_date" in out.columns:
+        hd=pd.to_datetime(out["hire_date"],errors="coerce")
+        out=out[hd.isna() | (hd.dt.normalize()<=ref.normalize())].copy()
+    if "retire_date" in out.columns:
+        rd=pd.to_datetime(out["retire_date"],errors="coerce")
+        out=out[rd.isna() | (rd.dt.normalize()>=ref.normalize())].copy()
+    elif "employment_status" in out.columns:
+        out=out[out["employment_status"].fillna("재직").astype(str)!="퇴직"].copy()
+    return out
 
 def can_manage_all_records():
     return CURRENT_ROLE in ("admin", "manager")
@@ -1664,6 +1682,28 @@ window.addEventListener("load", function(){
                             st.success("재직상태로 복원했습니다."); st.rerun()
                         except Exception as e: st.error(f"복원 실패: {e}")
 
+                if CURRENT_ROLE=="admin":
+                    with st.expander("🗑️ 테스트·오등록 직원 삭제",expanded=False):
+                        st.warning("실제 근무이력이 있는 직원은 삭제하지 말고 퇴직처리해 주세요. 삭제는 테스트/오등록 직원 정리에만 사용합니다.")
+                        _refs={}
+                        for _tb in ["overtime_records","leave_records","leave_grants","business_trips","monthly_payroll_adjust","employee_history"]:
+                            try:
+                                _refs[_tb]=len(supabase.table(_tb).select("id").eq("emp_id",str(_eid)).limit(2).execute().data or [])
+                            except Exception:
+                                _refs[_tb]=0
+                        _has_ref=any(v>0 for v in _refs.values())
+                        if _has_ref:
+                            st.error("급여·연차·초과근무·출장·인사이력 중 연결된 업무자료가 있어 직원 마스터를 삭제할 수 없습니다. 퇴직처리를 사용해 주세요.")
+                        else:
+                            _del_confirm=st.checkbox(f"{_er.get('emp_name','')} ({_eid}) 직원을 영구 삭제합니다.",key="v321_emp_del_confirm")
+                            if st.button("🗑️ 직원 영구 삭제",type="primary",disabled=not _del_confirm,key="v321_emp_delete"):
+                                try:
+                                    supabase.table("employees").delete().eq("emp_id",str(_eid)).execute()
+                                    write_audit_log("직원 마스터 삭제","employees",str(_eid),str(_er.get("emp_name","")))
+                                    st.success("테스트/오등록 직원을 삭제했습니다."); st.rerun()
+                                except Exception as e:
+                                    st.error(f"직원 삭제 실패: {e}")
+
             with _b:
                 st.markdown("##### 📄 재직·경력증명서 발급")
                 _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True,key="v241_cert_type")
@@ -2369,9 +2409,7 @@ if active_tab == 2:
         st.markdown("### 📝 사전 신청 입력")
         emp_res = supabase.table("employees").select("*").execute()
         df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-        df_emp = scope_employee_master(df_emp)
-
-        df_emp = scope_employee_master(df_emp)
+        df_emp = filter_employees_for_work(scope_employee_master(df_emp))
         if df_emp.empty:
             st.warning("먼저 '직원 등록 및 정보 관리' 탭에서 직원을 등록해야 한다.")
         else:
@@ -2912,7 +2950,7 @@ if active_tab == 4:
     try:
         _lv_er=supabase.table("employees").select("*").execute()
         _lv_emp=pd.DataFrame(_lv_er.data or [])
-        _lv_emp=scope_employee_master(_lv_emp)
+        _lv_emp=filter_employees_for_work(scope_employee_master(_lv_emp))
     except Exception:
         _lv_emp=pd.DataFrame()
 
@@ -3353,9 +3391,7 @@ if active_tab == 6:
 
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = scope_employee_master(df_emp)
-
-    df_emp = scope_employee_master(df_emp)
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pay_date)
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
     df_ot = scope_employee_master(df_ot)
@@ -3811,9 +3847,7 @@ if active_tab == 7:
     
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = scope_employee_master(df_emp)
-
-    df_emp = scope_employee_master(df_emp)
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pd.to_datetime(pay_month_slip+"-01")+pd.offsets.MonthEnd(0))
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
     df_ot = scope_employee_master(df_ot)
@@ -4070,9 +4104,7 @@ if active_tab in (7, 8):
 
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = scope_employee_master(df_emp)
-
-    df_emp = scope_employee_master(df_emp)
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pay_date_print)
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
     df_ot = scope_employee_master(df_ot)
@@ -4570,7 +4602,7 @@ if active_tab == 10:
     try:
         _v289_er=supabase.table("employees").select("*").execute()
         _v289_emp=pd.DataFrame(_v289_er.data or [])
-        _v289_emp=scope_employee_master(_v289_emp)
+        _v289_emp=filter_employees_for_work(scope_employee_master(_v289_emp))
     except Exception:
         _v289_emp=pd.DataFrame()
 
@@ -5173,7 +5205,7 @@ if active_tab == 10:
               <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
               <tr>
                     <td class="label">변경 이력</td>
-                    <td colspan="5" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
+                    <td colspan="6" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
                 </tr>
                 <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
               <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
