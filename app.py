@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.4"
+APP_VERSION = "v32.5"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -730,7 +730,35 @@ hr {margin:1.5rem 0; border-color:#edf0f4;}
 /* 사이드바 */
 section[data-testid="stSidebar"] {border-right:1px solid #e8ecf2;}
 section[data-testid="stSidebar"] .stRadio label {padding:.18rem 0;}
-section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.15rem;}
+section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.45rem;}
+
+/* v32.5: 처음 사용하는 사람도 업무버튼을 바로 찾도록 글자와 클릭영역 확대 */
+[data-testid="stMainBlockContainer"] div[data-testid="stButton"] > button,
+[data-testid="stMainBlockContainer"] div[data-testid="stFormSubmitButton"] > button,
+[data-testid="stMainBlockContainer"] div[data-testid="stDownloadButton"] > button {
+    font-size:1.28rem !important;
+    font-weight:800 !important;
+    min-height:3.25rem !important;
+    line-height:1.25 !important;
+    padding:.65rem .9rem !important;
+}
+
+section[data-testid="stSidebar"] .stRadio label {
+    font-size:1.08rem !important;
+    font-weight:750 !important;
+    padding:.34rem .2rem !important;
+    line-height:1.35 !important;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] label p {
+    font-size:1.08rem !important;
+    font-weight:750 !important;
+}
+
+[data-testid="stMainBlockContainer"] button[role="tab"] p {
+    font-size:1.03rem !important;
+    font-weight:750 !important;
+}
 
 /* 카드 */
 .ui-card {
@@ -1166,20 +1194,25 @@ if active_tab == 1:
             else:
                 st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
 
-    tab_list, tab_card,tab_summary, tab_hradmin, tab_salary, tab_history, tab_docs, tab_secure = st.tabs(
-        ["직원 목록","통합 인사기록카드","직원 종합현황","퇴직·증명서·통합대장","급여·수당 설정","인사이력·경력사항","인사서류","계좌·민감정보"]
+    _hr_view=workflow_button_nav(
+        "직원관리 업무 선택",
+        ["📋 직원 목록","🪪 통합 인사기록카드","📊 직원 종합현황","🚪 퇴직·증명서·통합대장",
+         "💰 급여·수당 설정","🧾 인사이력·경력사항","📁 인사서류","🔐 계좌·민감정보"],
+        key="v325_hr_view",
+        caption="확인하거나 처리할 인사업무를 선택해 주세요. 선택한 업무 화면만 표시됩니다.",
+        max_per_row=4
     )
 
-    with tab_list:
+    if _hr_view=="📋 직원 목록":
         st.markdown("#### 📋 재직 직원 현황")
         if df_emp.empty:
             st.info("등록된 직원이 없습니다.")
         else:
             list_cols=[c for c in ["emp_id","emp_name","dept","position","hire_date","employment_status","retire_date"] if c in df_emp.columns]
             display_table_kr(df_emp[list_cols] if list_cols else df_emp, use_container_width=True, hide_index=True)
-            st.caption("상세 수정은 '인사카드 등록·수정' 탭에서 직원을 선택하여 처리합니다.")
+            st.caption("상세 수정은 위의 '통합 인사기록카드' 버튼을 선택한 뒤 직원을 선택하여 처리합니다.")
 
-    with tab_card:
+    if _hr_view=="🪪 통합 인사기록카드":
         st.markdown("#### 🪪 신규등록 / 기존직원 수정")
         mode=st.radio("작업 구분",["신규 직원 등록","기존 직원 수정"],horizontal=True,key="v21_emp_mode")
         selected_row={}
@@ -1584,7 +1617,7 @@ window.addEventListener("load", function(){
                 )
                 st.components.v1.html(_print_component, height=1120, scrolling=False)
 
-    with tab_summary:
+    if _hr_view=="📊 직원 종합현황":
         st.markdown("#### 👤 직원별 종합 인사현황")
         if df_emp.empty:
             st.info("등록된 직원이 없습니다.")
@@ -1676,7 +1709,7 @@ window.addEventListener("load", function(){
                 if _sum_hist.empty: st.caption("인사이력이 없습니다.")
                 else: display_table_kr(_sum_hist,use_container_width=True,hide_index=True)
 
-    with tab_hradmin:
+    if _hr_view=="🚪 퇴직·증명서·통합대장":
         st.markdown("#### 🧑‍💼 퇴직처리 · 증명서 · 직원 통합대장")
         if df_emp.empty:
             st.info("등록된 직원이 없습니다.")
@@ -2043,7 +2076,7 @@ window.addEventListener("load", function(){
                         _ws.column_dimensions[_col[0].column_letter].width=min(max(_mx+3,10),35)
                 st.download_button("⬇️ 직원 인사 통합대장 Excel",_buf.getvalue(),f"직원_인사_통합대장_{datetime.now().strftime('%Y%m%d')}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
 
-    with tab_salary:
+    if _hr_view=="💰 급여·수당 설정":
         st.markdown("#### 💰 직원별 급여·수당 설정")
         st.caption("기존 직원관리의 급여 기준값을 복원한 화면입니다. 여기서 저장한 값은 기존 급여 계산에서 사용하는 employees 정보를 수정합니다.")
         if df_emp.empty:
@@ -2096,7 +2129,7 @@ window.addEventListener("load", function(){
                     except Exception:
                         st.error("급여·수당 설정을 저장하지 못했습니다. employees 급여 컬럼을 확인해 주세요.")
 
-    with tab_history:
+    if _hr_view=="🧾 인사이력·경력사항":
         st.markdown("#### 🗂️ 직원 인사이력·경력사항")
         if df_emp.empty:
             st.info("직원 등록 후 사용할 수 있습니다.")
@@ -2223,7 +2256,7 @@ window.addEventListener("load", function(){
                     except Exception:
                         st.error("경력사항 저장 실패: v22.0 DB SQL 적용 여부를 확인해 주세요.")
 
-    with tab_docs:
+    if _hr_view=="📁 인사서류":
         st.markdown("#### 📁 직원별 인사서류")
         st.caption("입사서류·계약서·자격증 등을 직원별 비공개 Storage에 보관합니다.")
         if df_emp.empty:
@@ -2352,7 +2385,7 @@ window.addEventListener("load", function(){
                         except Exception:
                             st.error("인사서류 업로드 실패: v22.0 DB/Storage SQL 적용 여부를 확인해 주세요.")
 
-    with tab_secure:
+    if _hr_view=="🔐 계좌·민감정보":
         st.markdown("#### 💳 계좌·민감정보")
         st.warning("주민등록번호와 계좌정보는 관리자 전용 별도 테이블에 저장하며 직원목록에는 표시하지 않습니다.")
         if CURRENT_ROLE!="admin":
@@ -2559,6 +2592,19 @@ if active_tab == 2:
 if active_tab == 3:
     st.header("✅ 초과근무 승인·실적처리")
     st.caption("① 승인대기 확인 → ② 실제 수행시간 입력 → ③ 인정시간·수당 확인 → ④ 승인완료 → ⑤ 급여연계 확인 순서로 처리합니다.")
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 16px;">
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">1. 승인·실적 처리</b><br><span style="color:#667085;">실제 수행시간과 승인상태 확정</span>
+      </div>
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">2. 신청·확인서</b><br><span style="color:#667085;">확정된 초과근무 서식 확인·인쇄</span>
+      </div>
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">3. 급여 연계</b><br><span style="color:#667085;">지급월별 승인수당 급여대장 반영</span>
+      </div>
+    </div>
+    """,unsafe_allow_html=True)
     
     ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
@@ -3478,6 +3524,7 @@ if active_tab == 5:
 # -------------------------------------------------------------------
 if active_tab == 6:
     st.header("📊 통합 급여대장 (수정 및 엑셀)")
+    st.info("① 지급월·차수 선택 → ② 급여 확인·수정 → ③ 저장 → ④ 마감·엑셀 출력 순서로 처리합니다.")
 
     run_col1, run_col2, run_col3 = st.columns([1, 1, 2])
     with run_col1:
@@ -3945,6 +3992,7 @@ if active_tab == 6:
 # -------------------------------------------------------------------
 if active_tab == 7:
     st.header("📄 개별 급여명세서 인쇄")
+    st.info("지급월과 급여대장 차수를 선택한 뒤 직원을 선택하여 명세서를 확인·인쇄합니다.")
 
     _sl1,_sl2=st.columns(2)
     with _sl1:
@@ -4424,6 +4472,7 @@ if active_tab in (7, 8):
 # -------------------------------------------------------------------
 if active_tab == 9:
     st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
+    st.info("연도를 선택하면 월별 급여·수당·공제·사업주부담액을 12개월 누적으로 확인할 수 있습니다.")
     
     c_y9 = st.selectbox("조회 연도 선택", range(datetime.now().year - 2, datetime.now().year + 3), index=2, key="annual_summary_year")
     
