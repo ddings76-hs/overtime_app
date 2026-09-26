@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.1"
+APP_VERSION = "v32.2"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -1684,23 +1684,76 @@ window.addEventListener("load", function(){
 
                 if CURRENT_ROLE=="admin":
                     with st.expander("🗑️ 테스트·오등록 직원 삭제",expanded=False):
-                        st.warning("실제 근무이력이 있는 직원은 삭제하지 말고 퇴직처리해 주세요. 삭제는 테스트/오등록 직원 정리에만 사용합니다.")
-                        _refs={}
-                        for _tb in ["overtime_records","leave_records","leave_grants","business_trips","monthly_payroll_adjust","employee_history"]:
+                        st.warning("실제 근무이력이 있는 직원은 삭제하지 말고 퇴직처리해 주세요. 이 기능은 테스트/오등록 직원 정리 전용입니다.")
+
+                        _blocking_refs={}
+                        for _tb in ["overtime_records","leave_records","leave_grants","business_trips"]:
                             try:
-                                _refs[_tb]=len(supabase.table(_tb).select("id").eq("emp_id",str(_eid)).limit(2).execute().data or [])
+                                _blocking_refs[_tb]=len(
+                                    supabase.table(_tb).select("id").eq("emp_id",str(_eid)).limit(2).execute().data or []
+                                )
                             except Exception:
-                                _refs[_tb]=0
-                        _has_ref=any(v>0 for v in _refs.values())
-                        if _has_ref:
-                            st.error("급여·연차·초과근무·출장·인사이력 중 연결된 업무자료가 있어 직원 마스터를 삭제할 수 없습니다. 퇴직처리를 사용해 주세요.")
+                                _blocking_refs[_tb]=0
+
+                        # 급여조정은 금액이 있는 행만 실급여자료로 판단
+                        try:
+                            _pa_rows=supabase.table("monthly_payroll_adjust").select("*").eq("emp_id",str(_eid)).execute().data or []
+                        except Exception:
+                            _pa_rows=[]
+                        _pa_df=pd.DataFrame(_pa_rows)
+                        _pa_money_cols=[
+                            "base_salary","ot_pay","family_allowance","holiday_bonus","non_taxable","other_allowance",
+                            "national_pension","health_insurance","longterm_care","employment_insurance",
+                            "income_tax","local_tax","other_deduction",
+                            "employer_national_pension","employer_health_insurance","employer_longterm_care",
+                            "employer_employment_insurance","employer_industrial_insurance","retirement_accrual"
+                        ]
+                        if _pa_df.empty:
+                            _pa_nonzero=pd.Series(dtype=bool)
                         else:
-                            _del_confirm=st.checkbox(f"{_er.get('emp_name','')} ({_eid}) 직원을 영구 삭제합니다.",key="v321_emp_del_confirm")
-                            if st.button("🗑️ 직원 영구 삭제",type="primary",disabled=not _del_confirm,key="v321_emp_delete"):
+                            _pa_total=pd.Series(0,index=_pa_df.index,dtype="float64")
+                            for _c in [c for c in _pa_money_cols if c in _pa_df.columns]:
+                                _pa_total=_pa_total+pd.to_numeric(_pa_df[_c],errors="coerce").fillna(0).abs()
+                            _pa_nonzero=_pa_total>0
+
+                        _pay_real_count=int(_pa_nonzero.sum()) if not _pa_df.empty else 0
+                        _pay_zero_count=int((~_pa_nonzero).sum()) if not _pa_df.empty else 0
+                        _has_blocking=any(v>0 for v in _blocking_refs.values()) or _pay_real_count>0
+
+                        c1,c2,c3=st.columns(3)
+                        c1.metric("실업무 연결",f"{sum(_blocking_refs.values()):,}건")
+                        c2.metric("실급여 자료",f"{_pay_real_count:,}건")
+                        c3.metric("0원 급여행",f"{_pay_zero_count:,}건")
+
+                        if _has_blocking:
+                            st.error("실제 초과근무·연차·출장 또는 금액이 있는 급여자료가 연결되어 있어 삭제할 수 없습니다. 해당 직원은 퇴직처리를 사용해 주세요.")
+                        else:
+                            if _pay_zero_count:
+                                st.info(f"금액이 전부 0원인 급여 저장행 {_pay_zero_count}건은 테스트/빈 데이터로 보고 직원 삭제 시 함께 정리합니다.")
+                            st.caption("테스트/오등록 직원의 인사이력도 함께 삭제됩니다.")
+                            _typed=st.text_input("삭제 확인용 사번 입력",key="v322_emp_delete_id")
+                            _del_confirm=st.checkbox(
+                                f"{_er.get('emp_name','')} ({_eid}) 직원과 테스트성 연결자료를 영구 삭제합니다.",
+                                key="v322_emp_del_confirm"
+                            )
+                            _can_delete=_del_confirm and _typed.strip()==str(_eid)
+                            if st.button("🗑️ 테스트·오등록 직원 영구 삭제",type="primary",disabled=not _can_delete,key="v322_emp_delete"):
                                 try:
+                                    # 금액이 모두 0원인 급여 조정행만 정리
+                                    if _pay_zero_count:
+                                        for _r in _pa_df.loc[~_pa_nonzero].to_dict("records"):
+                                            if _r.get("id") is not None:
+                                                supabase.table("monthly_payroll_adjust").delete().eq("id",_r.get("id")).execute()
+
+                                    try:
+                                        supabase.table("employee_history").delete().eq("emp_id",str(_eid)).execute()
+                                    except Exception:
+                                        pass
+
                                     supabase.table("employees").delete().eq("emp_id",str(_eid)).execute()
-                                    write_audit_log("직원 마스터 삭제","employees",str(_eid),str(_er.get("emp_name","")))
-                                    st.success("테스트/오등록 직원을 삭제했습니다."); st.rerun()
+                                    write_audit_log("테스트/오등록 직원 삭제","employees",str(_eid),str(_er.get("emp_name","")))
+                                    st.success("테스트/오등록 직원과 0원 급여 연결자료를 삭제했습니다.")
+                                    st.rerun()
                                 except Exception as e:
                                     st.error(f"직원 삭제 실패: {e}")
 
@@ -3844,26 +3897,33 @@ if active_tab == 6:
 # -------------------------------------------------------------------
 if active_tab == 7:
     st.header("📄 개별 급여명세서 인쇄")
-    
+
+    _sl1,_sl2=st.columns(2)
+    with _sl1:
+        pay_month_slip = st.date_input("명세서 지급 월 선택", datetime.now(), key="slip_month").strftime("%Y-%m")
+    with _sl2:
+        slip_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="slip_run_no")
+
     emp_res = supabase.table("employees").select("*").execute()
     df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
-    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pd.to_datetime(pay_month_slip+"-01")+pd.offsets.MonthEnd(0))
+    _slip_ref_date=pd.to_datetime(pay_month_slip+"-01")+pd.offsets.MonthEnd(0)
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), _slip_ref_date)
+
     ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
     df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
-    df_ot = scope_employee_master(df_ot)
+    df_ot = scope_dataframe_to_current_employee(df_ot)
 
     if df_emp.empty:
-        st.warning("등록된 직원이 없다.")
+        st.warning("선택한 지급월에 재직 중인 직원이 없습니다.")
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            pay_month_slip = st.date_input("명세서 지급 월 선택", datetime.now(), key="slip_month").strftime("%Y-%m")
-            emp_slip_list = df_emp['emp_name'] + " (" + df_emp['position'] + " / " + df_emp['emp_id'] + ")"
-            selected_slip_str = st.selectbox("직원 선택", emp_slip_list, key="slip_emp")
-            selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
-            emp = df_emp[df_emp['emp_id'] == selected_slip_id].iloc[0]
-        with col2:
-            slip_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="slip_run_no")
+        emp_slip_list = (
+            df_emp["emp_name"].fillna("").astype(str)
+            + " (" + df_emp["position"].fillna("").astype(str)
+            + " / " + df_emp["emp_id"].astype(str) + ")"
+        )
+        selected_slip_str = st.selectbox("직원 선택", emp_slip_list, key="slip_emp")
+        selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
+        emp = df_emp[df_emp["emp_id"].astype(str) == selected_slip_id].iloc[0]
 
         current_hourly_wage = int(emp['hourly_wage'])
 
@@ -5713,6 +5773,27 @@ if active_tab == 13:
             return float(pd.to_numeric(df[c],errors="coerce").fillna(0).sum()) if c else 0.0
 
         _pay_all=_load20("monthly_payroll_adjust")
+
+        # v32.2: 실제 급여/공제/사업주부담액이 전부 0원인 빈 저장행 제외
+        _pay_money_cols=[
+            "base_salary","ot_pay","family_allowance","holiday_bonus","non_taxable","other_allowance",
+            "national_pension","health_insurance","longterm_care","employment_insurance",
+            "income_tax","local_tax","other_deduction",
+            "employer_national_pension","employer_health_insurance","employer_longterm_care",
+            "employer_employment_insurance","employer_industrial_insurance","retirement_accrual"
+        ]
+        def _meaningful_pay_rows20(df):
+            if df is None or df.empty:
+                return df
+            cols=[c for c in _pay_money_cols if c in df.columns]
+            if not cols:
+                return df
+            total=pd.Series(0,index=df.index,dtype="float64")
+            for c in cols:
+                total=total+pd.to_numeric(df[c],errors="coerce").fillna(0).abs()
+            return df[total>0].copy()
+
+        _pay_all=_meaningful_pay_rows20(_pay_all)
         _lv_all=_load20("leave_records")
         _ot_all=_load20("overtime_records")
         _tr_all=_load20("business_trips")
@@ -5757,6 +5838,7 @@ if active_tab == 13:
             st.markdown("#### 월간 상세자료")
             m1,m2,m3,m4=st.tabs(["급여","연차","초과근무","출장"])
             with m1:
+                st.caption("※ 급여·공제·사업주부담액이 모두 0원인 빈 저장행은 월간 상세자료에서 제외합니다.")
                 display_table_kr(_pay,use_container_width=True,hide_index=True)
             with m2:
                 _lv_view=employee_filter_ui(_lv,"v201_report_leave_emp","연차 직원 검색")
