@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v31.8"
+APP_VERSION = "v31.9"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title="화성시장기요양지원센터 통합 업무관리 시스템 · v31.4", layout="wide")
 
@@ -4522,7 +4522,7 @@ if active_tab == 10:
     _rq1.metric("4시간 이상","20,000원")
     _rq2.metric("4시간 미만","10,000원")
     _rq3.metric("국내출장 일비","25,000원/일")
-    _rq4.metric("국내출장 식비","20,000원/일")
+    _rq4.metric("근무지외 식비","25,000원/일")
     st.caption("센터차량 이용 시 단시간 출장여비 10,000원 감액 · 숙박 실비 상한: 광역시 80,000원 / 그 밖의 지역 70,000원")
 
     _trip_ui_tabs = st.tabs([
@@ -4606,11 +4606,10 @@ if active_tab == 10:
             _fuel=m3.selectbox("자차 유종",["해당없음","가솔린","디젤","LPG"],disabled=(_transport!="자차"),key="v289_fuel")
             _sdt=datetime.combine(_sd,_st); _edt=datetime.combine(_ed,_et)
             _hours=max(0,(_edt-_sdt).total_seconds()/3600)
-            _base=20000 if _hours>=4 else (10000 if _hours>2 else 0)
+            _base=20000 if _hours>=4 else 10000
             if _transport=="센터차량": _base=max(0,_base-10000)
             st.metric("단시간 출장여비 기준(참고)",f"{_base:,}원")
-            if _hours<=2:
-                st.caption("2시간 이내 출장은 규정에 따라 실교통비 지급 가능 여부를 별도로 확인합니다.")
+            st.caption("근무지 내 출장으로 판정되는 경우의 정액 참고값입니다. 최종 근무지 내·외 판정은 같은 시·군 여부와 여행거리 12km 기준을 함께 확인합니다.")
             _note=st.text_area("비고 / 출장 사전 특이사항",key="v289_note")
             if st.button("🚗 출장 신청 등록",type="primary",use_container_width=True,disabled=not has_permission("trip_write"),key="v289_apply"):
                 if not _purpose or not _dest: st.warning("출장목적과 출장지를 입력해 주세요.")
@@ -4851,25 +4850,63 @@ if active_tab == 10:
                 )
 
                 st.markdown("##### 💰 여비 정산")
-                e1,e2,e3,e4 = st.columns(4)
-                with e1:
-                    transport_cost = st.number_input("교통비/자가차량 운임", min_value=0, step=1000, value=int(rr.get("transport_cost",0) or 0))
-                with e2:
-                    toll_cost = st.number_input("통행료", min_value=0, step=1000, value=int(rr.get("toll_cost",0) or 0))
-                with e3:
-                    lodging_cost = st.number_input("숙박비", min_value=0, step=1000, value=int(rr.get("lodging_cost",0) or 0))
-                with e4:
-                    other_cost = st.number_input("기타 증빙경비", min_value=0, step=1000, value=int(rr.get("other_cost",0) or 0))
+                _ts=pd.to_datetime(rr.get("start_at"),errors="coerce")
+                _te=pd.to_datetime(rr.get("end_at"),errors="coerce")
+                _hours=max(0.0,(_te-_ts).total_seconds()/3600) if pd.notna(_ts) and pd.notna(_te) else 0.0
+                _days=max(1,(_te.date()-_ts.date()).days+1) if pd.notna(_ts) and pd.notna(_te) else 1
+                _nights=max(0,(_te.date()-_ts.date()).days) if pd.notna(_ts) and pd.notna(_te) else 0
+                _dist=float(rr.get("distance_km",0) or 0)
+                _same_area=st.radio(
+                    "출장 지역 기준",
+                    ["같은 시·군 안","다른 시·군"],
+                    horizontal=True,
+                    key=f"v319_area_{rid}"
+                )
+                _is_local=(_same_area=="같은 시·군 안") or (_dist<12)
+                _scope="근무지 내 출장" if _is_local else "근무지 외 출장"
+                st.info(f"**판정: {_scope}** · 출장시간 {_hours:,.1f}시간 · 등록거리 {_dist:,.1f}km · {_days}일/{_nights}박")
+                st.caption("2026 공무원 여비 기준: 같은 시·군 안의 출장 또는 여행거리 12km 미만은 근무지 내 출장입니다. 근무지 외 출장은 다른 시·군이면서 여행거리 12km 이상인 경우입니다.")
 
-                f1,f2 = st.columns(2)
-                with f1:
-                    daily_cost = st.number_input("일비", min_value=0, step=1000, value=int(rr.get("daily_cost", rr.get("rule_base_amount",0)) or 0))
-                with f2:
-                    meal_cost = st.number_input("식비", min_value=0, step=1000, value=int(rr.get("meal_cost",0) or 0))
+                _public_vehicle=str(rr.get("transport_type",""))=="센터차량"
+                if _is_local:
+                    _local_base=20000 if _hours>=4 else 10000
+                    _local_default=max(0,_local_base-(10000 if _public_vehicle else 0))
+                    st.markdown("###### 근무지 내 출장 정산")
+                    q1,q2,q3=st.columns(3)
+                    q1.metric("기준 정액",f"{_local_base:,}원")
+                    q2.metric("공용차량 감액",f"{10000 if _public_vehicle else 0:,}원")
+                    q3.metric("권장 지급액",f"{_local_default:,}원")
+                    transport_cost=0
+                    toll_cost=0
+                    lodging_cost=0
+                    meal_cost=0
+                    other_cost=st.number_input("기타 인정경비",min_value=0,step=1000,value=int(rr.get("other_cost",0) or 0),key=f"v319_other_in_{rid}")
+                    daily_cost=st.number_input("근무지 내 출장여비",min_value=0,step=1000,value=int(_local_default),key=f"v319_local_{rid}")
+                    st.caption("4시간 이상 20,000원 / 4시간 미만 10,000원. 센터차량 등 공용차량 이용 시 10,000원 감액합니다.")
+                else:
+                    st.markdown("###### 근무지 외 출장 정산")
+                    _daily_default=25000*_days
+                    if _public_vehicle:
+                        _daily_default=int(_daily_default/2)
+                    _meal_default=25000*_days
+                    e1,e2,e3,e4=st.columns(4)
+                    with e1:
+                        transport_cost=st.number_input("운임(실비)",min_value=0,step=1000,value=int(rr.get("transport_cost",0) or 0),key=f"v319_trans_{rid}")
+                    with e2:
+                        toll_cost=st.number_input("통행료(실비)",min_value=0,step=1000,value=int(rr.get("toll_cost",0) or 0),key=f"v319_toll_{rid}")
+                    with e3:
+                        lodging_cost=st.number_input("숙박비(실비)",min_value=0,step=1000,value=int(rr.get("lodging_cost",0) or 0),key=f"v319_lodge_{rid}")
+                    with e4:
+                        other_cost=st.number_input("기타 인정경비",min_value=0,step=1000,value=int(rr.get("other_cost",0) or 0),key=f"v319_other_out_{rid}")
+                    f1,f2=st.columns(2)
+                    with f1:
+                        daily_cost=st.number_input("일비",min_value=0,step=1000,value=int(_daily_default),key=f"v319_daily_{rid}")
+                    with f2:
+                        meal_cost=st.number_input("식비",min_value=0,step=1000,value=int(_meal_default),key=f"v319_meal_{rid}")
+                    st.caption("2026 공무원 국내여비 지급표 기준: 일비 25,000원/일, 식비 25,000원/일. 공용차량 이용 시 일비는 1/2. 숙박비는 실비로 서울 100,000원, 광역시 80,000원, 그 밖의 지역 70,000원 상한을 확인합니다.")
 
-                total_trip_cost = int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
-                st.metric("정산 합계", f"{total_trip_cost:,}원")
-                st.caption("국내여비 기준표: 모든 직원 일비 25,000원/일, 식비 20,000원/일, 숙박료 실비(광역시 상한 80,000원, 그 밖의 지역 70,000원). 별도 단시간 출장여비 기준도 함께 적용되므로 담당자 확인 후 확정하도록 구성했습니다.")
+                total_trip_cost=int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
+                st.metric("정산 합계",f"{total_trip_cost:,}원")
 
                 if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True, disabled=not has_permission("trip_settle")):
                     supabase.table("business_trips").update({
@@ -4904,8 +4941,8 @@ if active_tab == 10:
         - 출장여행시간 **4시간 이상 20,000원 / 4시간 미만 10,000원**
         - 보행 가능 거리나 **2시간 이내는 실교통비 지급 가능**
         - 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
-        - 국내여비 기준표: 일비 **25,000원/일**, 식비 **20,000원/일**
-        - 숙박료: 실비, 상한 **광역시 80,000원 / 그 밖의 지역 70,000원**
+        - 공무원 국내여비 지급표: 일비 **25,000원/일**, 식비 **25,000원/일**
+        - 숙박료: 실비, 상한 **서울 100,000원 / 광역시 80,000원 / 그 밖의 지역 70,000원**
         - 자가차량 운임: 총거리(km)와 유류비 기준으로 산정하며 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
         - 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
 
