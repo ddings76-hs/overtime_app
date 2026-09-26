@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.6"
+APP_VERSION = "v32.7"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -760,14 +760,6 @@ section[data-testid="stSidebar"] div[role="radiogroup"] label p {
     font-weight:750 !important;
 }
 
-/* 카드 */
-.ui-card {
-    background:#fff; border:1px solid #e4e9f0; border-radius:14px;
-    padding:16px 18px; box-shadow:0 2px 10px rgba(16,24,40,.035); margin-bottom:12px;
-}
-.ui-eyebrow {font-size:.78rem; color:#667085; font-weight:700; margin-bottom:4px;}
-.ui-title {font-size:1.12rem; font-weight:750; color:#172033;}
-.ui-desc {font-size:.88rem; color:#667085; margin-top:5px; line-height:1.55;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -887,14 +879,9 @@ if CURRENT_ROLE == "employee":
         st.error("이 계정에 직원 사번이 연결되어 있지 않습니다. 관리자에게 계정 연결을 요청해 주세요.")
 
 
-st.markdown(
-    f"""<div class="ui-card">
-    <div class="ui-eyebrow">{menu_group.replace('👥 ','').replace('⏱️ ','').replace('💰 ','').replace('🚗 ','').replace('🏠 ','')} · 업무관리</div>
-    <div class="ui-title">{menu}</div>
-    <div class="ui-desc">{desc}</div>
-    </div>""",
-    unsafe_allow_html=True
-)
+# v32.7: 중복 안내카드 제거, 현재 위치만 한 줄로 표시
+_breadcrumb_group=menu_group.replace("👥 ","").replace("⏱️ ","").replace("💰 ","").replace("🚗 ","").replace("🏠 ","")
+st.caption(f"📍 {_breadcrumb_group} › {menu}")
 
 # -------------------------------------------------------------------
 # TAB 0: v19 직원 마이페이지 / 관리자 통합 대시보드
