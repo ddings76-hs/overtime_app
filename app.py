@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.7"
+APP_VERSION = "v32.8"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -60,9 +60,18 @@ def _user_value(user, key, default=""):
         return user.get(key, default)
     return getattr(user, key, default)
 
+def _app_metadata(user):
+    meta = _user_value(user, "app_metadata", {})
+    return dict(meta) if isinstance(meta, dict) else {}
+
 def _user_metadata(user):
-    meta = _user_value(user, "user_metadata", {})
-    return meta if isinstance(meta, dict) else {}
+    # 이름 등 표시 정보만 사용자 메타데이터에서 읽고 권한/사번은 관리자 정보만 신뢰한다.
+    profile = _user_value(user, "user_metadata", {})
+    meta = dict(profile) if isinstance(profile, dict) else {}
+    trusted = _app_metadata(user)
+    meta["role"] = str(trusted.get("role", "") or "").strip()
+    meta["emp_id"] = str(trusted.get("emp_id", "") or "").strip()
+    return meta
 
 def _role_label(role):
     return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
@@ -157,10 +166,42 @@ if st.session_state.auth_user is None:
     st.caption("계정 발급 및 권한 변경은 시스템 관리자가 처리합니다.")
     st.stop()
 
+# 매 실행에서 서버가 확인한 계정으로 권한을 판정한다.
+try:
+    _verified_user = _auth_user_obj(supabase.auth.get_user())
+    if _verified_user is None:
+        raise RuntimeError("인증된 사용자 없음")
+    st.session_state.auth_user = _verified_user
+except Exception:
+    st.error("로그인 정보를 확인할 수 없습니다. 다시 로그인해 주세요.")
+    if st.button("로그인 화면으로", key="auth_verify_reset"):
+        st.session_state.auth_user = None
+        st.session_state.auth_role = ""
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
+        st.rerun()
+    st.stop()
+
 CURRENT_USER = st.session_state.auth_user
 CURRENT_EMAIL = str(_user_value(CURRENT_USER, "email", ""))
 CURRENT_META = _user_metadata(CURRENT_USER)
-CURRENT_ROLE = str(st.session_state.get("auth_role", CURRENT_META.get("role", "viewer")))
+CURRENT_ROLE = CURRENT_META.get("role", "")
+st.session_state.auth_role = CURRENT_ROLE
+if CURRENT_ROLE not in {"admin", "manager", "employee", "viewer"} or (
+    CURRENT_ROLE == "employee" and not CURRENT_META.get("emp_id")
+):
+    st.warning("계정의 업무 권한 또는 직원 사번이 설정되지 않았습니다. 관리자에게 확인해 주세요.")
+    if st.button("로그아웃", key="unassigned_role_logout"):
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+        st.session_state.auth_user = None
+        st.session_state.auth_role = ""
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
+        st.rerun()
+    st.stop()
 CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -585,7 +626,7 @@ def auth_diagnostic():
         u=supabase.auth.get_user()
         user=getattr(u,"user",None)
         if user:
-            meta=getattr(user,"user_metadata",{}) or {}
+            meta=_user_metadata(user)
             result.update({
                 "authenticated":True,
                 "email":getattr(user,"email","") or "",
@@ -5642,14 +5683,14 @@ if active_tab == 12:
 
     account_rows = []
     for u in _users:
-        meta = _auth_field(u, "user_metadata", {}) or {}
+        meta = _user_metadata(u)
         account_rows.append({
             "user_id": str(_auth_field(u, "id", "")),
             "이메일": str(_auth_field(u, "email", "")),
             "이름": str(meta.get("name", "")),
             "사번": str(meta.get("emp_id", "")),
-            "권한": _role_label(str(meta.get("role", "employee"))),
-            "role_code": str(meta.get("role", "employee")),
+            "권한": _role_label(str(meta.get("role", ""))) if meta.get("role") else "미설정",
+            "role_code": str(meta.get("role", "")),
             "최근로그인": str(_auth_field(u, "last_sign_in_at", "") or ""),
             "계정상태": "중지" if str(_auth_field(u, "banned_until", "") or "") else "사용",
         })
@@ -5712,9 +5753,11 @@ if active_tab == 12:
                             "email_confirm": True,
                             "user_metadata": {
                                 "name": str(selected_emp.get("emp_name","")),
-                                "emp_id": str(selected_emp.get("emp_id","")),
                                 "dept": str(selected_emp.get("dept","")),
                                 "position": str(selected_emp.get("position","")),
+                            },
+                            "app_metadata": {
+                                "emp_id": selected_emp_id,
                                 "role": role_map[new_role_label],
                             }
                         })
@@ -5738,17 +5781,21 @@ if active_tab == 12:
             target_uid = row["user_id"]
             role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
             labels = ["직원","담당자","조회자","관리자"]
-            current_label = role_label_map.get(row["role_code"], "직원")
+            current_label = role_label_map.get(row["role_code"], "조회자")
             new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
             role_code_map = {"직원":"employee","담당자":"manager","조회자":"viewer","관리자":"admin"}
 
             if st.button("권한 저장", type="primary", use_container_width=True, key="admin_role_save"):
                 try:
-                    # 기존 user_metadata를 유지하면서 role만 변경
-                    target_user = next((u for u in _users if str(_auth_field(u,"id","")) == target_uid), None)
-                    meta = dict(_auth_field(target_user, "user_metadata", {}) or {})
+                    # 최신 관리자 메타데이터의 사번 등은 유지하고 권한만 변경한다.
+                    target_user = _auth_user_obj(supabase_admin.auth.admin.get_user_by_id(target_uid))
+                    if target_user is None:
+                        raise RuntimeError("변경할 계정 정보를 확인할 수 없습니다.")
+                    meta = _app_metadata(target_user)
                     meta["role"] = role_code_map[new_role2]
-                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"user_metadata": meta})
+                    if meta["role"] == "employee" and not str(meta.get("emp_id", "") or "").strip():
+                        raise ValueError("직원 권한을 설정하려면 관리자 정보에 사번이 먼저 등록되어야 합니다.")
+                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"app_metadata": meta})
                     write_audit_log("계정 권한 변경", "auth.users", target_uid, f"{role_email}: {new_role2}")
                     st.success("권한을 변경했습니다. 해당 사용자는 다음 로그인부터 변경된 권한이 적용됩니다.")
                     st.rerun()
