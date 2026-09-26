@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.5"
+APP_VERSION = "v32.6"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -5842,6 +5842,7 @@ if active_tab == 12:
 # TAB 13: v20 관리자 통합 통계·보고서
 if active_tab == 13:
     st.subheader("📊 관리자 통합 통계·보고서")
+    st.caption("월간·연간 현황, 데이터 점검, Excel 보고서를 큰 업무버튼으로 선택해 확인할 수 있습니다.")
     if not can_manage_all_records():
         st.warning("관리자 또는 담당자만 이용할 수 있습니다.")
     else:
@@ -5916,9 +5917,15 @@ if active_tab == 13:
                _sum20(_pot,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"]),
                _sum20(_ptr,["total_cost"])]
 
-        tab_month,tab_year,tab_check,tab_export=st.tabs(["월간 현황","연간 현황","데이터 점검","Excel 통합보고서"])
+        _report_view=workflow_button_nav(
+            "관리자 통계·보고서 업무 선택",
+            ["📅 월간 현황","📈 연간 현황","🔎 데이터 점검","📥 Excel 통합보고서"],
+            key="v326_report_view",
+            caption="확인할 보고서 종류를 선택해 주세요. 선택한 화면만 표시됩니다.",
+            max_per_row=4
+        )
 
-        with tab_month:
+        if _report_view=="📅 월간 현황":
             st.markdown(f"#### {_year}년 {_month}월 통합 현황")
             st.caption("※ 초과근무 월간 통계는 실제 근무일(1일~말일) 기준입니다. 급여 연계의 전월 25일~당월 24일 기준과는 다릅니다.")
             a,b,c,d=st.columns(4)
@@ -5931,19 +5938,29 @@ if active_tab == 13:
             d.metric("출장비",f"{int(_tr_sum):,}원" if _tr_sum else f"{len(_tr)}건",
                      delta=f"{int(_tr_sum-_prev[3]):+,}원 전월대비")
             st.markdown("#### 월간 상세자료")
-            m1,m2,m3,m4=st.tabs(["급여","연차","초과근무","출장"])
-            with m1:
+            _month_detail_view=workflow_button_nav(
+                "월간 상세자료 선택",
+                ["💰 급여","🌴 연차","⏱️ 초과근무","🚗 출장"],
+                key="v326_month_detail",
+                caption="선택한 업무의 월간 상세자료만 표시합니다.",
+                max_per_row=4
+            )
+
+            if _month_detail_view=="💰 급여":
                 st.caption("※ 급여·공제·사업주부담액이 모두 0원인 빈 저장행은 월간 상세자료에서 제외합니다.")
                 display_table_kr(_pay,use_container_width=True,hide_index=True)
-            with m2:
-                _lv_view=employee_filter_ui(_lv,"v201_report_leave_emp","연차 직원 검색")
-                display_table_kr(_lv_view,use_container_width=True,hide_index=True)
-            with m3:
-                _ot_view=employee_filter_ui(_ot,"v201_report_ot_emp","초과근무 직원 검색")
-                display_table_kr(_ot_view,use_container_width=True,hide_index=True)
-            with m4:
-                _tr_view=employee_filter_ui(_tr,"v201_report_trip_emp","출장 직원 검색")
-                display_table_kr(_tr_view,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="🌴 연차":
+                _lv_report_view=employee_filter_ui(_lv,"v201_report_leave_emp","연차 직원 검색")
+                display_table_kr(_lv_report_view,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="⏱️ 초과근무":
+                _ot_report_view=employee_filter_ui(_ot,"v201_report_ot_emp","초과근무 직원 검색")
+                display_table_kr(_ot_report_view,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="🚗 출장":
+                _tr_report_view=employee_filter_ui(_tr,"v201_report_trip_emp","출장 직원 검색")
+                display_table_kr(_tr_report_view,use_container_width=True,hide_index=True)
 
             st.markdown("#### 🔎 연차·초과근무·출장 기간 검색")
             st.caption("예: 시작월 3월 / 종료월 5월을 선택하면 해당 연도 3월 1일부터 5월 말일까지 조회합니다.")
@@ -5974,18 +5991,27 @@ if active_tab == 13:
                 _rtr=_range20(_tr_all,["start_at","start_date","created_at"])
 
                 st.caption(f"조회기간: {_range_start} ~ {_range_end}")
-                _r1,_r2,_r3=st.tabs(["연차 기간조회","초과근무 기간조회","출장 기간조회"])
-                with _r1:
+                _range_view=workflow_button_nav(
+                    "기간조회 업무 선택",
+                    ["🌴 연차 기간조회","⏱️ 초과근무 기간조회","🚗 출장 기간조회"],
+                    key="v326_range_view",
+                    caption="조회할 업무를 선택해 주세요.",
+                    max_per_row=3
+                )
+
+                if _range_view=="🌴 연차 기간조회":
                     _rlv_view=employee_filter_ui(_rlv,"v202_range_leave_emp","연차 직원 검색")
                     display_table_kr(_rlv_view,use_container_width=True,hide_index=True)
-                with _r2:
+
+                if _range_view=="⏱️ 초과근무 기간조회":
                     _rot_view=employee_filter_ui(_rot,"v202_range_ot_emp","초과근무 직원 검색")
                     display_table_kr(_rot_view,use_container_width=True,hide_index=True)
-                with _r3:
+
+                if _range_view=="🚗 출장 기간조회":
                     _rtr_view=employee_filter_ui(_rtr,"v202_range_trip_emp","출장 직원 검색")
                     display_table_kr(_rtr_view,use_container_width=True,hide_index=True)
 
-        with tab_year:
+        if _report_view=="📈 연간 현황":
             rows=[]
             for mm in range(1,13):
                 ym=f"{_year:04d}-{mm:02d}"
@@ -6003,7 +6029,7 @@ if active_tab == 13:
             st.line_chart(_chart.set_index("월번호")[["연차사용일수","초과근무시간"]])
             st.bar_chart(_chart.set_index("월번호")[["급여총액","출장비"]])
 
-        with tab_check:
+        if _report_view=="🔎 데이터 점검":
             st.markdown("#### ⚠️ 데이터 점검")
             issues=[]
             if not _pay.empty:
@@ -6031,7 +6057,7 @@ if active_tab == 13:
             if issues: display_table_kr(pd.DataFrame(issues),use_container_width=True,hide_index=True)
             else: st.success("선택한 월 기준 주요 데이터 점검에서 이상 항목이 발견되지 않았습니다.")
 
-        with tab_export:
+        if _report_view=="📥 Excel 통합보고서":
             st.markdown("#### 📥 월간·연간 통합보고서")
             try:
                 from io import BytesIO
