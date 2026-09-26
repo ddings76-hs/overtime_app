@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.2"
+APP_VERSION = "v32.3"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -1659,9 +1659,9 @@ window.addEventListener("load", function(){
             _opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
             _sel=st.selectbox("대상 직원",list(_opts.keys()),key="v240_emp")
             _er=_opts[_sel]; _eid=str(_er.get("emp_id",""))
-            _a,_b,_c=st.tabs(["퇴직처리","재직·경력증명서","직원 통합대장"])
+            _tab_retire,_tab_cert,_tab_ledger=st.tabs(["퇴직처리","재직·경력증명서","직원 통합대장"])
 
-            with _a:
+            with _tab_retire:
                 st.caption("퇴직처리 후에도 기존 급여·연차·출장 등 업무 이력은 보존됩니다.")
                 with st.form("v240_retire"):
                     _rd=st.date_input("퇴직일",value=datetime.now().date())
@@ -1712,8 +1712,8 @@ window.addEventListener("load", function(){
                             _pa_nonzero=pd.Series(dtype=bool)
                         else:
                             _pa_total=pd.Series(0,index=_pa_df.index,dtype="float64")
-                            for _c in [c for c in _pa_money_cols if c in _pa_df.columns]:
-                                _pa_total=_pa_total+pd.to_numeric(_pa_df[_c],errors="coerce").fillna(0).abs()
+                            for _pay_col in [c for c in _pa_money_cols if c in _pa_df.columns]:
+                                _pa_total=_pa_total+pd.to_numeric(_pa_df[_pay_col],errors="coerce").fillna(0).abs()
                             _pa_nonzero=_pa_total>0
 
                         _pay_real_count=int(_pa_nonzero.sum()) if not _pa_df.empty else 0
@@ -1724,6 +1724,23 @@ window.addEventListener("load", function(){
                         c1.metric("실업무 연결",f"{sum(_blocking_refs.values()):,}건")
                         c2.metric("실급여 자료",f"{_pay_real_count:,}건")
                         c3.metric("0원 급여행",f"{_pay_zero_count:,}건")
+
+                        with st.expander("🔎 삭제 차단 자료 상세",expanded=False):
+                            _ref_labels={
+                                "overtime_records":"초과근무",
+                                "leave_records":"연차 사용",
+                                "leave_grants":"연차 발생·조정",
+                                "business_trips":"출장"
+                            }
+                            _ref_rows=[
+                                {"구분":_ref_labels.get(_k,_k),"건수":int(_v)}
+                                for _k,_v in _blocking_refs.items()
+                            ]
+                            _ref_rows += [
+                                {"구분":"급여자료(금액 있음)","건수":int(_pay_real_count)},
+                                {"구분":"급여자료(전부 0원)","건수":int(_pay_zero_count)}
+                            ]
+                            display_table_kr(pd.DataFrame(_ref_rows),use_container_width=True,hide_index=True)
 
                         if _has_blocking:
                             st.error("실제 초과근무·연차·출장 또는 금액이 있는 급여자료가 연결되어 있어 삭제할 수 없습니다. 해당 직원은 퇴직처리를 사용해 주세요.")
@@ -1757,7 +1774,7 @@ window.addEventListener("load", function(){
                                 except Exception as e:
                                     st.error(f"직원 삭제 실패: {e}")
 
-            with _b:
+            with _tab_cert:
                 st.markdown("##### 📄 재직·경력증명서 발급")
                 _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True,key="v241_cert_type")
                 _purpose=st.text_input("용도",value="제출용",key="v241_cert_purpose")
@@ -1984,7 +2001,7 @@ window.addEventListener("load", function(){
 
                 st.info("증명서 관리: 발급·검색·재출력·취소·Excel 발급대장까지 연결되었습니다. 실제 직인 이미지 자동 삽입은 기존 로고/보안 설정과 분리하여 추후 선택 기능으로 적용합니다.")
 
-            with _c:
+            with _tab_ledger:
                 _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
                 _cols=[x for x in ["사번","성명","부서","직위","입사일","퇴사일","재직상태","연락처","이메일","주소"] if x in _ledger.columns]
                 st.dataframe(_ledger[_cols],use_container_width=True,hide_index=True)
