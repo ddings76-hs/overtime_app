@@ -21,7 +21,7 @@ import json
 
 TRIP_STORAGE_BUCKET = "business-trip-files"
 APP_ASSET_BUCKET = "app-assets"
-APP_VERSION = "v32.8"
+APP_VERSION = "v32.7.1"
 COMPANY_LOGO_PATH = "branding/company_logo.png"
 st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
 
@@ -60,18 +60,9 @@ def _user_value(user, key, default=""):
         return user.get(key, default)
     return getattr(user, key, default)
 
-def _app_metadata(user):
-    meta = _user_value(user, "app_metadata", {})
-    return dict(meta) if isinstance(meta, dict) else {}
-
 def _user_metadata(user):
-    # 이름 등 표시 정보만 사용자 메타데이터에서 읽고 권한/사번은 관리자 정보만 신뢰한다.
-    profile = _user_value(user, "user_metadata", {})
-    meta = dict(profile) if isinstance(profile, dict) else {}
-    trusted = _app_metadata(user)
-    meta["role"] = str(trusted.get("role", "") or "").strip()
-    meta["emp_id"] = str(trusted.get("emp_id", "") or "").strip()
-    return meta
+    meta = _user_value(user, "user_metadata", {})
+    return meta if isinstance(meta, dict) else {}
 
 def _role_label(role):
     return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
@@ -166,42 +157,10 @@ if st.session_state.auth_user is None:
     st.caption("계정 발급 및 권한 변경은 시스템 관리자가 처리합니다.")
     st.stop()
 
-# 매 실행에서 서버가 확인한 계정으로 권한을 판정한다.
-try:
-    _verified_user = _auth_user_obj(supabase.auth.get_user())
-    if _verified_user is None:
-        raise RuntimeError("인증된 사용자 없음")
-    st.session_state.auth_user = _verified_user
-except Exception:
-    st.error("로그인 정보를 확인할 수 없습니다. 다시 로그인해 주세요.")
-    if st.button("로그인 화면으로", key="auth_verify_reset"):
-        st.session_state.auth_user = None
-        st.session_state.auth_role = ""
-        st.session_state.auth_access_token = ""
-        st.session_state.auth_refresh_token = ""
-        st.rerun()
-    st.stop()
-
 CURRENT_USER = st.session_state.auth_user
 CURRENT_EMAIL = str(_user_value(CURRENT_USER, "email", ""))
 CURRENT_META = _user_metadata(CURRENT_USER)
-CURRENT_ROLE = CURRENT_META.get("role", "")
-st.session_state.auth_role = CURRENT_ROLE
-if CURRENT_ROLE not in {"admin", "manager", "employee", "viewer"} or (
-    CURRENT_ROLE == "employee" and not CURRENT_META.get("emp_id")
-):
-    st.warning("계정의 업무 권한 또는 직원 사번이 설정되지 않았습니다. 관리자에게 확인해 주세요.")
-    if st.button("로그아웃", key="unassigned_role_logout"):
-        try:
-            supabase.auth.sign_out()
-        except Exception:
-            pass
-        st.session_state.auth_user = None
-        st.session_state.auth_role = ""
-        st.session_state.auth_access_token = ""
-        st.session_state.auth_refresh_token = ""
-        st.rerun()
-    st.stop()
+CURRENT_ROLE = str(st.session_state.get("auth_role", CURRENT_META.get("role", "viewer")))
 CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -626,7 +585,7 @@ def auth_diagnostic():
         u=supabase.auth.get_user()
         user=getattr(u,"user",None)
         if user:
-            meta=_user_metadata(user)
+            meta=getattr(user,"user_metadata",{}) or {}
             result.update({
                 "authenticated":True,
                 "email":getattr(user,"email","") or "",
@@ -3371,11 +3330,15 @@ if active_tab == 4:
                 _pr=_pmap[_plabel]
 
                 _logo=f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height:32px;">' if st.session_state.logo_b64 else ''
-                _apply_date=str(_pr.get("apply_dt",""))[:10]
-                try:
-                    _ad=pd.to_datetime(_apply_date).strftime("%Y. %m. %d.")
-                except Exception:
-                    _ad=_apply_date
+                _apply_raw=pd.to_datetime(_pr.get("apply_dt",""),errors="coerce")
+                _apply_default=_apply_raw.date() if pd.notna(_apply_raw) else datetime.now().date()
+                _print_apply_date=st.date_input(
+                    "신청서 표시일자",
+                    value=_apply_default,
+                    key=f"v3271_leave_inline_date_{int(_pr.get('id',0) or 0)}",
+                    help="신청서 하단에 인쇄되는 날짜만 변경합니다. 저장된 연차 신청 기록의 신청일시는 변경하지 않습니다."
+                )
+                _ad=_print_apply_date.strftime("%Y. %m. %d.")
                 _reason_print=str(_pr.get("reason","") or "").replace("<","&lt;").replace(">","&gt;")
                 _leave_type_raw=str(_pr.get("leave_type","") or "")
                 _leave_type_print={
@@ -3477,17 +3440,80 @@ html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic N
 # -------------------------------------------------------------------
 if active_tab == 5:
     st.header("🖨️ 휴가 (연차) 신청서 인쇄")
-    
+    st.caption("직원을 먼저 선택한 뒤 해당 직원의 신청내역을 최신순으로 골라 인쇄합니다. 신청서 하단 날짜는 출력 전에 수정할 수 있습니다.")
+
     l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
     df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
-
     df_leave_records = scope_dataframe_to_current_employee(df_leave_records)
+
     if df_leave_records.empty:
-        st.info("등록된 연차/휴가 신청 내역이 없다.")
+        st.info("등록된 연차/휴가 신청 내역이 없습니다.")
     else:
-        leave_options = [f"[{r['start_date']}] {r['emp_name']} {r['position']} - {r['leave_type']}" for _, r in df_leave_records.iterrows()]
-        selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
-        target_l = df_leave_records.iloc[selected_l_index]
+        # 최신 신청순 정렬: apply_dt 우선, 없으면 id
+        _lr=df_leave_records.copy()
+        if "apply_dt" in _lr.columns:
+            _lr["_apply_sort"]=pd.to_datetime(_lr["apply_dt"],errors="coerce")
+            _lr=_lr.sort_values(["_apply_sort","id"] if "id" in _lr.columns else ["_apply_sort"],
+                                ascending=False,na_position="last")
+        elif "id" in _lr.columns:
+            _lr=_lr.sort_values("id",ascending=False)
+
+        st.markdown("#### 1. 직원 선택")
+        _emp_opts={}
+        for _,_r in _lr.iterrows():
+            _eid=str(_r.get("emp_id","") or "")
+            _ename=str(_r.get("emp_name","") or "")
+            _pos=str(_r.get("position","") or "")
+            _key=f"{_ename} ({_eid})" + (f" · {_pos}" if _pos else "")
+            if _key not in _emp_opts:
+                _emp_opts[_key]=_eid
+
+        _emp_label=st.selectbox(
+            "연차 신청서를 출력할 직원",
+            list(_emp_opts.keys()),
+            key="v3271_leave_print_emp"
+        )
+        _print_emp_id=_emp_opts[_emp_label]
+        _emp_records=_lr[_lr["emp_id"].astype(str)==str(_print_emp_id)].copy() if "emp_id" in _lr.columns else _lr.copy()
+
+        st.markdown("#### 2. 신청내역 선택")
+        st.caption(f"선택 직원의 신청내역 {len(_emp_records):,}건 · 최신 신청순")
+        _record_map={}
+        for _,_r in _emp_records.iterrows():
+            _apply_dt=pd.to_datetime(_r.get("apply_dt",""),errors="coerce")
+            _apply_txt=_apply_dt.strftime("%Y-%m-%d") if pd.notna(_apply_dt) else "신청일 미기록"
+            _sid=_r.get("id","")
+            _label=(
+                f"{_apply_txt} 신청 | {_r.get('start_date','')} ~ {_r.get('end_date','')} | "
+                f"{_r.get('leave_type','')} | {float(_r.get('used_days',0) or 0):g}일"
+            )
+            if _sid not in (None,""):
+                _label=f"#{_sid} | "+_label
+            _record_map[_label]=_r
+
+        _selected_label=st.selectbox(
+            "출력할 연차 신청내역",
+            list(_record_map.keys()),
+            key="v3271_leave_print_record"
+        )
+        target_l=_record_map[_selected_label]
+
+        _target_apply=pd.to_datetime(target_l.get("apply_dt",""),errors="coerce")
+        _target_default=_target_apply.date() if pd.notna(_target_apply) else datetime.now().date()
+
+        st.markdown("#### 3. 출력일자 확인")
+        _print_date=st.date_input(
+            "신청서 표시일자",
+            value=_target_default,
+            key=f"v3271_leave_print_date_{int(target_l.get('id',0) or 0)}",
+            help="신청서 하단에 표시되는 날짜만 수정합니다. DB에 저장된 신청일시는 변경하지 않습니다."
+        )
+        _print_date_text=_print_date.strftime("%Y. %m. %d.")
+
+        _c1,_c2,_c3=st.columns(3)
+        _c1.metric("휴가구분",str(target_l.get("leave_type","")))
+        _c2.metric("사용일수",f"{float(target_l.get('used_days',0) or 0):g}일")
+        _c3.metric("휴가 시작일",str(target_l.get("start_date","")))
 
         logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
 
@@ -3495,7 +3521,7 @@ if active_tab == 5:
         * {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}}
         @media print {{ body, div, table, tr, th, td {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}} }}
         </style>
-        
+
         <div style="text-align: right; margin-bottom: 10px;">
             <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
         </div>
@@ -3519,33 +3545,33 @@ if active_tab == 5:
             <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;" border="1">
                 <tr style="height: 40px;">
                     <th style="padding: 8px; background: #f9f9f9; width: 20%;">성 명</th>
-                    <td style="padding: 8px; width: 30%;">{target_l['emp_name']} ({target_l['position']})</td>
+                    <td style="padding: 8px; width: 30%;">{target_l.get('emp_name','')} ({target_l.get('position','')})</td>
                     <th style="padding: 8px; background: #f9f9f9; width: 20%;">소 속</th>
-                    <td style="padding: 8px; width: 30%;">{target_l['dept']}</td>
+                    <td style="padding: 8px; width: 30%;">{target_l.get('dept','')}</td>
                 </tr>
                 <tr style="height: 40px;">
                     <th style="padding: 8px; background: #f9f9f9;">휴가구분</th>
-                    <td style="padding: 8px;" colspan="3">{target_l['leave_type']} (사용일수: {target_l['used_days']}일)</td>
+                    <td style="padding: 8px;" colspan="3">{target_l.get('leave_type','')} (사용일수: {float(target_l.get('used_days',0) or 0):g}일)</td>
                 </tr>
                 <tr style="height: 40px;">
                     <th style="padding: 8px; background: #f9f9f9;">휴가기간</th>
-                    <td style="padding: 8px;" colspan="3">{target_l['start_date']} ~ {target_l['end_date']}</td>
+                    <td style="padding: 8px;" colspan="3">{target_l.get('start_date','')} ~ {target_l.get('end_date','')}</td>
                 </tr>
                 <tr>
                     <th style="padding: 8px; background: #f9f9f9;">휴가사유</th>
-                    <td style="padding: 12px; height: 80px; vertical-align: top;" colspan="3">{target_l['reason']}</td>
+                    <td style="padding: 12px; height: 80px; vertical-align: top;" colspan="3">{target_l.get('reason','')}</td>
                 </tr>
             </table>
 
             <p style="text-align: center; margin-top: 50px; font-size: 15px;">위와 같이 휴가(연차)를 신청합니다.</p>
-            <p style="text-align: center; margin-top: 15px; font-size: 13px;">{target_l['apply_dt'][:10]}</p>
-            
+            <p style="text-align: center; margin-top: 15px; font-size: 13px;">{_print_date_text}</p>
+
             <p style="text-align: right; margin-top: 40px; font-size: 15px; font-weight: bold; padding-right: 10px;">
-                신청인: {target_l['emp_name']} (인)
+                신청인: {target_l.get('emp_name','')} (인)
             </p>
         </div>
         """
-        st.components.v1.html(leave_template, height=560, scrolling=True)
+        st.components.v1.html(leave_template, height=620, scrolling=True)
 
 # -------------------------------------------------------------------
 # TAB 6: 통합 급여대장 (수정 및 엑셀)
@@ -5683,14 +5709,14 @@ if active_tab == 12:
 
     account_rows = []
     for u in _users:
-        meta = _user_metadata(u)
+        meta = _auth_field(u, "user_metadata", {}) or {}
         account_rows.append({
             "user_id": str(_auth_field(u, "id", "")),
             "이메일": str(_auth_field(u, "email", "")),
             "이름": str(meta.get("name", "")),
             "사번": str(meta.get("emp_id", "")),
-            "권한": _role_label(str(meta.get("role", ""))) if meta.get("role") else "미설정",
-            "role_code": str(meta.get("role", "")),
+            "권한": _role_label(str(meta.get("role", "employee"))),
+            "role_code": str(meta.get("role", "employee")),
             "최근로그인": str(_auth_field(u, "last_sign_in_at", "") or ""),
             "계정상태": "중지" if str(_auth_field(u, "banned_until", "") or "") else "사용",
         })
@@ -5753,11 +5779,9 @@ if active_tab == 12:
                             "email_confirm": True,
                             "user_metadata": {
                                 "name": str(selected_emp.get("emp_name","")),
+                                "emp_id": str(selected_emp.get("emp_id","")),
                                 "dept": str(selected_emp.get("dept","")),
                                 "position": str(selected_emp.get("position","")),
-                            },
-                            "app_metadata": {
-                                "emp_id": selected_emp_id,
                                 "role": role_map[new_role_label],
                             }
                         })
@@ -5781,21 +5805,17 @@ if active_tab == 12:
             target_uid = row["user_id"]
             role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
             labels = ["직원","담당자","조회자","관리자"]
-            current_label = role_label_map.get(row["role_code"], "조회자")
+            current_label = role_label_map.get(row["role_code"], "직원")
             new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
             role_code_map = {"직원":"employee","담당자":"manager","조회자":"viewer","관리자":"admin"}
 
             if st.button("권한 저장", type="primary", use_container_width=True, key="admin_role_save"):
                 try:
-                    # 최신 관리자 메타데이터의 사번 등은 유지하고 권한만 변경한다.
-                    target_user = _auth_user_obj(supabase_admin.auth.admin.get_user_by_id(target_uid))
-                    if target_user is None:
-                        raise RuntimeError("변경할 계정 정보를 확인할 수 없습니다.")
-                    meta = _app_metadata(target_user)
+                    # 기존 user_metadata를 유지하면서 role만 변경
+                    target_user = next((u for u in _users if str(_auth_field(u,"id","")) == target_uid), None)
+                    meta = dict(_auth_field(target_user, "user_metadata", {}) or {})
                     meta["role"] = role_code_map[new_role2]
-                    if meta["role"] == "employee" and not str(meta.get("emp_id", "") or "").strip():
-                        raise ValueError("직원 권한을 설정하려면 관리자 정보에 사번이 먼저 등록되어야 합니다.")
-                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"app_metadata": meta})
+                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"user_metadata": meta})
                     write_audit_log("계정 권한 변경", "auth.users", target_uid, f"{role_email}: {new_role2}")
                     st.success("권한을 변경했습니다. 해당 사용자는 다음 로그인부터 변경된 권한이 적용됩니다.")
                     st.rerun()
