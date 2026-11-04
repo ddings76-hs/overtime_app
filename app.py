@@ -2780,78 +2780,173 @@ if active_tab == 3:
         else:
             st.caption(f"급여 반영월: {_ot_pay_month or '-'} · 미마감 자료는 인정시간 기준 계산식을 적용합니다.")
 
-        with st.form("actual_ot_form"):
-            col_a1, col_a2 = st.columns(2)
-            with col_a1:
-                st.write(f"**사전 신청 정보**")
-                st.write(f"- 근무 구분: {target_ot['work_type']}")
-                st.write(f"- 신청 시간: {target_ot['start_time']} ~ {target_ot['end_time']} ({float(target_ot['duration_hours']):.1f}시간)")
-                st.write(f"- 신청 사유: {target_ot['reason']}")
-            
-            with col_a2:
-                st.write(f"**실제 수행 근무시간 & 업무 내용 입력**")
-                try:
-                    init_s_time = datetime.strptime(str(act_s_val)[:8], "%H:%M:%S").time()
-                    init_e_time = datetime.strptime(str(act_e_val)[:8], "%H:%M:%S").time()
-                except:
-                    init_s_time = time(18, 0)
-                    init_e_time = time(20, 0)
+with st.form("actual_ot_form"):
+    col_a1, col_a2 = st.columns(2)
 
-                act_s_time = st.time_input("실제 시작 시간", init_s_time, disabled=_ot_payroll_locked, key=f"actual_start_{target_ot['id']}")
-                act_e_time = st.time_input("실제 종료 시간", init_e_time, disabled=_ot_payroll_locked, key=f"actual_end_{target_ot['id']}")
+    with col_a1:
+        st.write("**사전 신청 정보**")
+        st.write(f"- 근무 구분: {target_ot['work_type']}")
+        st.write(
+            f"- 신청 시간: {target_ot['start_time']} ~ "
+            f"{target_ot['end_time']} "
+            f"({float(target_ot['duration_hours']):.1f}시간)"
+        )
+        st.write(f"- 신청 사유: {target_ot['reason']}")
 
-                dummy_date = datetime.now().date()
-                s_dt = datetime.combine(dummy_date, act_s_time)
-                e_dt = datetime.combine(dummy_date, act_e_time)
-                calculated_act_hours = max(0.0, (e_dt - s_dt).total_seconds() / 3600)
-                # v27.1: 화면에 확정되는 인정시간(소수점 1자리)을 급여 계산 기준으로 사용
-                recognized_hours = round(calculated_act_hours, 1)
+    with col_a2:
+        st.write("**실제 수행 근무시간 & 업무 내용 입력**")
 
-                st.metric(label="실제 인정 시간", value=f"{recognized_hours:.1f} 시간")
-                act_pay = truncate_ten(recognized_hours * hourly_w * 1.5)
-                st.caption(f"수당 계산: 인정 {recognized_hours:.1f}시간 × 시간급 {float(hourly_w):,.0f}원 × 1.5 = {act_pay:,.0f}원")
-                
-                status_options = ["승인", "신청", "반려"]
+        try:
+            init_s_time = datetime.strptime(
+                str(act_s_val)[:8],
+                "%H:%M:%S"
+            ).time()
 
-current_status = (
-    target_ot["status"]
-    if target_ot["status"] in status_options
-    else "신청"
-)
+            init_e_time = datetime.strptime(
+                str(act_e_val)[:8],
+                "%H:%M:%S"
+            ).time()
 
-status_choice = st.selectbox(
-    "승인 상태",
-    status_options,
-    index=status_options.index(current_status),
-    key=f"actual_status_{target_ot['id']}"
-)
+        except Exception:
+            init_s_time = time(18, 0)
+            init_e_time = time(20, 0)
 
-act_reason_value = (
-    target_ot["act_reason"]
-    if pd.notna(target_ot.get("act_reason"))
-    else ""
-)
+        act_s_time = st.time_input(
+            "실제 시작 시간",
+            init_s_time,
+            disabled=_ot_payroll_locked,
+            key=f"actual_start_{target_ot['id']}"
+        )
 
-act_reason_input = st.text_input(
-    "실제 업무 수행 내용 / 확인 메모",
-    value=act_reason_value,
-    key=f"actual_reason_{target_ot['id']}"
-)
+        act_e_time = st.time_input(
+            "실제 종료 시간",
+            init_e_time,
+            disabled=_ot_payroll_locked,
+            key=f"actual_end_{target_ot['id']}"
+        )
 
-            submit_act = st.form_submit_button("실제 수행 내역 저장 및 승인 반영", disabled=_ot_payroll_locked)
+        dummy_date = datetime.now().date()
 
-            if submit_act:
-                if _ot_payroll_locked:
-                    st.error("마감된 급여 반영기간의 초과근무는 수정하거나 재계산할 수 없습니다.")
-                    st.stop()
-                update_data = {
-                    "act_start_time": str(act_s_time), "act_end_time": str(act_e_time),
-                    "actual_duration_hours": recognized_hours, "actual_pay": act_pay,
-                    "status": status_choice, "act_reason": act_reason_input
-                }
-                supabase.table("overtime_records").update(update_data).eq("id", int(target_ot['id'])).execute()
-                st.success(f"[{target_ot['emp_name']}] 직원의 수행 내역 및 승인 상태({status_choice})가 반영되었다.")
-                st.rerun()
+        s_dt = datetime.combine(
+            dummy_date,
+            act_s_time
+        )
+
+        e_dt = datetime.combine(
+            dummy_date,
+            act_e_time
+        )
+
+        calculated_act_hours = max(
+            0.0,
+            (e_dt - s_dt).total_seconds() / 3600
+        )
+
+        # 화면에 표시되는 인정시간을 급여 계산 기준으로 사용
+        recognized_hours = round(
+            calculated_act_hours,
+            1
+        )
+
+        st.metric(
+            label="실제 인정 시간",
+            value=f"{recognized_hours:.1f} 시간"
+        )
+
+        act_pay = truncate_ten(
+            recognized_hours * hourly_w * 1.5
+        )
+
+        st.caption(
+            f"수당 계산: 인정 {recognized_hours:.1f}시간 × "
+            f"시간급 {float(hourly_w):,.0f}원 × 1.5 "
+            f"= {act_pay:,.0f}원"
+        )
+
+        status_options = [
+            "승인",
+            "신청",
+            "반려"
+        ]
+
+        current_status = (
+            target_ot["status"]
+            if target_ot["status"] in status_options
+            else "신청"
+        )
+
+        status_choice = st.selectbox(
+            "승인 상태",
+            status_options,
+            index=status_options.index(current_status),
+            key=f"actual_status_{target_ot['id']}"
+        )
+
+        act_reason_value = (
+            target_ot["act_reason"]
+            if pd.notna(target_ot.get("act_reason"))
+            else ""
+        )
+
+        act_reason_input = st.text_input(
+            "실제 업무 수행 내용 / 확인 메모",
+            value=act_reason_value,
+            key=f"actual_reason_{target_ot['id']}"
+        )
+
+    # 반드시 col_a2 바깥, form 안쪽에 위치
+    submit_act = st.form_submit_button(
+        "실제 수행 내역 저장 및 승인 반영",
+        disabled=_ot_payroll_locked,
+        use_container_width=True
+    )
+
+    if submit_act:
+
+        if _ot_payroll_locked:
+            st.error(
+                "마감된 급여 반영기간의 초과근무는 "
+                "수정하거나 재계산할 수 없습니다."
+            )
+            st.stop()
+
+        if act_e_time <= act_s_time:
+            st.error(
+                "실제 종료 시간은 시작 시간보다 늦어야 합니다."
+            )
+            st.stop()
+
+        update_data = {
+            "act_start_time": str(act_s_time),
+            "act_end_time": str(act_e_time),
+            "actual_duration_hours": recognized_hours,
+            "actual_pay": act_pay,
+            "status": status_choice,
+            "act_reason": act_reason_input
+        }
+
+        try:
+            supabase.table(
+                "overtime_records"
+            ).update(
+                update_data
+            ).eq(
+                "id",
+                int(target_ot["id"])
+            ).execute()
+
+            st.success(
+                f"[{target_ot['emp_name']}] 직원의 "
+                f"수행 내역 및 승인 상태({status_choice})가 "
+                "정상적으로 반영되었습니다."
+            )
+
+            st.rerun()
+
+        except Exception as e:
+            st.error(
+                f"초과근무 승인·실적 저장 중 오류가 발생했습니다: {e}"
+            )
 
         latest_res = supabase.table("overtime_records").select("*").eq("id", int(target_ot['id'])).execute()
         target_ot_latest = latest_res.data[0] if latest_res.data else target_ot
