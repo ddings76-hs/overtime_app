@@ -1,3 +1,6179 @@
+import re
+import html
+from pathlib import Path
+import uuid
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
+
+import streamlit as st
+import pandas as pd
+from datetime import datetime, time, timedelta
+import io
+import base64
+import hashlib
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from supabase import create_client, Client
+import json
+
+# 페이지 기본 설정
+
+TRIP_STORAGE_BUCKET = "business-trip-files"
+APP_ASSET_BUCKET = "app-assets"
+APP_VERSION = "v32.9.1"
+COMPANY_LOGO_PATH = "branding/company_logo.png"
+st.set_page_config(page_title=f"화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}", layout="wide")
+
+# -------------------------------------------------------------------
+# Supabase 클라우드 DB 연결 설정 (Secrets 참조)
+# -------------------------------------------------------------------
+try:
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(url, key)
+    # 관리자 계정 생성/권한/비밀번호 초기화 전용 Secret Key.
+    # 반드시 Streamlit Secrets에만 저장하고 사용자 화면/코드에 직접 노출하지 않습니다.
+    admin_secret = st.secrets.get("SUPABASE_SECRET_KEY", "")
+    supabase_admin: Client | None = create_client(url, admin_secret) if admin_secret else None
+except Exception as e:
+    st.error("Supabase 연결 실패! Streamlit Secrets에 SUPABASE_URL과 SUPABASE_KEY가 정상 설정되었는지 확인이 필요하다.")
+    st.stop()
+
+
+# -------------------------------------------------------------------
+# 로그인 / 사용자 권한 (Supabase Authentication)
+# -------------------------------------------------------------------
+def _auth_user_obj(response):
+    if response is None:
+        return None
+    if hasattr(response, "user"):
+        return response.user
+    if isinstance(response, dict):
+        return response.get("user")
+    return None
+
+def _user_value(user, key, default=""):
+    if user is None:
+        return default
+    if isinstance(user, dict):
+        return user.get(key, default)
+    return getattr(user, key, default)
+
+def _app_metadata(user):
+    meta = _user_value(user, "app_metadata", {})
+    return dict(meta) if isinstance(meta, dict) else {}
+
+def _user_metadata(user):
+    # 이름 등 표시 정보만 사용자 메타데이터에서 읽고 권한/사번은 관리자 정보만 신뢰한다.
+    profile = _user_value(user, "user_metadata", {})
+    meta = dict(profile) if isinstance(profile, dict) else {}
+    trusted = _app_metadata(user)
+    meta["role"] = str(trusted.get("role", "") or "").strip()
+    meta["emp_id"] = str(trusted.get("emp_id", "") or "").strip()
+    return meta
+
+def _role_label(role):
+    return {"admin":"관리자", "manager":"담당자", "employee":"직원", "viewer":"조회자"}.get(role, role or "사용자")
+
+def _validate_password(password: str):
+    """직원 계정 비밀번호 기본 기준을 확인한다."""
+    if len(password or "") < 8:
+        return False, "비밀번호는 8자 이상으로 설정해 주세요."
+    if not re.search(r"[A-Za-z]", password):
+        return False, "비밀번호에 영문자를 1자 이상 포함해 주세요."
+    if not re.search(r"\d", password):
+        return False, "비밀번호에 숫자를 1자 이상 포함해 주세요."
+    return True, ""
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "auth_role" not in st.session_state:
+    st.session_state.auth_role = "viewer"
+if "auth_access_token" not in st.session_state:
+    st.session_state.auth_access_token = ""
+if "auth_refresh_token" not in st.session_state:
+    st.session_state.auth_refresh_token = ""
+
+# Streamlit은 rerun 때 Supabase client를 새로 만들기 때문에,
+# 저장해 둔 access/refresh token을 client에 다시 연결해야 RLS가 로그인 사용자 JWT를 받는다.
+if st.session_state.auth_access_token and st.session_state.auth_refresh_token:
+    try:
+        _restored = supabase.auth.set_session(
+            st.session_state.auth_access_token,
+            st.session_state.auth_refresh_token
+        )
+        _rs = getattr(_restored, "session", None)
+        if _rs:
+            st.session_state.auth_access_token = getattr(_rs, "access_token", st.session_state.auth_access_token) or st.session_state.auth_access_token
+            st.session_state.auth_refresh_token = getattr(_rs, "refresh_token", st.session_state.auth_refresh_token) or st.session_state.auth_refresh_token
+            _ru = getattr(_restored, "user", None) or getattr(_rs, "user", None)
+            if _ru:
+                st.session_state.auth_user = _ru
+                st.session_state.auth_role = str(_user_metadata(_ru).get("role", st.session_state.auth_role))
+    except Exception:
+        pass
+
+# Streamlit 재실행 시 Supabase Auth 세션 복구
+if st.session_state.auth_user is None:
+    try:
+        session_res = supabase.auth.get_session()
+        session = getattr(session_res, "session", session_res)
+        session_user = getattr(session, "user", None) if session else None
+        if session_user:
+            st.session_state.auth_user = session_user
+            st.session_state.auth_role = str(_user_metadata(session_user).get("role", "viewer"))
+    except Exception:
+        pass
+
+# 인증 전에는 업무화면/DB 내용을 표시하지 않음
+if st.session_state.auth_user is None:
+    st.markdown("""
+    <style>
+    .block-container {max-width:560px!important;padding-top:7vh!important;}
+    .login-brand{text-align:center;margin:0 0 24px;}
+    .login-brand h1{font-size:1.75rem!important;color:#172033;margin-bottom:5px;}
+    .login-brand p{color:#667085;margin:0;}
+    div[data-testid="stForm"]{
+      background:#fff;border:1px solid #e4e9f0;border-radius:16px;
+      padding:24px;box-shadow:0 8px 28px rgba(16,24,40,.07);
+    }
+    </style>
+    <div class="login-brand">
+      <h1>🏢 화성시장기요양지원센터</h1>
+      <p>통합 업무관리 시스템</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("login_form"):
+        st.subheader("로그인")
+        login_email = st.text_input("이메일", placeholder="name@example.com")
+        login_password = st.text_input("비밀번호", type="password")
+        submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
+
+    if submitted:
+        if not login_email.strip() or not login_password:
+            st.warning("이메일과 비밀번호를 입력해 주세요.")
+        else:
+            try:
+                result = supabase.auth.sign_in_with_password({
+                    "email": login_email.strip(),
+                    "password": login_password
+                })
+                user = _auth_user_obj(result)
+                if user is None:
+                    raise RuntimeError("사용자 정보 없음")
+                st.session_state.auth_user = user
+                st.session_state.auth_role = str(_user_metadata(user).get("role", "viewer"))
+                _login_session = getattr(result, "session", None)
+                if _login_session:
+                    st.session_state.auth_access_token = getattr(_login_session, "access_token", "") or ""
+                    st.session_state.auth_refresh_token = getattr(_login_session, "refresh_token", "") or ""
+                st.rerun()
+            except Exception:
+                st.error("로그인에 실패했습니다. 이메일 또는 비밀번호를 확인해 주세요.")
+
+    st.caption("계정 발급 및 권한 변경은 시스템 관리자가 처리합니다.")
+    st.stop()
+
+# 매 실행에서 서버가 확인한 계정으로 권한을 판정한다.
+try:
+    _verified_user = _auth_user_obj(supabase.auth.get_user())
+    if _verified_user is None:
+        raise RuntimeError("인증된 사용자 없음")
+    st.session_state.auth_user = _verified_user
+except Exception:
+    st.error("로그인 정보를 확인할 수 없습니다. 다시 로그인해 주세요.")
+    if st.button("로그인 화면으로", key="auth_verify_reset"):
+        st.session_state.auth_user = None
+        st.session_state.auth_role = ""
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
+        st.rerun()
+    st.stop()
+
+CURRENT_USER = st.session_state.auth_user
+CURRENT_EMAIL = str(_user_value(CURRENT_USER, "email", ""))
+CURRENT_META = _user_metadata(CURRENT_USER)
+CURRENT_ROLE = CURRENT_META.get("role", "")
+st.session_state.auth_role = CURRENT_ROLE
+if CURRENT_ROLE not in {"admin", "manager", "employee", "viewer"} or (
+    CURRENT_ROLE == "employee" and not CURRENT_META.get("emp_id")
+):
+    st.warning("계정의 업무 권한 또는 직원 사번이 설정되지 않았습니다. 관리자에게 확인해 주세요.")
+    if st.button("로그아웃", key="unassigned_role_logout"):
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+        st.session_state.auth_user = None
+        st.session_state.auth_role = ""
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
+        st.rerun()
+    st.stop()
+CURRENT_NAME = str(CURRENT_META.get("name", CURRENT_EMAIL.split("@")[0] if CURRENT_EMAIL else "사용자"))
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_company_logo_bytes():
+    """Supabase Storage의 고정 경로에서 회사 로고를 불러옵니다."""
+    try:
+        return supabase.storage.from_(APP_ASSET_BUCKET).download(COMPANY_LOGO_PATH)
+    except Exception:
+        return None
+
+def save_company_logo(uploaded_file):
+    """회사 로고를 Storage 고정 경로에 upsert하여 앱 재시작 후에도 유지합니다."""
+    content = uploaded_file.getvalue()
+    content_type = uploaded_file.type or "image/png"
+    try:
+        supabase.storage.from_(APP_ASSET_BUCKET).upload(
+            COMPANY_LOGO_PATH,
+            content,
+            {"content-type": content_type, "upsert": "true"}
+        )
+    except Exception:
+        # SDK/Storage 버전에 따라 upload upsert가 다를 수 있어 update로 재시도
+        try:
+            supabase.storage.from_(APP_ASSET_BUCKET).update(
+                COMPANY_LOGO_PATH,
+                content,
+                {"content-type": content_type, "upsert": "true"}
+            )
+        except Exception:
+            # 파일이 아직 없을 경우 최종 upload
+            supabase.storage.from_(APP_ASSET_BUCKET).upload(
+                COMPANY_LOGO_PATH,
+                content,
+                {"content-type": content_type}
+            )
+    load_company_logo_bytes.clear()
+    return True
+
+def company_logo_data_uri():
+    data = load_company_logo_bytes()
+    if not data:
+        return ""
+    encoded = base64.b64encode(data).decode("ascii")
+    # 브라우저 표시용. PNG/JPG 모두 대부분 정상 렌더링됨
+    return f"data:image/png;base64,{encoded}"
+
+
+# 역할별 앱 권한
+ROLE_PERMISSIONS = {
+    "admin": {
+        "대시보드",
+        "employee_write", "attendance_write", "leave_write", "payroll_write",
+        "payroll_confirm", "trip_write", "trip_approve", "trip_settle",
+        "file_upload", "file_delete", "print_export"
+    },
+    "manager": {
+        "대시보드",
+        "attendance_write", "leave_write", "trip_write", "trip_approve",
+        "trip_settle", "file_upload", "print_export"
+    },
+    "employee": {
+        "대시보드",
+        "attendance_write", "leave_write", "trip_write", "file_upload", "print_export"
+    },
+    "viewer": {
+        "대시보드","print_export"},
+}
+
+def has_permission(permission):
+    return permission in ROLE_PERMISSIONS.get(CURRENT_ROLE, ROLE_PERMISSIONS["viewer"])
+
+def require_permission(permission, message="이 작업을 수행할 권한이 없습니다."):
+    if not has_permission(permission):
+        st.warning(f"🔒 {message}")
+        return False
+    return True
+
+
+def truncate_ten(value):
+    return int(value // 10) * 10
+
+def safe_int(value):
+    """pandas/numpy 숫자를 JSON 저장이 가능한 정수로 통일한다."""
+    if pd.isna(value):
+        return 0
+    return int(value)
+
+def build_payroll_snapshot(pay_month, pay_date, payroll_df, pay_run_no=1, pay_run_name="정기급여"):
+    """편집 완료된 급여대장을 확정·회계연계용 스냅샷으로 만든다."""
+    employees = []
+    totals = {
+        "gross_pay": 0, "employee_deductions": 0, "net_pay": 0,
+        "employer_insurance": 0, "retirement_accrual": 0
+    }
+
+    for _, row in payroll_df.iterrows():
+        gross_pay = sum(safe_int(row[c]) for c in [
+            '기본급', '초과수당(승인)', '가족수당', '명절상여', '비과세', '기타수당'
+        ])
+        employee_deductions = sum(safe_int(row[c]) for c in [
+            '국민연금(본인)', '건강보험(본인)', '장기요양(본인)',
+            '고용보험(본인)', '소득세', '지방소득세', '기타공제'
+        ])
+        employer_insurance = sum(safe_int(row[c]) for c in [
+            '국민연금(사업자)', '건강보험(사업자)', '장기요양(사업자)',
+            '고용보험(사업자)', '산재보험(사업자)'
+        ])
+        retirement = safe_int(row['퇴직적립금'])
+        net_pay = gross_pay - employee_deductions
+
+        employees.append({
+            "emp_id": str(row['사번']), "emp_name": str(row['이름']),
+            "dept": str(row['부서']), "position": str(row['직위']),
+            "base_salary": safe_int(row['기본급']),
+            "overtime_pay": safe_int(row['초과수당(승인)']),
+            "family_allowance": safe_int(row['가족수당']),
+            "non_taxable": safe_int(row['비과세']),
+            "other_allowance": safe_int(row['기타수당']),
+            "holiday_bonus": safe_int(row['명절상여']),
+            "gross_pay": gross_pay,
+            "employee_deductions": employee_deductions,
+            "net_pay": net_pay,
+            "employer_insurance": employer_insurance,
+            "retirement_accrual": retirement
+        })
+        totals["gross_pay"] += gross_pay
+        totals["employee_deductions"] += employee_deductions
+        totals["net_pay"] += net_pay
+        totals["employer_insurance"] += employer_insurance
+        totals["retirement_accrual"] += retirement
+
+    snapshot = {
+        "schema_version": "1.1", "pay_month": pay_month, "pay_run_no": pay_run_no,
+        "pay_run_name": pay_run_name, "pay_date": pay_date.isoformat(), "employees": employees, "totals": totals
+    }
+
+    accounting_export = {
+        "schema_version": "payroll-accounting-1.1",
+        "source_type": "payroll", "source_key": f"payroll:{pay_month}:run-{pay_run_no}",
+        "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+        "pay_date": pay_date.isoformat(),
+        "title": f"{pay_month} {pay_run_name} 및 사용자부담금",
+        "items": [
+            {"itemDate": pay_date.isoformat(), "accountItem": "급여 및 제수당",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "임직원", "detailSummary": f"{pay_month} {pay_run_name} 총액",
+             "amount": totals["gross_pay"]},
+            {"itemDate": pay_date.isoformat(), "accountItem": "사회보험료",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "사회보험 기관", "detailSummary": f"{pay_month} 사업주 부담 사회보험",
+             "amount": totals["employer_insurance"]},
+            {"itemDate": pay_date.isoformat(), "accountItem": "퇴직급여",
+             "botamCategory": "인건비", "payMethod": "계좌이체",
+             "vendor": "퇴직연금 기관", "detailSummary": f"{pay_month} 퇴직적립금",
+             "amount": totals["retirement_accrual"]}
+        ],
+        "payroll_summary": totals,
+        "accounting_total": totals["gross_pay"] + totals["employer_insurance"] + totals["retirement_accrual"],
+        "notice": "실지급액과 근로자 공제액은 급여총액의 구성정보이며 지출액에 다시 더하지 않습니다."
+    }
+    return snapshot, accounting_export
+
+def payload_hash(snapshot, accounting_export):
+    import json
+    canonical = json.dumps(
+        {"payroll": snapshot, "accounting": accounting_export},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+# 세션 내 로고 이미지 관리
+if 'logo_b64' not in st.session_state:
+    st.session_state.logo_b64 = ""
+
+st.caption(f"화성시장기요양지원센터 · {APP_VERSION}")
+
+# 사이드바: 회사 로고 업로드 기능
+with st.sidebar:
+    st.header("🖼️ 회사 로고 설정")
+    uploaded_logo = st.file_uploader("모든 문서에 적용할 로고 이미지 (PNG, JPG)", type=['png', 'jpg', 'jpeg'])
+    if uploaded_logo is not None:
+        bytes_data = uploaded_logo.getvalue()
+        st.session_state.logo_b64 = base64.b64encode(bytes_data).decode()
+        st.image(uploaded_logo, caption="등록된 회사 로고", use_container_width=True)
+    elif st.session_state.logo_b64:
+        st.info("💡 기존에 등록된 로고가 적용 중이다.")
+
+
+
+# -------------------------------------------------------------------
+# v19.3 공통 표/Excel 표시 규칙
+# -------------------------------------------------------------------
+COLUMN_KR = {
+    # 공통
+    "id":"번호","emp_id":"사번","emp_name":"이름","name":"이름","birth_date":"생년월일",
+    "hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소",
+    "dept":"부서","department":"부서","position":"직위","pay_grade":"호봉",
+    "apply_dt":"신청일","created_at":"등록일시","updated_at":"수정일시","status":"상태",
+    "note":"비고","reason":"사유",
+    # 연차
+    "start_date":"시작일","end_date":"종료일","leave_type":"휴가종류","used_days":"사용일수",
+    "leave_days":"연차일수","day_count":"일수",
+    # 초과근무
+    "work_date":"근무일","ot_date":"초과근무일","work_type":"근무구분",
+    "start_time":"시작시간","end_time":"종료시간","duration_hours":"신청시간",
+    "estimated_pay":"예상수당","act_start_time":"실적시작시간","act_end_time":"실적종료시간",
+    "actual_hours":"실적시간","work_hours":"근무시간","hours":"시간",
+    "actual_pay":"실적수당","approved_pay":"승인수당",
+    "actual_duration_hours":"실적시간","act_reason":"실적사유","requested_hours":"신청시간","approved_hours":"승인시간",
+    # 출장
+    "trip_type":"출장구분","purpose":"출장목적","start_at":"출장시작","end_at":"출장종료",
+    "destination":"출장지","transport_type":"교통수단","distance_km":"출장거리(km)",
+    "fuel_type":"유종","rule_base_amount":"기준금액","apply_status":"신청상태",
+    "report_status":"복명상태","settlement_status":"정산상태","participants":"동행자",
+    "report_content":"복명내용","transport_cost":"교통비","toll_cost":"통행료",
+    "lodging_cost":"숙박비","other_cost":"기타비용","daily_cost":"일비",
+    "meal_cost":"식비","total_cost":"출장비합계",
+    # 급여
+    "pay_month":"급여월","pay_run_no":"급여차수","pay_run_name":"급여명칭",
+    "base_salary":"기본급","ot_pay":"초과수당","overtime_pay":"초과수당",
+    "family_allowance":"가족수당","holiday_bonus":"명절상여","non_taxable":"비과세",
+    "other_allowance":"기타수당","national_pension":"국민연금","health_insurance":"건강보험",
+    "longterm_care":"장기요양보험","employment_insurance":"고용보험",
+    "income_tax":"소득세","local_tax":"지방소득세","other_deduction":"기타공제",
+    "ot_pay_overridden":"초과수당수정","gross_pay":"급여총액",
+    "employee_deductions":"근로자공제합계","net_pay":"실지급액",
+    "employer_insurance":"사업주부담보험","retirement_accrual":"퇴직적립금",
+    "employer_national_pension":"사업주국민연금","employer_health_insurance":"사업주건강보험","employer_longterm_care":"사업주장기요양보험","employer_employment_insurance":"사업주고용보험","employer_industrial_insurance":"사업주산재보험","retirement_reserve":"퇴직적립금",
+    # 파일/변경
+    "file_type":"파일구분","file_name":"파일명","change_type":"변경구분",
+    "change_reason":"변경사유","new_destination":"변경출장지","approval_type":"승인구분",
+    "approval_status":"승인상태","approved_at":"승인일시"
+}
+MONEY_HINTS=("급여","수당","금액","비용","출장비","교통비","통행료","숙박비","식비","일비",
+             "보험","연금","소득세","공제","지급액","적립금","기본급","상여","비과세")
+DECIMAL2_HINTS=("사용일수","연차일수","일수","시간","거리")
+
+def _kr_col(c):
+    return COLUMN_KR.get(c, c)
+
+def _normalize_table_view(df):
+    """화면/Excel 공통: 한글 제목, 출장 일시 형식, 소수점 규칙."""
+    if df is None: return pd.DataFrame()
+    view=df.copy()
+    # 출장 시작/종료: 초과근무처럼 날짜와 시간을 읽기 쉽게 표시
+    for c in ["start_at","end_at"]:
+        if c in view.columns:
+            dt=pd.to_datetime(view[c], errors="coerce")
+            view[c]=dt.dt.strftime("%Y-%m-%d %H:%M").where(dt.notna(), view[c])
+    view=view.rename(columns={c:_kr_col(c) for c in view.columns})
+    return view
+
+def employee_filter_ui(df, key, label="직원 검색"):
+    if df is None or df.empty:
+        return df
+    # 직원은 기존 본인자료 제한 유지
+    if CURRENT_ROLE == "employee":
+        return scope_dataframe_to_current_employee(df, "emp_id")
+    name_col = "emp_name" if "emp_name" in df.columns else ("name" if "name" in df.columns else None)
+    id_col = "emp_id" if "emp_id" in df.columns else None
+    if not name_col and not id_col:
+        return df
+    choices = ["전체"]
+    mapping = {}
+    for _, row in df.iterrows():
+        eid = str(row.get(id_col, "")) if id_col else ""
+        nm = str(row.get(name_col, "")) if name_col else ""
+        txt = f"{nm} ({eid})" if eid else nm
+        if txt and txt not in mapping:
+            mapping[txt] = (eid, nm)
+            choices.append(txt)
+    selected = st.selectbox(label, choices, key=key)
+    if selected == "전체":
+        return df
+    eid, nm = mapping[selected]
+    if id_col and eid:
+        return df[df[id_col].astype(str) == eid].copy()
+    return df[df[name_col].astype(str) == nm].copy()
+
+def display_table_kr(df, use_container_width=True, hide_index=True, **kwargs):
+    """모든 조회 표 공통 표시."""
+    view=_normalize_table_view(df)
+    fmt={}
+    for c in view.columns:
+        if pd.api.types.is_numeric_dtype(view[c]):
+            if any(k in str(c) for k in DECIMAL2_HINTS):
+                fmt[c]="{:,.2f}"
+            elif any(k in str(c) for k in MONEY_HINTS) or pd.api.types.is_integer_dtype(view[c]):
+                fmt[c]="{:,.0f}"
+            else:
+                fmt[c]="{:,.2f}"
+    # 컬럼 제목은 중앙 정렬. 본문 숫자는 우측, 텍스트는 기본 표시.
+    sty=view.style.format(fmt, na_rep="").set_table_styles([
+        {"selector":"th","props":[("text-align","center")]},
+    ])
+    return st.dataframe(sty, use_container_width=use_container_width, hide_index=hide_index, **kwargs)
+
+def excel_view_df(df):
+    return _normalize_table_view(df)
+
+def style_excel_sheet(ws):
+    """화면과 같은 한글 제목/칸너비/전체 격자선/숫자 형식."""
+    header_fill=PatternFill("solid", fgColor="F3F6FA")
+    header_font=Font(name="맑은 고딕", size=10, bold=True, color="1F2937")
+    body_font=Font(name="맑은 고딕", size=10)
+    thin=Side(style="thin", color="D9DEE7")
+    grid=Border(left=thin,right=thin,top=thin,bottom=thin)
+    for cell in ws[1]:
+        cell.fill=header_fill; cell.font=header_font; cell.border=grid
+        cell.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True)
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.font=body_font; cell.border=grid
+            cell.alignment=Alignment(vertical="center",wrap_text=False)
+    ws.freeze_panes="A2"
+    if ws.max_row>=1 and ws.max_column>=1:
+        ws.auto_filter.ref=ws.dimensions
+    for col_cells in ws.columns:
+        letter=get_column_letter(col_cells[0].column)
+        header=str(col_cells[0].value or "")
+        vals=[str(c.value) if c.value is not None else "" for c in col_cells[:150]]
+        # 화면 가독성에 맞춘 폭. 긴 텍스트도 과도하게 넓어지지 않게 제한.
+        width=min(max(max((len(v) for v in vals),default=0)+3, 11), 28)
+        ws.column_dimensions[letter].width=width
+        for cell in col_cells[1:]:
+            if isinstance(cell.value,(int,float)) and not isinstance(cell.value,bool):
+                if any(k in header for k in DECIMAL2_HINTS):
+                    cell.number_format='#,##0.00'
+                elif any(k in header for k in MONEY_HINTS) or isinstance(cell.value,int):
+                    cell.number_format='#,##0'
+                else:
+                    cell.number_format='#,##0.00'
+    ws.row_dimensions[1].height=26
+    ws.sheet_view.showGridLines=False
+
+
+
+def payroll_summary_values(df):
+    """급여대장 화면/인쇄/Excel 공통 합계.
+    편집용 한글 컬럼과 DB/스냅샷 영문 컬럼을 모두 지원한다.
+    """
+    zero = {
+        "급여총액":0, "근로자 사회보험료":0, "소득세·지방소득세":0,
+        "실지급액":0, "사업주 사회보험료":0, "퇴직적립금":0
+    }
+    if df is None or df.empty:
+        return zero
+
+    def s(*cols):
+        for c in cols:
+            if c in df.columns:
+                return int(pd.to_numeric(df[c], errors="coerce").fillna(0).sum())
+        return 0
+
+    # 화면 편집 급여대장(한글)과 저장/DB 데이터(영문) 양쪽에서 같은 값을 읽는다.
+    gross = s("급여총액", "gross_pay", "total_pay", "pay_total", "total_salary")
+    if gross == 0:
+        gross = (
+            s("기본급", "base_salary") +
+            s("초과수당(승인)", "초과수당", "overtime_pay", "ot_pay") +
+            s("가족수당", "family_allowance") +
+            s("명절상여", "holiday_bonus") +
+            s("비과세", "non_taxable") +
+            s("기타수당", "other_allowance")
+        )
+
+    worker_ins = (
+        s("국민연금(본인)", "국민연금", "national_pension") +
+        s("건강보험(본인)", "건강보험", "health_insurance") +
+        s("장기요양(본인)", "장기요양보험", "longterm_care") +
+        s("고용보험(본인)", "고용보험", "employment_insurance")
+    )
+    tax = (
+        s("소득세", "income_tax") +
+        s("지방소득세", "지방세", "local_tax")
+    )
+    net = s("실지급액", "net_pay", "real_pay")
+    if net == 0 and gross:
+        other_ded = s("기타공제", "other_deduction")
+        net = gross - worker_ins - tax - other_ded
+
+    employer_ins = s("사업주 부담보험", "사업주부담보험", "employer_insurance")
+    if employer_ins == 0:
+        employer_ins = (
+            s("국민연금(사업자)", "사업주국민연금", "employer_national_pension") +
+            s("건강보험(사업자)", "사업주건강보험", "employer_health_insurance") +
+            s("장기요양(사업자)", "사업주장기요양보험", "employer_longterm_care") +
+            s("고용보험(사업자)", "사업주고용보험", "employer_employment_insurance") +
+            s("산재보험(사업자)", "사업주산재보험", "employer_industrial_insurance")
+        )
+
+    retirement = s("퇴직적립금", "retirement_accrual", "retirement_reserve")
+
+    return {
+        "급여총액": gross,
+        "근로자 사회보험료": worker_ins,
+        "소득세·지방소득세": tax,
+        "실지급액": net,
+        "사업주 사회보험료": employer_ins,
+        "퇴직적립금": retirement,
+    }
+
+def show_payroll_summary(df, key_prefix="pay"):
+    vals=payroll_summary_values(df)
+    st.markdown("#### 💰 급여대장 주요 합계")
+    c1,c2,c3=st.columns(3)
+    c1.metric("급여총액",f"{vals['급여총액']:,}원")
+    c2.metric("근로자 사회보험료 합계",f"{vals['근로자 사회보험료']:,}원")
+    c3.metric("소득세·지방소득세 합계",f"{vals['소득세·지방소득세']:,}원")
+    c4,c5,c6=st.columns(3)
+    c4.metric("실지급액 합계",f"{vals['실지급액']:,}원")
+    c5.metric("사업주 사회보험료 합계",f"{vals['사업주 사회보험료']:,}원")
+    c6.metric("퇴직적립금 합계",f"{vals['퇴직적립금']:,}원")
+    return vals
+
+
+
+def auth_diagnostic():
+    """현재 앱 세션에서 Supabase Auth가 실제로 전달하는 사용자 메타데이터 확인."""
+    result={"authenticated":False,"email":"","role":"","emp_id":"","name":""}
+    try:
+        u=supabase.auth.get_user()
+        user=getattr(u,"user",None)
+        if user:
+            meta=_user_metadata(user)
+            result.update({
+                "authenticated":True,
+                "email":getattr(user,"email","") or "",
+                "role":str(meta.get("role","") or ""),
+                "emp_id":str(meta.get("emp_id","") or ""),
+                "name":str(meta.get("name","") or "")
+            })
+    except Exception:
+        pass
+    return result
+
+def current_emp_id():
+    return str(CURRENT_META.get("emp_id", "") or "").strip()
+
+def is_employee_scope():
+    return CURRENT_ROLE == "employee"
+
+def scope_dataframe_to_current_employee(df, emp_col="emp_id"):
+    if not is_employee_scope() or df is None or df.empty:
+        return df
+    eid = current_emp_id()
+    if not eid or emp_col not in df.columns:
+        return df.iloc[0:0].copy()
+    return df[df[emp_col].astype(str).str.strip() == eid].copy()
+
+
+def scope_employee_master(df):
+    """직원 계정에서는 employees 마스터도 본인 행만 노출."""
+    return scope_dataframe_to_current_employee(df, "emp_id")
+
+def filter_employees_for_work(df, reference_date=None):
+    """업무 입력 선택용 직원: 기준일에 재직 중인 직원만 반환."""
+    if df is None or df.empty:
+        return df
+    out=df.copy()
+    ref=pd.to_datetime(reference_date if reference_date is not None else datetime.now().date(),errors="coerce")
+    if pd.isna(ref):
+        ref=pd.Timestamp(datetime.now().date())
+    if "hire_date" in out.columns:
+        hd=pd.to_datetime(out["hire_date"],errors="coerce")
+        out=out[hd.isna() | (hd.dt.normalize()<=ref.normalize())].copy()
+    if "retire_date" in out.columns:
+        rd=pd.to_datetime(out["retire_date"],errors="coerce")
+        out=out[rd.isna() | (rd.dt.normalize()>=ref.normalize())].copy()
+    elif "employment_status" in out.columns:
+        out=out[out["employment_status"].fillna("재직").astype(str)!="퇴직"].copy()
+    return out
+
+def can_manage_all_records():
+    return CURRENT_ROLE in ("admin", "manager")
+
+def workflow_button_nav(title, options, key, caption="", max_per_row=4):
+    """작은 라디오/탭 대신 사용하는 큰 업무선택 버튼."""
+    if key not in st.session_state or st.session_state.get(key) not in options:
+        st.session_state[key]=options[0]
+
+    with st.container(border=True):
+        st.markdown(f"#### 🧭 {title}")
+        if caption:
+            st.caption(caption)
+
+        for start in range(0,len(options),max_per_row):
+            row_opts=options[start:start+max_per_row]
+            cols=st.columns(len(row_opts))
+            for idx,(col,opt) in enumerate(zip(cols,row_opts),start=start):
+                selected=st.session_state.get(key)==opt
+                label=f"✅ {opt}" if selected else opt
+                with col:
+                    if st.button(
+                        label,
+                        key=f"{key}_btn_{idx}",
+                        type="primary" if selected else "secondary",
+                        use_container_width=True
+                    ):
+                        st.session_state[key]=opt
+
+    return st.session_state.get(key,options[0])
+
+def write_audit_log(action, target_type="", target_id="", detail=""):
+    """감사로그 실패가 본 업무를 막지 않도록 best-effort로 기록."""
+    try:
+        supabase.table("audit_logs").insert({
+            "user_id": str(_user_value(CURRENT_USER, "id", "")),
+            "user_email": CURRENT_EMAIL,
+            "user_role": CURRENT_ROLE,
+            "action": action,
+            "target_type": target_type,
+            "target_id": str(target_id),
+            "detail": str(detail)[:2000],
+        }).execute()
+    except Exception:
+        pass
+
+# -------------------------------------------------------------------
+# 통합 업무 메뉴 / UI
+# -------------------------------------------------------------------
+st.markdown("""
+<style>
+/* 전체 화면 폭과 기본 타이포 */
+.block-container {max-width: 1500px; padding-top: 4.5rem; padding-bottom: 3rem;}
+html, body, [class*="css"] {font-family: "Pretendard","Noto Sans KR","Malgun Gothic",sans-serif;}
+h1,h2,h3 {letter-spacing:-0.035em; color:#172033;}
+h1 {font-size:1.75rem!important; line-height:1.35!important; margin-top:0!important; padding-top:.15rem!important;} h2 {font-size:1.45rem!important;} h3 {font-size:1.15rem!important;}
+
+/* 입력창 */
+div[data-baseweb="input"] > div,
+div[data-baseweb="select"] > div,
+div[data-baseweb="textarea"] > div {
+    border-radius:10px!important; border-color:#d9e0e8!important; background:#fff!important;
+}
+div[data-testid="stDateInput"] input, div[data-testid="stTimeInput"] input {border-radius:10px!important;}
+
+/* 버튼 */
+.stButton > button, .stDownloadButton > button {
+    border-radius:10px!important; min-height:40px; font-weight:650;
+    border:1px solid #d8dee8; box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.stButton > button[kind="primary"] {
+    background:#315efb!important; border-color:#315efb!important;
+}
+
+/* 데이터 표 */
+div[data-testid="stDataFrame"] {
+    border:1px solid #e4e9f0; border-radius:12px; overflow:hidden;
+    box-shadow:0 2px 8px rgba(16,24,40,.035);
+}
+
+/* Metric */
+div[data-testid="stMetric"] {
+    background:#fff; border:1px solid #e4e9f0; border-radius:12px;
+    padding:14px 16px; box-shadow:0 2px 8px rgba(16,24,40,.035);
+}
+div[data-testid="stMetricLabel"] {font-weight:650; color:#667085;}
+div[data-testid="stMetricValue"] {font-size:1.65rem; color:#172033;}
+
+/* 안내창 */
+div[data-testid="stAlert"] {border-radius:10px;}
+
+/* 구분선 */
+hr {margin:1.5rem 0; border-color:#edf0f4;}
+
+/* 사이드바 */
+section[data-testid="stSidebar"] {border-right:1px solid #e8ecf2;}
+section[data-testid="stSidebar"] .stRadio label {padding:.18rem 0;}
+section[data-testid="stSidebar"] div[role="radiogroup"] {gap:.45rem;}
+
+/* v32.5: 처음 사용하는 사람도 업무버튼을 바로 찾도록 글자와 클릭영역 확대 */
+[data-testid="stMainBlockContainer"] div[data-testid="stButton"] > button,
+[data-testid="stMainBlockContainer"] div[data-testid="stFormSubmitButton"] > button,
+[data-testid="stMainBlockContainer"] div[data-testid="stDownloadButton"] > button {
+    font-size:1.28rem !important;
+    font-weight:800 !important;
+    min-height:3.25rem !important;
+    line-height:1.25 !important;
+    padding:.65rem .9rem !important;
+}
+
+section[data-testid="stSidebar"] .stRadio label {
+    font-size:1.08rem !important;
+    font-weight:750 !important;
+    padding:.34rem .2rem !important;
+    line-height:1.35 !important;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] label p {
+    font-size:1.08rem !important;
+    font-weight:750 !important;
+}
+
+[data-testid="stMainBlockContainer"] button[role="tab"] p {
+    font-size:1.03rem !important;
+    font-weight:750 !important;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+MENU_GROUPS = {
+    "🏠 홈": [
+        ("대시보드", "나의 업무현황 또는 관리자 통합현황"),
+    ],
+    "👥 인사": [
+        ("직원 관리", "직원 등록·정보 수정 및 기본 인사정보"),
+        ("연차 관리", "연차 발생·사용·잔여 현황 및 전 직원 요약"),
+        ("연차 신청서", "연차 신청서 조회·인쇄"),
+        ("계정·권한 관리", "직원 계정 생성·권한 부여·비밀번호 초기화"),
+    ],
+    "⏱️ 근태": [
+        ("초과근무 신청", "초과·휴일근무 사전 신청 및 신청내역 조회"),
+        ("초과근무 실적", "실제 수행내역·승인·월별 급여 연계"),
+    ],
+    "💰 급여": [
+        ("관리자 통계·보고서", "연·월별 급여·연차·초과근무·출장 통합 통계 및 보고서"),
+        ("통합 급여대장", "월 급여 계산·수정·확정 및 Excel"),
+        ("급여명세서", "직원별 급여명세서 조회·인쇄"),
+        ("급여대장 인쇄", "월별 통합 급여대장 인쇄"),
+        ("연간 급여총괄", "12개월 누적 급여대장 요약"),
+    ],
+    "🚗 출장": [
+        ("출장 관리", "신청·변경·승인·복명·정산·증빙·규정 통합관리"),
+    ],
+}
+
+MENU_TO_TAB = {
+    "대시보드": 0,
+    "직원 관리": 1, "초과근무 신청": 2, "초과근무 실적": 3,
+    "연차 관리": 4, "연차 신청서": 5, "통합 급여대장": 6,
+    "급여명세서": 7, "급여대장 인쇄": 8, "연간 급여총괄": 9,
+    "출장 관리": 10, "출장 신청·관리": 10, "출장 복명·규정": 11, "계정·권한 관리": 12,
+    "관리자 통계·보고서": 13
+}
+
+ROLE_ALLOWED_MENUS = {
+    "admin": set(MENU_TO_TAB.keys()),
+    "manager": {
+        "대시보드", "관리자 통계·보고서",
+        "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
+        "출장 관리"
+    },
+    "employee": {
+        "초과근무 신청", "초과근무 실적", "연차 관리", "연차 신청서",
+        "급여명세서", "출장 관리"
+    },
+    "viewer": {"연차 신청서", "급여명세서", "출장 복명·규정"},
+}
+
+with st.sidebar:
+    st.markdown("## 🏢 업무관리")
+    st.caption(f"화성시장기요양지원센터 · {APP_VERSION}")
+    st.markdown(
+        f"""<div style="padding:10px 12px;background:#f7f9fc;border:1px solid #e6eaf0;border-radius:10px;margin:10px 0 12px;">
+        <div style="font-weight:700;">👤 {CURRENT_NAME}</div>
+        <div style="font-size:.78rem;color:#667085;margin-top:3px;">{CURRENT_EMAIL}</div>
+        <div style="font-size:.78rem;color:#315efb;margin-top:3px;">{_role_label(CURRENT_ROLE)}</div>
+        </div>""",
+        unsafe_allow_html=True
+    )
+    if st.button("🚪 로그아웃", use_container_width=True):
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+        st.session_state.auth_user = None
+        st.session_state.auth_role = "viewer"
+        st.session_state.auth_access_token = ""
+        st.session_state.auth_refresh_token = ""
+        st.rerun()
+
+    with st.expander("🔐 내 비밀번호 변경"):
+        st.caption("현재 비밀번호를 확인한 뒤 새 비밀번호로 변경합니다.")
+        with st.form("self_password_change_form", clear_on_submit=True):
+            current_pw = st.text_input("현재 비밀번호", type="password", key="self_current_pw")
+            new_pw = st.text_input("새 비밀번호", type="password", key="self_new_pw", help="8자 이상, 영문자와 숫자를 각각 1자 이상 포함")
+            new_pw2 = st.text_input("새 비밀번호 확인", type="password", key="self_new_pw2")
+            change_self_pw = st.form_submit_button("비밀번호 변경", type="primary", use_container_width=True)
+
+        if change_self_pw:
+            ok, msg = _validate_password(new_pw)
+            if not current_pw:
+                st.warning("현재 비밀번호를 입력해 주세요.")
+            elif not ok:
+                st.warning(msg)
+            elif new_pw != new_pw2:
+                st.warning("새 비밀번호 확인이 일치하지 않습니다.")
+            elif current_pw == new_pw:
+                st.warning("새 비밀번호는 현재 비밀번호와 다르게 설정해 주세요.")
+            else:
+                try:
+                    # 현재 로그인 세션과 분리된 클라이언트로 기존 비밀번호를 검증한다.
+                    _verify_client = create_client(url, key)
+                    _verify_client.auth.sign_in_with_password({
+                        "email": CURRENT_EMAIL,
+                        "password": current_pw
+                    })
+                    # 현재 로그인한 사용자 본인의 비밀번호만 변경한다.
+                    supabase.auth.update_user({"password": new_pw})
+                    try:
+                        write_audit_log("본인 비밀번호 변경", "auth.users", str(_user_value(CURRENT_USER, "id", "")), CURRENT_EMAIL)
+                    except Exception:
+                        pass
+                    st.success("비밀번호가 변경되었습니다. 새 비밀번호로 다시 로그인해 주세요.")
+                    try:
+                        supabase.auth.sign_out()
+                    except Exception:
+                        pass
+                    st.session_state.auth_user = None
+                    st.session_state.auth_role = "viewer"
+                    st.session_state.auth_access_token = ""
+                    st.session_state.auth_refresh_token = ""
+                    st.rerun()
+                except Exception:
+                    st.error("현재 비밀번호가 일치하지 않거나 비밀번호 변경에 실패했습니다.")
+
+    if CURRENT_ROLE == "admin":
+        with st.expander("🎨 회사 로고 관리"):
+            st.caption("저장한 로고는 Supabase Storage에 보관되어 앱 재시작·재배포 후에도 유지됩니다.")
+            logo_file = st.file_uploader(
+                "로고 파일",
+                type=["png", "jpg", "jpeg"],
+                key="company_logo_upload"
+            )
+            if st.button("💾 회사 로고 저장", use_container_width=True):
+                if logo_file is None:
+                    st.warning("저장할 로고 파일을 선택해 주세요.")
+                else:
+                    try:
+                        save_company_logo(logo_file)
+                        write_audit_log("회사 로고 변경", "app_assets", COMPANY_LOGO_PATH, logo_file.name)
+                        st.success("회사 로고를 저장했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"회사 로고 저장 실패: {e}")
+    st.divider()
+    allowed_menus = ROLE_ALLOWED_MENUS.get(CURRENT_ROLE, ROLE_ALLOWED_MENUS["viewer"])
+    visible_groups = [g for g, items in MENU_GROUPS.items() if any(name in allowed_menus for name, _ in items)]
+    menu_group = st.radio("업무 영역", visible_groups, label_visibility="collapsed")
+    allowed_menus = ROLE_ALLOWED_MENUS.get(CURRENT_ROLE, ROLE_ALLOWED_MENUS["viewer"])
+    choices = [x[0] for x in MENU_GROUPS[menu_group] if x[0] in allowed_menus]
+    if not choices:
+        st.info("현재 권한에서 사용할 수 있는 메뉴가 없습니다.")
+        st.stop()
+    menu = st.radio("세부 메뉴", choices, label_visibility="collapsed")
+    desc = dict(MENU_GROUPS[menu_group])[menu]
+    st.caption(desc)
+    st.divider()
+    st.caption("급여 · 근태 · 연차 · 출장 통합관리")
+
+active_tab = MENU_TO_TAB[menu]
+
+# 현재 위치 표시
+st.markdown(f"### 🏢 화성시장기요양지원센터 통합 업무관리 시스템 · {APP_VERSION}")
+if CURRENT_ROLE == "employee":
+    if current_emp_id():
+        st.caption(f"👤 직원 전용 화면 · 사번 {current_emp_id()} · 본인 자료만 조회/신청")
+    else:
+        st.error("이 계정에 직원 사번이 연결되어 있지 않습니다. 관리자에게 계정 연결을 요청해 주세요.")
+
+
+# v32.7: 중복 안내카드 제거, 현재 위치만 한 줄로 표시
+_breadcrumb_group=menu_group.replace("👥 ","").replace("⏱️ ","").replace("💰 ","").replace("🚗 ","").replace("🏠 ","")
+st.caption(f"📍 {_breadcrumb_group} › {menu}")
+
+# -------------------------------------------------------------------
+# TAB 0: v19 직원 마이페이지 / 관리자 통합 대시보드
+# -------------------------------------------------------------------
+if active_tab == 0:
+    if CURRENT_ROLE == "employee":
+        st.header("👤 나의 업무 현황")
+        _eid=current_emp_id()
+        if not _eid:
+            st.warning("로그인 계정과 직원 사번이 연결되어 있지 않습니다.")
+        else:
+            try:
+                _me=(supabase.table("employees").select("*").eq("emp_id",_eid).limit(1).execute().data or [{}])[0]
+            except Exception: _me={}
+            st.subheader(f"{_me.get('emp_name',CURRENT_NAME)} 님")
+            st.caption(f"{_me.get('dept','')} · {_me.get('position','')} · 사번 {_eid}")
+
+            def _my_df(table):
+                try: return pd.DataFrame(supabase.table(table).select("*").eq("emp_id",_eid).execute().data or [])
+                except Exception: return pd.DataFrame()
+            _lv=_my_df("leave_records"); _ot=_my_df("overtime_records"); _tr=_my_df("business_trips")
+            _used=pd.to_numeric(_lv["used_days"],errors="coerce").fillna(0).sum() if (not _lv.empty and "used_days" in _lv) else 0
+            _month=datetime.now().strftime("%Y-%m")
+            _dc=next((c for c in ["work_date","ot_date","date"] if c in _ot.columns),None)
+            _otm=int(_ot[_ot[_dc].astype(str).str.startswith(_month)].shape[0]) if _dc else 0
+            c1,c2,c3=st.columns(3)
+            c1.metric("누적 휴가 사용",f"{_used:g}일"); c2.metric("이번 달 초과근무",f"{_otm}건"); c3.metric("출장 기록",f"{len(_tr)}건")
+            _oth=0.0
+            if not _ot.empty:
+                _hc=next((c for c in ["hours","actual_hours","work_hours"] if c in _ot.columns),None)
+                if _hc: _oth=pd.to_numeric(_ot[_hc],errors="coerce").fillna(0).sum()
+            _tc=int(pd.to_numeric(_tr["total_cost"],errors="coerce").fillna(0).sum()) if (not _tr.empty and "total_cost" in _tr.columns) else 0
+            _pending=(int((~_ot["status"].astype(str).isin(["승인","반려"])).sum()) if (not _ot.empty and "status" in _ot.columns) else 0)
+            _pending+=(int((~_tr["apply_status"].astype(str).isin(["승인","반려","취소"])).sum()) if (not _tr.empty and "apply_status" in _tr.columns) else 0)
+            s1,s2,s3=st.columns(3)
+            s1.metric("초과근무 누적시간",f"{_oth:g}시간")
+            s2.metric("출장비 누계",f"{_tc:,}원")
+            s3.metric("미처리 업무",f"{_pending}건")
+            st.divider()
+            a,b=st.columns(2)
+            with a:
+                st.subheader("🌴 최근 휴가")
+                if _lv.empty: st.info("휴가 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["start_date","end_date","leave_type","used_days"] if c in _lv.columns]
+                    display_table_kr((_lv.sort_values("id",ascending=False).head(5) if "id" in _lv else _lv.tail(5))[cs],use_container_width=True,hide_index=True)
+                st.subheader("⏱️ 최근 초과근무")
+
+                # v27.0 초과근무 급여반영기간 통합 조회
+                with st.expander("🕒 초과근무 급여반영 현황", expanded=False):
+                    _v270_today=datetime.now().date()
+                    _v270_year=st.selectbox("지급연도",list(range(_v270_today.year-2,_v270_today.year+2)),index=2,key="v270_ot_year")
+                    _v270_month=st.selectbox("지급월",list(range(1,13)),index=_v270_today.month-1,key="v270_ot_month")
+                    if _v270_month==1:
+                        _v270_start=datetime(_v270_year-1,12,25).date()
+                    else:
+                        _v270_start=datetime(_v270_year,_v270_month-1,25).date()
+                    _v270_end=datetime(_v270_year,_v270_month,24).date()
+                    st.caption(f"급여 반영기간: {_v270_start.isoformat()} ~ {_v270_end.isoformat()} (전월 25일 ~ 당월 24일)")
+                
+                    try:
+                        _v270_ot=pd.DataFrame(
+                            supabase.table("overtime_records").select("*")
+                            .gte("work_date",_v270_start.isoformat()).lte("work_date",_v270_end.isoformat())
+                            .execute().data or []
+                        )
+                    except Exception:
+                        _v270_ot=pd.DataFrame()
+                
+                    if _v270_ot.empty:
+                        st.info("해당 급여 반영기간의 초과근무 기록이 없습니다.")
+                    else:
+                        _v270_emp_col=next((c for c in ["emp_name","employee_name","name"] if c in _v270_ot.columns),None)
+                        _v270_id_col=next((c for c in ["emp_id","employee_id"] if c in _v270_ot.columns),None)
+                        _v270_hours_col=next((c for c in ["approved_hours","overtime_hours","hours","work_hours"] if c in _v270_ot.columns),None)
+                        _v270_pay_col=next((c for c in ["overtime_pay","pay_amount","amount"] if c in _v270_ot.columns),None)
+                
+                        _v270_count=len(_v270_ot)
+                        _v270_hours=float(pd.to_numeric(_v270_ot[_v270_hours_col],errors="coerce").fillna(0).sum()) if _v270_hours_col else 0
+                        _v270_pay=int(pd.to_numeric(_v270_ot[_v270_pay_col],errors="coerce").fillna(0).sum()) if _v270_pay_col else 0
+                        c1,c2,c3=st.columns(3)
+                        c1.metric("초과근무 기록",f"{_v270_count:,}건")
+                        c2.metric("반영시간",f"{_v270_hours:,.2f}시간")
+                        c3.metric("초과근무수당",f"{_v270_pay:,}원")
+                
+                        if _v270_emp_col and _v270_hours_col:
+                            _grp_cols=[c for c in [_v270_id_col,_v270_emp_col] if c]
+                            _agg={_v270_hours_col:"sum"}
+                            if _v270_pay_col: _agg[_v270_pay_col]="sum"
+                            _v270_sum=_v270_ot.groupby(_grp_cols,dropna=False).agg(_agg).reset_index()
+                            _rename={_v270_id_col:"사번",_v270_emp_col:"성명",_v270_hours_col:"반영시간",_v270_pay_col:"초과근무수당"}
+                            _v270_sum=_v270_sum.rename(columns={k:v for k,v in _rename.items() if k})
+                            if "반영시간" in _v270_sum.columns: _v270_sum["반영시간"]=_v270_sum["반영시간"].round(2)
+                            st.dataframe(_v270_sum,use_container_width=True,hide_index=True)
+                        else:
+                            st.dataframe(_v270_ot,use_container_width=True,hide_index=True)
+                
+                    st.info("이 화면은 초과근무의 급여 반영기간을 확인하는 조회 기능입니다. 기존 초과근무 등록·승인·급여 계산식은 변경하지 않습니다.")
+
+                if _ot.empty: st.info("초과근무 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["work_date","ot_date","hours","status"] if c in _ot.columns]
+                    display_table_kr((_ot.sort_values("id",ascending=False).head(5) if "id" in _ot else _ot.tail(5))[cs],use_container_width=True,hide_index=True)
+            with b:
+                st.subheader("🚗 최근 출장")
+
+                # v28.6 출장관리 업무현황
+                try:
+                    _v286_all=pd.DataFrame(supabase.table("business_trips").select("*").execute().data or [])
+                except Exception:
+                    _v286_all=pd.DataFrame()
+                if not _v286_all.empty:
+                    _ap=_v286_all.get("apply_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _rp=_v286_all.get("report_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _sp=_v286_all.get("settlement_status",pd.Series([""]*len(_v286_all))).astype(str)
+                    _c1,_c2,_c3,_c4,_c5=st.columns(5)
+                    _c1.metric("전체 출장",f"{len(_v286_all):,}건")
+                    _c2.metric("승인대기",f"{int(_ap.isin(['신청','승인대기']).sum()):,}건")
+                    _c3.metric("미보고",f"{int((~_rp.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+                    _c4.metric("미정산",f"{int((~_sp.isin(['정산완료','지급완료'])).sum()):,}건")
+                    _c5.metric("지급완료",f"{int((_sp=='지급완료').sum()):,}건")
+                st.info("📋 출장현황  |  📝 신청·변경  |  ✅ 승인관리  |  📄 복명·보고  |  💳 정산관리  |  📎 증빙관리  |  📊 월별현황")
+
+                # v28.0 출장관리 고도화: 월별 출장비 집계 · 지급자료 · 미처리 알림
+                with st.expander("📊 월별 출장비 · 지급/정산 현황", expanded=True):
+                    _v280_today=datetime.now().date()
+                    _v280_c1,_v280_c2=st.columns(2)
+                    with _v280_c1:
+                        _v280_year=st.selectbox("조회연도",list(range(_v280_today.year-2,_v280_today.year+2)),index=2,key="v280_trip_year")
+                    with _v280_c2:
+                        _v280_month=st.selectbox("조회월",list(range(1,13)),index=_v280_today.month-1,key="v280_trip_month")
+                    _v280_start=datetime(_v280_year,_v280_month,1).date()
+                    if _v280_month==12:
+                        _v280_next=datetime(_v280_year+1,1,1).date()
+                    else:
+                        _v280_next=datetime(_v280_year,_v280_month+1,1).date()
+                
+                    try:
+                        _v280_trips=pd.DataFrame(
+                            supabase.table("business_trips").select("*")
+                            .gte("start_at",_v280_start.isoformat()).lt("start_at",_v280_next.isoformat())
+                            .order("start_at").execute().data or []
+                        )
+                    except Exception:
+                        _v280_trips=pd.DataFrame()
+                
+                    if _v280_trips.empty:
+                        st.info("해당 월의 출장 자료가 없습니다.")
+                    else:
+                        _num_cols=["transport_cost","toll_cost","lodging_cost","other_cost","daily_cost","meal_cost","total_cost"]
+                        for _c in _num_cols:
+                            if _c in _v280_trips.columns:
+                                _v280_trips[_c]=pd.to_numeric(_v280_trips[_c],errors="coerce").fillna(0)
+                
+                        _total=int(_v280_trips["total_cost"].sum()) if "total_cost" in _v280_trips.columns else 0
+                        _unreported=int((~_v280_trips.get("report_status",pd.Series([""]*len(_v280_trips))).astype(str).isin(["완료","보고완료","제출완료"])).sum())
+                        _unsettled=int((~_v280_trips.get("settlement_status",pd.Series([""]*len(_v280_trips))).astype(str).isin(["완료","정산완료","지급완료"])).sum())
+                        c1,c2,c3,c4=st.columns(4)
+                        c1.metric("출장 건수",f"{len(_v280_trips):,}건")
+                        c2.metric("출장비 합계",f"{_total:,}원")
+                        c3.metric("미보고",f"{_unreported:,}건")
+                        c4.metric("미정산",f"{_unsettled:,}건")
+                
+                        if _unreported:
+                            st.warning(f"⚠️ 출장보고 미완료 {_unreported}건이 있습니다.")
+                        if _unsettled:
+                            st.warning(f"💳 출장비 정산/지급 미완료 {_unsettled}건이 있습니다.")
+                
+                        _show_cols=[c for c in ["emp_id","emp_name","department","position","start_at","end_at","destination","purpose","report_status","settlement_status","transport_cost","toll_cost","lodging_cost","daily_cost","meal_cost","other_cost","total_cost"] if c in _v280_trips.columns]
+                        _v280_show=_v280_trips[_show_cols].copy()
+                        _v280_show=_v280_show.rename(columns={
+                            "emp_id":"사번","emp_name":"성명","department":"부서","position":"직위",
+                            "start_at":"출장시작","end_at":"출장종료","destination":"출장지","purpose":"출장목적",
+                            "report_status":"보고상태","settlement_status":"정산상태",
+                            "transport_cost":"교통비","toll_cost":"통행료","lodging_cost":"숙박비",
+                            "daily_cost":"일비","meal_cost":"식비","other_cost":"기타비용","total_cost":"출장비합계"
+                        })
+                        st.dataframe(_v280_show,use_container_width=True,hide_index=True)
+                
+                        # 회계/지급용 직원별 월 집계
+                        if "emp_name" in _v280_trips.columns:
+                            _grp=["emp_id","emp_name"] if "emp_id" in _v280_trips.columns else ["emp_name"]
+                            _agg={c:"sum" for c in _num_cols if c in _v280_trips.columns}
+                            if _agg:
+                                _v280_pay=_v280_trips.groupby(_grp,dropna=False).agg(_agg).reset_index()
+                                _v280_pay=_v280_pay.rename(columns={"emp_id":"사번","emp_name":"성명","transport_cost":"교통비","toll_cost":"통행료","lodging_cost":"숙박비","daily_cost":"일비","meal_cost":"식비","other_cost":"기타비용","total_cost":"지급예정액"})
+                                st.markdown("**회계·지급용 직원별 출장비 집계**")
+                                st.dataframe(_v280_pay,use_container_width=True,hide_index=True)
+                
+                                # Excel export matching the screen.
+                                try:
+                                    from io import BytesIO as _V280BytesIO
+                                    _bio=_V280BytesIO()
+                                    with pd.ExcelWriter(_bio,engine="openpyxl") as _writer:
+                                        _v280_pay.to_excel(_writer,index=False,sheet_name="직원별 출장비")
+                                        _v280_show.to_excel(_writer,index=False,sheet_name="출장 상세")
+                                        for _ws in _writer.book.worksheets:
+                                            _ws.freeze_panes="A2"
+                                            _ws.auto_filter.ref=_ws.dimensions
+                                            for _cell in _ws[1]:
+                                                _cell.alignment=Alignment(horizontal="center",vertical="center")
+                                            for _col in _ws.columns:
+                                                _letter=_col[0].column_letter
+                                                _width=min(max(max((len(str(x.value)) if x.value is not None else 0) for x in _col)+2,10),30)
+                                                _ws.column_dimensions[_letter].width=_width
+                                    st.download_button("📥 월별 출장비 지급자료 Excel",data=_bio.getvalue(),file_name=f"출장비_지급자료_{_v280_year}-{_v280_month:02d}.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key="v280_trip_excel")
+                                except Exception as _e:
+                                    st.caption(f"Excel 생성 오류: {_e}")
+                
+                    st.caption("출장비는 출장관리 원장의 정산금액을 기준으로 집계합니다. 급여 본봉에는 자동 합산하지 않고 회계·지급자료로 분리하여 제공합니다.")
+
+                if _tr.empty: st.info("출장 내역이 없습니다.")
+                else:
+                    cs=[c for c in ["start_at","end_at","destination","purpose","apply_status"] if c in _tr.columns]
+                    display_table_kr((_tr.sort_values("id",ascending=False).head(5) if "id" in _tr else _tr.tail(5))[cs],use_container_width=True,hide_index=True)
+                st.subheader("💰 급여")
+                st.info("좌측 ‘급여명세서’ 메뉴에서 본인 급여명세서를 확인하세요.")
+    else:
+        st.header("📊 관리자 통합 대시보드")
+        def _all_df(table):
+            try: return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
+            except Exception: return pd.DataFrame()
+        _em=_all_df("employees"); _lv=_all_df("leave_records"); _ot=_all_df("overtime_records"); _tr=_all_df("business_trips")
+        _otp=int((~_ot["status"].astype(str).isin(["승인","반려"])).sum()) if (not _ot.empty and "status" in _ot) else 0
+        _trp=int((~_tr["apply_status"].astype(str).isin(["승인","반려","취소"])).sum()) if (not _tr.empty and "apply_status" in _tr) else 0
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("직원",f"{len(_em)}명"); c2.metric("휴가 신청",f"{len(_lv)}건"); c3.metric("초과근무 미처리",f"{_otp}건"); c4.metric("출장 미처리",f"{_trp}건")
+        _aoth=0.0
+        if not _ot.empty:
+            _hc=next((c for c in ["hours","actual_hours","work_hours"] if c in _ot.columns),None)
+            if _hc: _aoth=pd.to_numeric(_ot[_hc],errors="coerce").fillna(0).sum()
+        _atc=int(pd.to_numeric(_tr["total_cost"],errors="coerce").fillna(0).sum()) if (not _tr.empty and "total_cost" in _tr.columns) else 0
+        x1,x2=st.columns(2)
+        x1.metric("초과근무 누적시간",f"{_aoth:g}시간")
+        x2.metric("출장비 누계",f"{_atc:,}원")
+        st.divider()
+        a,b=st.columns(2)
+        with a:
+            st.subheader("🌴 최근 휴가")
+            if not _lv.empty:
+                cs=[c for c in ["emp_name","start_date","end_date","leave_type","used_days"] if c in _lv.columns]
+                display_table_kr((_lv.sort_values("id",ascending=False).head(8) if "id" in _lv else _lv.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("휴가 신청이 없습니다.")
+            st.subheader("⏱️ 최근 초과근무")
+            if not _ot.empty:
+                cs=[c for c in ["emp_name","work_date","ot_date","hours","status"] if c in _ot.columns]
+                display_table_kr((_ot.sort_values("id",ascending=False).head(8) if "id" in _ot else _ot.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("초과근무가 없습니다.")
+        with b:
+            st.subheader("🚗 최근 출장")
+            if not _tr.empty:
+                cs=[c for c in ["emp_name","destination","start_at","end_at","apply_status"] if c in _tr.columns]
+                display_table_kr((_tr.sort_values("id",ascending=False).head(8) if "id" in _tr else _tr.tail(8))[cs],use_container_width=True,hide_index=True)
+            else: st.info("출장 내역이 없습니다.")
+            st.subheader("👥 부서별 인원")
+            if not _em.empty and "dept" in _em.columns:
+                display_table_kr(_em.groupby("dept").size().reset_index(name="인원"),use_container_width=True,hide_index=True)
+            else: st.info("직원 데이터가 없습니다.")
+
+# -------------------------------------------------------------------
+# TAB 1: 직원 등록 및 정보 관리
+# -------------------------------------------------------------------
+if active_tab == 1:
+    st.header("👥 직원 인사카드 관리")
+    if not has_permission("employee_write"):
+        st.info("🔒 현재 계정은 직원정보 조회만 가능합니다. 등록·수정은 관리자 권한이 필요합니다.")
+
+    def _emp_load():
+        try:
+            data=supabase.table("employees").select("*").order("emp_id").execute().data or []
+            return scope_employee_master(pd.DataFrame(data))
+        except Exception as e:
+            st.warning("직원 데이터를 불러오지 못했습니다.")
+            return pd.DataFrame()
+
+    def _safe_table(name, emp_id=None):
+        try:
+            q=supabase.table(name).select("*")
+            if emp_id is not None: q=q.eq("emp_id",str(emp_id))
+            return pd.DataFrame(q.order("created_at",desc=True).execute().data or [])
+        except Exception:
+            return pd.DataFrame()
+
+    df_emp=_emp_load()
+    if CURRENT_ROLE=="admin":
+        with st.expander("🔎 로그인·RLS 세션 진단",expanded=False):
+            _ad=auth_diagnostic()
+            c1,c2,c3=st.columns(3)
+            c1.metric("앱 권한",str(CURRENT_ROLE))
+            c2.metric("JWT role",_ad.get("role") or "(없음)")
+            c3.metric("JWT 사번",_ad.get("emp_id") or "(없음)")
+            st.caption(f"로그인 이메일: {_ad.get('email') or '-'}")
+            if not _ad.get("authenticated"):
+                st.error("Supabase Auth 세션을 확인하지 못했습니다. 로그아웃 후 다시 로그인해 주세요.")
+            elif _ad.get("role")!="admin":
+                st.warning("화면 권한은 관리자이지만 Supabase JWT role이 admin이 아닙니다. 로그인 세션 JWT가 연결되지 않았습니다. v21.5에서 로그아웃 후 다시 로그인해 주세요.")
+            else:
+                st.success("앱 세션의 JWT 관리자 권한이 정상입니다.")
+
+    _hr_view=workflow_button_nav(
+        "직원관리 업무 선택",
+        ["📋 직원 목록","🪪 통합 인사기록카드","📊 직원 종합현황","🚪 퇴직·증명서·통합대장",
+         "💰 급여·수당 설정","🧾 인사이력·경력사항","📁 인사서류","🔐 계좌·민감정보"],
+        key="v325_hr_view",
+        caption="확인하거나 처리할 인사업무를 선택해 주세요. 선택한 업무 화면만 표시됩니다.",
+        max_per_row=4
+    )
+
+    if _hr_view=="📋 직원 목록":
+        st.markdown("#### 📋 재직 직원 현황")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            list_cols=[c for c in ["emp_id","emp_name","dept","position","hire_date","employment_status","retire_date"] if c in df_emp.columns]
+            display_table_kr(df_emp[list_cols] if list_cols else df_emp, use_container_width=True, hide_index=True)
+            st.caption("상세 수정은 위의 '통합 인사기록카드' 버튼을 선택한 뒤 직원을 선택하여 처리합니다.")
+
+    if _hr_view=="🪪 통합 인사기록카드":
+        st.markdown("#### 🪪 신규등록 / 기존직원 수정")
+        mode=st.radio("작업 구분",["신규 직원 등록","기존 직원 수정"],horizontal=True,key="v21_emp_mode")
+        selected_row={}
+        selected_emp_id=None
+        if mode=="기존 직원 수정":
+            if df_emp.empty:
+                st.info("수정할 직원이 없습니다.")
+            else:
+                opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+                selected=st.selectbox("수정할 직원",list(opts.keys()),key="v21_emp_select")
+                selected_row=opts[selected]
+                selected_emp_id=str(selected_row.get("emp_id",""))
+
+        def _v(k,default=""):
+            v=selected_row.get(k,default)
+            return default if pd.isna(v) else v
+        def _datev(k, fallback=None):
+            """Streamlit date_input용 안전한 날짜값."""
+            raw=_v(k, None)
+            if raw is None or raw == "" or str(raw).lower() in ("none","nan","nat"):
+                return fallback
+            try:
+                dt=pd.to_datetime(raw,errors="coerce")
+                return fallback if pd.isna(dt) else dt.date()
+            except Exception:
+                return fallback
+
+        if mode=="신규 직원 등록" or selected_emp_id:
+            with st.form("v21_employee_card_form"):
+                st.markdown("##### 기본 인사정보")
+                c1,c2,c3=st.columns(3)
+                emp_id=c1.text_input("사번",value=str(_v("emp_id","")),disabled=(mode=="기존 직원 수정"))
+                emp_name=c2.text_input("성명",value=str(_v("emp_name","")))
+                birth_date=c3.date_input("생년월일",value=_datev("birth_date", datetime(1980,1,1).date()),format="YYYY-MM-DD")
+                c1,c2,c3=st.columns(3)
+                dept=c1.text_input("부서",value=str(_v("dept","")))
+                position=c2.text_input("직위",value=str(_v("position","")))
+                hobong=c3.text_input("호봉",value=str(_v("hobong","")))
+                c1,c2,c3=st.columns(3)
+                hire_date=c1.date_input("입사일",value=_datev("hire_date", datetime.now().date()),format="YYYY-MM-DD")
+                employment_status=c2.selectbox("재직상태",["재직","휴직","퇴직"],
+                    index=["재직","휴직","퇴직"].index(str(_v("employment_status","재직"))) if str(_v("employment_status","재직")) in ["재직","휴직","퇴직"] else 0)
+                if employment_status=="퇴직":
+                    retire_date=c3.date_input("퇴사일",value=_datev("retire_date", datetime.now().date()),format="YYYY-MM-DD")
+                else:
+                    c3.text_input("퇴사일",value="재직 중",disabled=True)
+                    retire_date=None
+                c1,c2=st.columns(2)
+                phone=c1.text_input("연락처",value=str(_v("phone","")))
+                email=c2.text_input("이메일",value=str(_v("email","")))
+                address=st.text_input("주소",value=str(_v("address","")))
+
+                st.markdown("##### 급여·근무 기준")
+                c1,c2,c3=st.columns(3)
+                base_salary=c1.number_input("기본급",min_value=0,value=int(float(_v("base_salary",0) or 0)),step=10000)
+                hourly_wage=c2.number_input("통상시급",min_value=0,value=int(float(_v("hourly_wage",0) or 0)),step=100)
+                total_leave=c3.number_input("연간 총 연차",min_value=0.0,value=float(_v("total_annual_leave",15) or 0),step=0.5,format="%.2f")
+                c1,c2,c3=st.columns(3)
+                family_allowance=c1.number_input("가족수당",min_value=0,value=int(float(_v("family_allowance",0) or 0)),step=10000)
+                non_taxable=c2.number_input("비과세",min_value=0,value=int(float(_v("non_taxable",0) or 0)),step=10000)
+                other_allowance=c3.number_input("기타수당",min_value=0,value=int(float(_v("other_allowance",0) or 0)),step=10000)
+
+                st.markdown("##### 4대보험 가입")
+                c1,c2,c3,c4=st.columns(4)
+                is_national=c1.checkbox("국민연금",value=bool(_v("is_national",1)))
+                is_health=c2.checkbox("건강/장기요양",value=bool(_v("is_health",1)))
+                is_employment=c3.checkbox("고용보험",value=bool(_v("is_employment",1)))
+                is_industrial=c4.checkbox("산재보험",value=bool(_v("is_industrial",1)))
+
+                save=st.form_submit_button("💾 직원정보 등록" if mode=="신규 직원 등록" else "💾 직원정보 수정 저장",use_container_width=True)
+                if save and has_permission("employee_write"):
+                    payload={
+                        "emp_id":str(emp_id).strip(),"emp_name":emp_name.strip(),
+                        "birth_date":birth_date.isoformat() if birth_date else None,
+                        "dept":dept,"position":position,"hobong":hobong,
+                        "hire_date":hire_date.isoformat() if hire_date else None,
+                        "retire_date":retire_date.isoformat() if retire_date and employment_status=="퇴직" else None,
+                        "employment_status":employment_status,"phone":phone,"email":email,"address":address,
+                        "base_salary":base_salary,"hourly_wage":hourly_wage,
+                        "total_annual_leave":total_leave,"family_allowance":family_allowance,
+                        "non_taxable":non_taxable,"other_allowance":other_allowance,
+                        "is_national":1 if is_national else 0,"is_health":1 if is_health else 0,
+                        "is_employment":1 if is_employment else 0,"is_industrial":1 if is_industrial else 0
+                    }
+                    try:
+                        if mode=="신규 직원 등록":
+                            supabase.table("employees").insert(payload).execute()
+                            st.success("신규 직원이 등록되었습니다.")
+                        else:
+                            supabase.table("employees").update(payload).eq("emp_id",selected_emp_id).execute()
+                            st.success("직원 인사카드가 수정되었습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error("저장하지 못했습니다. v21 인사정보 DB 확장 SQL을 먼저 적용했는지 확인해 주세요.")
+
+        st.divider()
+        st.markdown("#### 📘 개인별 통합 인사기록")
+        st.caption("기본 인사정보와 함께 학력·가족·자격·병역·신체정보를 직원별로 관리합니다.")
+        if not df_emp.empty and has_permission("employee_write"):
+            _p_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _p_sel=st.selectbox("통합 인사기록 직원 선택",list(_p_opts.keys()),key="v230_profile_emp")
+            _peid=str(_p_opts[_p_sel].get("emp_id",""))
+            try:
+                _pr=supabase.table("employee_profiles").select("*").eq("emp_id",_peid).limit(1).execute()
+                _pdata=(_pr.data or [{}])[0] if getattr(_pr,"data",None) else {}
+            except Exception:
+                _pdata={}
+            st.caption("신장·체중·혈액형·취미·병역사항은 인사기록 관리 대상에서 제외했습니다.")
+
+            st.markdown("##### 🎓 학력")
+            _edu=_safe_table("employee_education",_peid)
+            if not _edu.empty:
+                display_table_kr(_edu,use_container_width=True,hide_index=True)
+                _edu_rows={f"{r.get('school_name','')} · {r.get('major','')} · #{r.get('id','')}":r.to_dict() for _,r in _edu.iterrows()}
+                _edu_sel=st.selectbox("수정·삭제할 학력",list(_edu_rows.keys()),key="v231_edu_sel")
+                _er=_edu_rows[_edu_sel]
+                with st.expander("✏️ 선택 학력 수정·삭제"):
+                    with st.form("v231_edu_edit"):
+                        c1,c2,c3=st.columns(3)
+                        _eeschool=c1.text_input("학교명",value=str(_er.get("school_name","") or ""))
+                        _eemajor=c2.text_input("전공",value=str(_er.get("major","") or ""))
+                        _eedegree=c3.text_input("학위·과정",value=str(_er.get("degree","") or ""))
+                        _eenote=st.text_input("학력 비고",value=str(_er.get("note","") or ""))
+                        if st.form_submit_button("💾 학력 수정 저장"):
+                            try:
+                                supabase.table("employee_education").update({"school_name":_eeschool,"major":_eemajor,"degree":_eedegree,"note":_eenote}).eq("id",_er.get("id")).eq("emp_id",_peid).execute()
+                                st.success("학력을 수정했습니다."); st.rerun()
+                            except Exception: st.error("학력 수정 실패")
+                    _edel=st.checkbox("선택 학력 삭제 확인",key="v231_edu_del_confirm")
+                    if st.button("🗑️ 선택 학력 삭제",key="v231_edu_del",disabled=not _edel):
+                        try:
+                            supabase.table("employee_education").delete().eq("id",_er.get("id")).eq("emp_id",_peid).execute()
+                            st.success("학력을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("학력 삭제 실패")
+            with st.form("v230_edu_form",clear_on_submit=True):
+                c1,c2,c3=st.columns(3); _school=c1.text_input("학교명"); _major=c2.text_input("전공"); _degree=c3.text_input("학위·과정")
+                c1,c2=st.columns(2); _es=c1.date_input("입학일",key="v230_es"); _ee=c2.date_input("졸업·수료일",key="v230_ee")
+                _en=st.text_input("학력 비고")
+                if st.form_submit_button("학력 등록"):
+                    try:
+                        supabase.table("employee_education").insert({"emp_id":_peid,"school_name":_school,"major":_major,"degree":_degree,"start_date":_es.isoformat(),"end_date":_ee.isoformat(),"note":_en}).execute(); st.success("학력을 등록했습니다."); st.rerun()
+                    except Exception: st.error("학력 저장 실패")
+
+            st.markdown("##### 👪 가족사항")
+            _fam=_safe_table("employee_family",_peid)
+            if not _fam.empty:
+                display_table_kr(_fam,use_container_width=True,hide_index=True)
+                _fam_rows={f"{r.get('family_name','')} · {r.get('relation','')} · #{r.get('id','')}":r.to_dict() for _,r in _fam.iterrows()}
+                _fam_sel=st.selectbox("수정·삭제할 가족사항",list(_fam_rows.keys()),key="v231_fam_sel")
+                _frw=_fam_rows[_fam_sel]
+                with st.expander("✏️ 선택 가족사항 수정·삭제"):
+                    with st.form("v231_fam_edit"):
+                        c1,c2,c3=st.columns(3)
+                        _efn=c1.text_input("성명",value=str(_frw.get("family_name","") or ""))
+                        _efr=c2.text_input("관계",value=str(_frw.get("relation","") or ""))
+                        _efj=c3.text_input("직업",value=str(_frw.get("occupation","") or ""))
+                        _efp=st.text_input("연락처",value=str(_frw.get("phone","") or ""))
+                        if st.form_submit_button("💾 가족사항 수정 저장"):
+                            try:
+                                supabase.table("employee_family").update({"family_name":_efn,"relation":_efr,"occupation":_efj,"phone":_efp}).eq("id",_frw.get("id")).eq("emp_id",_peid).execute()
+                                st.success("가족사항을 수정했습니다."); st.rerun()
+                            except Exception: st.error("가족사항 수정 실패")
+                    _fdel=st.checkbox("선택 가족사항 삭제 확인",key="v231_fam_del_confirm")
+                    if st.button("🗑️ 선택 가족사항 삭제",key="v231_fam_del",disabled=not _fdel):
+                        try:
+                            supabase.table("employee_family").delete().eq("id",_frw.get("id")).eq("emp_id",_peid).execute()
+                            st.success("가족사항을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("가족사항 삭제 실패")
+            with st.form("v230_family_form",clear_on_submit=True):
+                c1,c2,c3=st.columns(3); _fn=c1.text_input("성명"); _fr=c2.text_input("관계"); _fj=c3.text_input("직업")
+                c1,c2=st.columns(2); _fb=c1.date_input("생년월일",key="v230_fb"); _fp=c2.text_input("연락처")
+                if st.form_submit_button("가족사항 등록"):
+                    try:
+                        supabase.table("employee_family").insert({"emp_id":_peid,"family_name":_fn,"relation":_fr,"birth_date":_fb.isoformat(),"occupation":_fj,"phone":_fp}).execute(); st.success("가족사항을 등록했습니다."); st.rerun()
+                    except Exception: st.error("가족사항 저장 실패")
+
+            st.markdown("##### 🪪 면허·자격")
+            _lic=_safe_table("employee_licenses",_peid)
+            if not _lic.empty:
+                display_table_kr(_lic,use_container_width=True,hide_index=True)
+                _lic_rows={f"{r.get('license_name','')} · {r.get('issuer','')} · #{r.get('id','')}":r.to_dict() for _,r in _lic.iterrows()}
+                _lic_sel=st.selectbox("수정·삭제할 면허·자격",list(_lic_rows.keys()),key="v231_lic_sel")
+                _lr=_lic_rows[_lic_sel]
+                with st.expander("✏️ 선택 면허·자격 수정·삭제"):
+                    with st.form("v231_lic_edit"):
+                        c1,c2=st.columns(2)
+                        _eln=c1.text_input("면허·자격명",value=str(_lr.get("license_name","") or ""))
+                        _elno=c2.text_input("자격번호",value=str(_lr.get("license_number","") or ""))
+                        c1,c2=st.columns(2)
+                        _elo=c1.text_input("발급기관",value=str(_lr.get("issuer","") or ""))
+                        _elnt=c2.text_input("자격 비고",value=str(_lr.get("note","") or ""))
+                        if st.form_submit_button("💾 면허·자격 수정 저장"):
+                            try:
+                                supabase.table("employee_licenses").update({"license_name":_eln,"license_number":_elno,"issuer":_elo,"note":_elnt}).eq("id",_lr.get("id")).eq("emp_id",_peid).execute()
+                                st.success("면허·자격을 수정했습니다."); st.rerun()
+                            except Exception: st.error("면허·자격 수정 실패")
+                    _ldel=st.checkbox("선택 면허·자격 삭제 확인",key="v231_lic_del_confirm")
+                    if st.button("🗑️ 선택 면허·자격 삭제",key="v231_lic_del",disabled=not _ldel):
+                        try:
+                            supabase.table("employee_licenses").delete().eq("id",_lr.get("id")).eq("emp_id",_peid).execute()
+                            st.success("면허·자격을 삭제했습니다."); st.rerun()
+                        except Exception: st.error("면허·자격 삭제 실패")
+            with st.form("v230_license_form",clear_on_submit=True):
+                c1,c2=st.columns(2); _ln=c1.text_input("면허·자격명"); _lno=c2.text_input("자격번호")
+                c1,c2=st.columns(2); _lo=c1.text_input("발급기관"); _ld=c2.date_input("취득일",key="v230_ld")
+                _lnt=st.text_input("자격 비고")
+                if st.form_submit_button("면허·자격 등록"):
+                    try:
+                        supabase.table("employee_licenses").insert({"emp_id":_peid,"license_name":_ln,"license_number":_lno,"issuer":_lo,"issue_date":_ld.isoformat(),"note":_lnt}).execute(); st.success("면허·자격을 등록했습니다."); st.rerun()
+                    except Exception: st.error("면허·자격 저장 실패")
+            st.info("📄 다음 단계에서 직원 사진·경력/인사이력 연계와 A4 개인별 인사기록카드 출력을 연결합니다.")
+
+        st.divider()
+        st.markdown("#### 🖼️ 직원 사진 및 통합 인사기록카드")
+        if not df_emp.empty and has_permission("employee_write"):
+            _photo_emp_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _photo_sel=st.selectbox("인사기록카드 대상 직원",list(_photo_emp_opts.keys()),key="v232_photo_emp")
+            _photo_row=_photo_emp_opts[_photo_sel]
+            _photo_eid=str(_photo_row.get("emp_id",""))
+
+            try:
+                _ph=supabase.table("employee_profiles").select("*").eq("emp_id",_photo_eid).limit(1).execute()
+                _phdata=(_ph.data or [{}])[0] if getattr(_ph,"data",None) else {}
+            except Exception:
+                _phdata={}
+
+            c1,c2=st.columns([1,3])
+            with c1:
+                _photo_path=str(_phdata.get("photo_path","") or "")
+                if _photo_path:
+                    try:
+                        _ps=supabase.storage.from_("employee-photos").create_signed_url(_photo_path,300)
+                        _pu=(_ps.get("signedURL") or _ps.get("signedUrl")) if isinstance(_ps,dict) else getattr(_ps,"signed_url","")
+                        if _pu: st.image(_pu,width=150)
+                    except Exception:
+                        st.caption("등록 사진을 불러오지 못했습니다.")
+                _pf=st.file_uploader("직원 사진",type=["jpg","jpeg","png"],key="v232_photo_file")
+                if st.button("📷 사진 저장·교체",key="v232_photo_save",use_container_width=True):
+                    if _pf is None:
+                        st.warning("사진 파일을 선택해 주세요.")
+                    else:
+                        try:
+                            import uuid as _uuid
+                            _ext=Path(_pf.name).suffix.lower()
+                            _newp=f"{_photo_eid}/{_uuid.uuid4().hex[:12]}{_ext}"
+                            supabase.storage.from_("employee-photos").upload(_newp,_pf.getvalue(),{"content-type":_pf.type or "image/jpeg","upsert":"false"})
+                            if _phdata.get("id"):
+                                supabase.table("employee_profiles").update({"photo_path":_newp,"updated_at":datetime.now().isoformat()}).eq("id",_phdata["id"]).execute()
+                            else:
+                                supabase.table("employee_profiles").insert({"emp_id":_photo_eid,"photo_path":_newp}).execute()
+                            if _photo_path:
+                                try: supabase.storage.from_("employee-photos").remove([_photo_path])
+                                except Exception: pass
+                            st.success("직원 사진을 저장했습니다."); st.rerun()
+                        except Exception:
+                            st.error("사진 저장 실패: v23.2 SQL 적용 여부를 확인해 주세요.")
+
+            with c2:
+                st.markdown("##### 📋 인사기록 통합 미리보기")
+                _ed=_safe_table("employee_education",_photo_eid)
+                _fa=_safe_table("employee_family",_photo_eid)
+                _li=_safe_table("employee_licenses",_photo_eid)
+                _ca=_safe_table("employee_careers",_photo_eid)
+                try:
+                    _hi=pd.DataFrame(supabase.table("employee_history").select("*").eq("emp_id",_photo_eid).execute().data or [])
+                except Exception:
+                    _hi=pd.DataFrame()
+                st.write(f"**성명:** {_photo_row.get('emp_name','')}　 **사번:** {_photo_eid}　 **부서:** {_photo_row.get('dept','')}　 **직위:** {_photo_row.get('position','')}")
+                st.caption(f"학력 {len(_ed)}건 · 가족 {len(_fa)}건 · 자격 {len(_li)}건 · 경력 {len(_ca)}건 · 인사이력 {len(_hi)}건")
+
+            st.markdown("##### 🎓 학력")
+            if not _ed.empty: display_table_kr(_ed,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 학력이 없습니다.")
+            st.markdown("##### 🪪 면허·자격")
+            if not _li.empty: display_table_kr(_li,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 면허·자격이 없습니다.")
+            st.markdown("##### 🧾 경력")
+            if not _ca.empty: display_table_kr(_ca,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 경력이 없습니다.")
+            st.markdown("##### 🗂️ 인사이력")
+            if not _hi.empty: display_table_kr(_hi,use_container_width=True,hide_index=True)
+            else: st.caption("등록된 인사이력이 없습니다.")
+
+            # Browser print: current integrated card section/page
+            st.markdown("""
+            <style>
+            @media print {
+              [data-testid="stSidebar"], header, footer, .stButton, .stFileUploader {display:none !important;}
+              .block-container {max-width:100% !important; padding:10mm !important;}
+              table {font-size:10px !important;}
+            }
+            </style>
+            """,unsafe_allow_html=True)
+            st.markdown("##### 🖨️ A4 개인별 인사기록카드 전용 출력")
+            def _esc(v):
+                if v is None or (isinstance(v,float) and pd.isna(v)): return ""
+                return html.escape(str(v))
+            def _rows_html(df, cols, empty_text="등록내역 없음"):
+                if df is None or df.empty:
+                    return f'<tr><td colspan="{len(cols)}" class="empty">{empty_text}</td></tr>'
+                rows=[]
+                for _,r in df.iterrows():
+                    rows.append("<tr>"+"".join(f"<td>{_esc(r.get(k,''))}</td>" for k,_ in cols)+"</tr>")
+                return "".join(rows)
+            def _head_html(cols):
+                return "<tr>"+"".join(f"<th>{_esc(label)}</th>" for _,label in cols)+"</tr>"
+
+            _photo_html='<div class="photo-box">사진</div>'
+            if _photo_path:
+                try:
+                    _ps2=supabase.storage.from_("employee-photos").create_signed_url(_photo_path,1800)
+                    _pu2=(_ps2.get("signedURL") or _ps2.get("signedUrl")) if isinstance(_ps2,dict) else getattr(_ps2,"signed_url","")
+                    if _pu2: _photo_html=f'<img class="photo-box" src="{_esc(_pu2)}">'
+                except Exception:
+                    pass
+
+            _edu_cols=[("school_name","학교명"),("major","전공"),("degree","학위·과정"),("start_date","입학일"),("end_date","졸업·수료일")]
+            _lic_cols=[("license_name","면허·자격명"),("license_number","자격번호"),("issuer","발급기관"),("issue_date","취득일")]
+            _career_cols=[("company_name","근무처"),("position","직위·직급"),("start_date","시작일"),("end_date","종료일"),("recognized_months","인정경력(개월)")]
+            _hist_cols=[("effective_date","발령일"),("history_type","구분"),("before_value","변경 전"),("after_value","변경 후"),("note","비고")]
+
+            _print_html=f"""
+            <div id="hr-card-print" class="hr-card">
+              <div class="hr-title">개 인 별  인 사 기 록 카 드</div>
+              <div class="top-grid">
+                <div>
+                  <table class="info-table">
+                    <tr><th>사번</th><td>{_esc(_photo_eid)}</td><th>성명</th><td>{_esc(_photo_row.get('emp_name',''))}</td></tr>
+                    <tr><th>부서</th><td>{_esc(_photo_row.get('dept',''))}</td><th>직위</th><td>{_esc(_photo_row.get('position',''))}</td></tr>
+                    <tr><th>입사일</th><td>{_esc(_photo_row.get('hire_date',''))}</td><th>재직상태</th><td>{_esc(_photo_row.get('employment_status',''))}</td></tr>
+                    <tr><th>연락처</th><td>{_esc(_photo_row.get('phone',''))}</td><th>이메일</th><td>{_esc(_photo_row.get('email',''))}</td></tr>
+                    <tr><th>주소</th><td colspan="3">{_esc(_photo_row.get('address',''))}</td></tr>
+                  </table>
+                </div>
+                <div>{_photo_html}</div>
+              </div>
+
+              <div class="section-title">학 력 사 항</div>
+              <table>{_head_html(_edu_cols)}{_rows_html(_ed,_edu_cols)}</table>
+              <div class="section-title">면 허 · 자 격 사 항</div>
+              <table>{_head_html(_lic_cols)}{_rows_html(_li,_lic_cols)}</table>
+              <div class="section-title">경 력 사 항</div>
+              <table>{_head_html(_career_cols)}{_rows_html(_ca,_career_cols)}</table>
+              <div class="section-title">입 사 후 인 사 이 력</div>
+              <table>{_head_html(_hist_cols)}{_rows_html(_hi,_hist_cols)}</table>
+              <div class="print-footer">화성시장기요양지원센터 · 인사기록카드 · {APP_VERSION}</div>
+            </div>
+            <style>
+              .hr-card{{display:none}}
+              @media print {{
+                body * {{visibility:hidden !important;}}
+                #hr-card-print, #hr-card-print * {{visibility:visible !important;}}
+                #hr-card-print {{
+                  display:block !important; position:absolute; left:0; top:0;
+                  width:190mm; margin:0; padding:0; color:#000; background:#fff;
+                  font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+                }}
+                @page {{size:A4 portrait; margin:10mm;}}
+                .hr-title{{font-size:22px;font-weight:700;text-align:center;letter-spacing:5px;margin:3mm 0 5mm}}
+                .top-grid{{display:grid;grid-template-columns:1fr 32mm;gap:4mm;align-items:start}}
+                .photo-box{{width:30mm;height:40mm;border:1px solid #000;object-fit:cover;display:flex;align-items:center;justify-content:center;font-size:11px}}
+                #hr-card-print table{{width:100%;border-collapse:collapse;table-layout:fixed;margin:0 0 3mm}}
+                #hr-card-print th,#hr-card-print td{{border:1px solid #000;padding:2mm 1.5mm;font-size:9.5px;text-align:center;vertical-align:middle;word-break:break-word}}
+                #hr-card-print th{{font-weight:700;background:#f2f2f2}}
+                #hr-card-print .info-table th{{width:15%}}
+                #hr-card-print .info-table td{{text-align:left}}
+                .section-title{{font-size:12px;font-weight:700;text-align:center;border:1px solid #000;border-bottom:0;padding:1.5mm;margin-top:3mm;letter-spacing:2px}}
+                .empty{{height:9mm;color:#555}}
+                .print-footer{{font-size:8px;text-align:right;margin-top:3mm}}
+              }}
+            </style>
+            """
+            st.markdown(_print_html,unsafe_allow_html=True)
+            st.info("아래 버튼을 누른 뒤 브라우저 인쇄 창에서 A4 세로 / 여백 기본 / 배율 100%로 출력하세요.")
+            _print_doc = """<!doctype html><html><head><meta charset="utf-8"><title>개인별 인사기록카드</title>
+<style>
+@page { size:A4 portrait; margin:10mm; }
+html,body { margin:0; padding:0; background:#fff; color:#000; }
+body { font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+.hr-card { display:block !important; width:190mm !important; margin:0 auto !important; padding:0 !important; }
+.hr-title { font-size:24px !important; font-weight:700; text-align:center; letter-spacing:6px; margin:2mm 0 6mm !important; }
+.top-grid { display:grid; grid-template-columns:1fr 34mm; gap:4mm; align-items:start; }
+.photo-box { width:32mm !important; height:42mm !important; border:1px solid #000; object-fit:cover; display:flex; align-items:center; justify-content:center; font-size:11px; }
+table { width:100%; border-collapse:collapse; table-layout:fixed; margin:0 0 3mm; }
+th,td { border:1px solid #000; padding:2.6mm 1.7mm; font-size:11.5px; text-align:center; vertical-align:middle; word-break:break-word; }
+th { font-weight:700; background:#f2f2f2; }
+.info-table th { width:15%; }
+.info-table td { text-align:left; }
+.section-title { font-size:13.5px; font-weight:700; text-align:center; border:1px solid #000; border-bottom:0; padding:1.7mm; margin-top:3mm; letter-spacing:2px; }
+.empty { height:9mm; color:#555; }
+.print-footer { font-size:9px; text-align:right; margin-top:3mm; }
+@media print { .hr-card { break-inside:auto; } tr { break-inside:avoid; } }
+</style></head><body>""" + _print_html.split("<style>")[0] + """</body></html>"""
+            if st.button("🖨️ A4 인사기록카드 출력",key="v233_print"):
+                _print_component = _print_doc.replace(
+                    "</body></html>",
+                    """<script>
+window.addEventListener("load", function(){
+  setTimeout(function(){ window.focus(); window.print(); }, 400);
+});
+</script></body></html>"""
+                )
+                st.components.v1.html(_print_component, height=1120, scrolling=False)
+
+    if _hr_view=="📊 직원 종합현황":
+        st.markdown("#### 👤 직원별 종합 인사현황")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _sum_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _sum_sel=st.selectbox("직원 선택",list(_sum_opts.keys()),key="v234_summary_emp")
+            _sr=_sum_opts[_sum_sel]
+            _seid=str(_sr.get("emp_id",""))
+
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("성명",str(_sr.get("emp_name","") or "-"))
+            c2.metric("부서",str(_sr.get("dept","") or "-"))
+            c3.metric("직위",str(_sr.get("position","") or "-"))
+            c4.metric("재직상태",str(_sr.get("employment_status","") or "재직"))
+
+            st.markdown("##### 📊 인사관리 핵심 현황")
+            _today_v250=pd.Timestamp(datetime.now().date())
+            try:
+                _all_docs_v250=pd.DataFrame(supabase.table("employee_documents").select("*").execute().data or [])
+            except Exception:
+                _all_docs_v250=pd.DataFrame()
+            try:
+                _all_lic_v250=pd.DataFrame(supabase.table("employee_licenses").select("*").execute().data or [])
+            except Exception:
+                _all_lic_v250=pd.DataFrame()
+
+            _active_cnt=int((df_emp.get("employment_status",pd.Series("",index=df_emp.index)).fillna("재직").astype(str)!="퇴직").sum())
+            _retired_cnt=int((df_emp.get("employment_status",pd.Series("",index=df_emp.index)).fillna("").astype(str)=="퇴직").sum())
+            _exp_doc_cnt=0
+            if not _all_docs_v250.empty and "expiry_date" in _all_docs_v250.columns:
+                _dx=pd.to_datetime(_all_docs_v250["expiry_date"],errors="coerce").dt.normalize()
+                _exp_doc_cnt=int(((_dx>=_today_v250)&(_dx<=_today_v250+pd.Timedelta(days=60))).sum())
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("전체 직원",f"{len(df_emp):,}명")
+            c2.metric("재직",f"{_active_cnt:,}명")
+            c3.metric("퇴직",f"{_retired_cnt:,}명")
+            c4.metric("60일 내 만료서류",f"{_exp_doc_cnt:,}건")
+
+            st.markdown("##### 📌 기본 인사정보")
+            _basic=pd.DataFrame([{
+                "사번":_seid,"성명":_sr.get("emp_name",""),"부서":_sr.get("dept",""),
+                "직위":_sr.get("position",""),"입사일":_sr.get("hire_date",""),
+                "퇴사일":_sr.get("retire_date",""),"연락처":_sr.get("phone",""),
+                "이메일":_sr.get("email",""),"주소":_sr.get("address","")
+            }])
+            st.dataframe(_basic,use_container_width=True,hide_index=True)
+
+            def _v234_emp_table(name):
+                try:
+                    return pd.DataFrame(supabase.table(name).select("*").eq("emp_id",_seid).execute().data or [])
+                except Exception:
+                    return pd.DataFrame()
+
+            _sum_leave=_v234_emp_table("leave_records")
+            _sum_ot=_v234_emp_table("overtime_records")
+            _sum_trip=_v234_emp_table("business_trips")
+            _sum_career=_v234_emp_table("employee_careers")
+            _sum_license=_v234_emp_table("employee_licenses")
+            _sum_docs=_v234_emp_table("employee_documents")
+            _sum_hist=_v234_emp_table("employee_history")
+
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("연차 기록",f"{len(_sum_leave):,}건")
+            c2.metric("초과근무",f"{len(_sum_ot):,}건")
+            c3.metric("출장",f"{len(_sum_trip):,}건")
+            c4.metric("인사이력",f"{len(_sum_hist):,}건")
+
+            _s1,_s2,_s3,_s4,_s5,_s6=st.tabs(["연차","초과근무","출장","경력·자격","인사서류","인사이력"])
+            with _s1:
+                if _sum_leave.empty: st.caption("연차 기록이 없습니다.")
+                else: display_table_kr(_sum_leave,use_container_width=True,hide_index=True)
+            with _s2:
+                if _sum_ot.empty: st.caption("초과근무 기록이 없습니다.")
+                else: display_table_kr(_sum_ot,use_container_width=True,hide_index=True)
+            with _s3:
+                if _sum_trip.empty: st.caption("출장 기록이 없습니다.")
+                else: display_table_kr(_sum_trip,use_container_width=True,hide_index=True)
+            with _s4:
+                st.markdown("**경력사항**")
+                if _sum_career.empty: st.caption("경력사항이 없습니다.")
+                else: display_table_kr(_sum_career,use_container_width=True,hide_index=True)
+                st.markdown("**면허·자격**")
+                if _sum_license.empty: st.caption("면허·자격이 없습니다.")
+                else: display_table_kr(_sum_license,use_container_width=True,hide_index=True)
+            with _s5:
+                if _sum_docs.empty: st.caption("등록된 인사서류가 없습니다.")
+                else: display_table_kr(_sum_docs,use_container_width=True,hide_index=True)
+            with _s6:
+                if _sum_hist.empty: st.caption("인사이력이 없습니다.")
+                else: display_table_kr(_sum_hist,use_container_width=True,hide_index=True)
+
+    if _hr_view=="🚪 퇴직·증명서·통합대장":
+        st.markdown("#### 🧑‍💼 퇴직처리 · 증명서 · 직원 통합대장")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif not has_permission("employee_write"):
+            st.warning("인사관리 권한이 필요합니다.")
+        else:
+            _opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _sel=st.selectbox("대상 직원",list(_opts.keys()),key="v240_emp")
+            _er=_opts[_sel]; _eid=str(_er.get("emp_id",""))
+            _tab_retire,_tab_cert,_tab_ledger=st.tabs(["퇴직처리","재직·경력증명서","직원 통합대장"])
+
+            with _tab_retire:
+                st.caption("퇴직처리 후에도 기존 급여·연차·출장 등 업무 이력은 보존됩니다.")
+                with st.form("v240_retire"):
+                    _rd=st.date_input("퇴직일",value=datetime.now().date())
+                    _rr=st.text_area("퇴직사유")
+                    _ok=st.checkbox("퇴직처리 내용을 확인했습니다.")
+                    if st.form_submit_button("🚪 퇴직처리",use_container_width=True):
+                        if not _ok: st.warning("확인란에 체크해 주세요.")
+                        else:
+                            try:
+                                supabase.table("employees").update({"retire_date":_rd.isoformat(),"employment_status":"퇴직"}).eq("emp_id",_eid).execute()
+                                supabase.table("employee_history").insert({"emp_id":_eid,"effective_date":_rd.isoformat(),"history_type":"퇴직","before_value":str(_er.get("employment_status","재직") or "재직"),"after_value":"퇴직","note":_rr}).execute()
+                                st.success("퇴직처리가 완료되었습니다."); st.rerun()
+                            except Exception as e: st.error(f"퇴직처리 실패: {e}")
+                if str(_er.get("employment_status",""))=="퇴직":
+                    if st.button("↩️ 재직상태로 복원",key="v240_restore"):
+                        try:
+                            supabase.table("employees").update({"retire_date":None,"employment_status":"재직"}).eq("emp_id",_eid).execute()
+                            st.success("재직상태로 복원했습니다."); st.rerun()
+                        except Exception as e: st.error(f"복원 실패: {e}")
+
+                if CURRENT_ROLE=="admin":
+                    with st.expander("🗑️ 테스트·오등록 직원 삭제",expanded=False):
+                        st.warning("실제 근무이력이 있는 직원은 삭제하지 말고 퇴직처리해 주세요. 이 기능은 테스트/오등록 직원 정리 전용입니다.")
+
+                        _blocking_refs={}
+                        for _tb in ["overtime_records","leave_records","leave_grants","business_trips"]:
+                            try:
+                                _blocking_refs[_tb]=len(
+                                    supabase.table(_tb).select("id").eq("emp_id",str(_eid)).limit(2).execute().data or []
+                                )
+                            except Exception:
+                                _blocking_refs[_tb]=0
+
+                        # 급여조정은 금액이 있는 행만 실급여자료로 판단
+                        try:
+                            _pa_rows=supabase.table("monthly_payroll_adjust").select("*").eq("emp_id",str(_eid)).execute().data or []
+                        except Exception:
+                            _pa_rows=[]
+                        _pa_df=pd.DataFrame(_pa_rows)
+                        _pa_money_cols=[
+                            "base_salary","ot_pay","family_allowance","holiday_bonus","non_taxable","other_allowance",
+                            "national_pension","health_insurance","longterm_care","employment_insurance",
+                            "income_tax","local_tax","other_deduction",
+                            "employer_national_pension","employer_health_insurance","employer_longterm_care",
+                            "employer_employment_insurance","employer_industrial_insurance","retirement_accrual"
+                        ]
+                        if _pa_df.empty:
+                            _pa_nonzero=pd.Series(dtype=bool)
+                        else:
+                            _pa_total=pd.Series(0,index=_pa_df.index,dtype="float64")
+                            for _pay_col in [c for c in _pa_money_cols if c in _pa_df.columns]:
+                                _pa_total=_pa_total+pd.to_numeric(_pa_df[_pay_col],errors="coerce").fillna(0).abs()
+                            _pa_nonzero=_pa_total>0
+
+                        _pay_real_count=int(_pa_nonzero.sum()) if not _pa_df.empty else 0
+                        _pay_zero_count=int((~_pa_nonzero).sum()) if not _pa_df.empty else 0
+                        _has_blocking=any(v>0 for v in _blocking_refs.values()) or _pay_real_count>0
+
+                        c1,c2,c3=st.columns(3)
+                        c1.metric("실업무 연결",f"{sum(_blocking_refs.values()):,}건")
+                        c2.metric("실급여 자료",f"{_pay_real_count:,}건")
+                        c3.metric("0원 급여행",f"{_pay_zero_count:,}건")
+
+                        with st.expander("🔎 삭제 차단 자료 상세",expanded=False):
+                            _ref_labels={
+                                "overtime_records":"초과근무",
+                                "leave_records":"연차 사용",
+                                "leave_grants":"연차 발생·조정",
+                                "business_trips":"출장"
+                            }
+                            _ref_rows=[
+                                {"구분":_ref_labels.get(_k,_k),"건수":int(_v)}
+                                for _k,_v in _blocking_refs.items()
+                            ]
+                            _ref_rows += [
+                                {"구분":"급여자료(금액 있음)","건수":int(_pay_real_count)},
+                                {"구분":"급여자료(전부 0원)","건수":int(_pay_zero_count)}
+                            ]
+                            display_table_kr(pd.DataFrame(_ref_rows),use_container_width=True,hide_index=True)
+
+                        if _has_blocking:
+                            st.error("실제 초과근무·연차·출장 또는 금액이 있는 급여자료가 연결되어 있어 삭제할 수 없습니다. 해당 직원은 퇴직처리를 사용해 주세요.")
+                        else:
+                            if _pay_zero_count:
+                                st.info(f"금액이 전부 0원인 급여 저장행 {_pay_zero_count}건은 테스트/빈 데이터로 보고 직원 삭제 시 함께 정리합니다.")
+                            st.caption("테스트/오등록 직원의 인사이력도 함께 삭제됩니다.")
+                            _typed=st.text_input("삭제 확인용 사번 입력",key="v322_emp_delete_id")
+                            _del_confirm=st.checkbox(
+                                f"{_er.get('emp_name','')} ({_eid}) 직원과 테스트성 연결자료를 영구 삭제합니다.",
+                                key="v322_emp_del_confirm"
+                            )
+                            _can_delete=_del_confirm and _typed.strip()==str(_eid)
+                            if st.button("🗑️ 테스트·오등록 직원 영구 삭제",type="primary",disabled=not _can_delete,key="v322_emp_delete"):
+                                try:
+                                    # 금액이 모두 0원인 급여 조정행만 정리
+                                    if _pay_zero_count:
+                                        for _r in _pa_df.loc[~_pa_nonzero].to_dict("records"):
+                                            if _r.get("id") is not None:
+                                                supabase.table("monthly_payroll_adjust").delete().eq("id",_r.get("id")).execute()
+
+                                    try:
+                                        supabase.table("employee_history").delete().eq("emp_id",str(_eid)).execute()
+                                    except Exception:
+                                        pass
+
+                                    supabase.table("employees").delete().eq("emp_id",str(_eid)).execute()
+                                    write_audit_log("테스트/오등록 직원 삭제","employees",str(_eid),str(_er.get("emp_name","")))
+                                    st.success("테스트/오등록 직원과 0원 급여 연결자료를 삭제했습니다.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"직원 삭제 실패: {e}")
+
+            with _tab_cert:
+                st.markdown("##### 📄 재직·경력증명서 발급")
+                _ct=st.radio("증명서 종류",["재직증명서","경력증명서"],horizontal=True,key="v241_cert_type")
+                _purpose=st.text_input("용도",value="제출용",key="v241_cert_purpose")
+                _issue_day=datetime.now().date()
+                _hire=str(_er.get("hire_date","") or "")
+                _ret=str(_er.get("retire_date","") or "")
+                _period=f"{_hire} ~ {_ret if _ret else '재직중'}"
+                _birth_date="-"
+                try:
+                    _priv=(supabase.table("employee_private_info").select("resident_no").eq("emp_id",_eid).limit(1).execute().data or [{}])[0]
+                    _rrn=re.sub(r"[^0-9]","",str(_priv.get("resident_no","") or ""))
+                    if len(_rrn)>=7:
+                        _yy=int(_rrn[:2]); _mm=_rrn[2:4]; _dd=_rrn[4:6]; _g=_rrn[6]
+                        _century="19" if _g in "1256" else "20" if _g in "3478" else ""
+                        if _century: _birth_date=f"{_century}{_yy:02d}.{_mm}.{_dd}."
+                except Exception:
+                    pass
+
+                # 발급번호는 실제 발급 저장 시 DB identity를 기준으로 확정
+                _preview_no=f"미발급-{_issue_day.strftime('%Y%m%d')}"
+                st.caption(f"미리보기 발급번호: {_preview_no} · 실제 발급 시 자동 확정")
+
+                _cert_body=f"""
+                <div class="v241-cert">
+                  <div class="cert-no">발급번호: {_preview_no}</div>
+                  <h1>{_ct}</h1>
+                  <table>
+                    <tr><th>성명</th><td>{_er.get('emp_name','')}</td><th>생년월일</th><td>{_birth_date}</td></tr>
+                    <tr><th>부서</th><td>{_er.get('dept','')}</td><th>직위</th><td>{_er.get('position','')}</td></tr>
+                    <tr><th>재직기간</th><td colspan="3">{_period}</td></tr>
+                    <tr><th>용도</th><td colspan="3">{_purpose}</td></tr>
+                  </table>
+                  <p class="cert-text">{'상기와 같이 현재 재직하고 있음을 증명합니다.' if _ct=='재직증명서' else '상기와 같이 재직하였음을 증명합니다.'}</p>
+                  <p class="cert-date">{_issue_day.strftime('%Y. %m. %d.')}</p>
+                  <p class="cert-org">화성시장기요양지원센터장 <span style="font-size:14px;font-weight:400">(직인)</span></p>
+                </div>
+                <style>
+                .v241-cert{{max-width:760px;margin:20px auto;padding:45px;border:1px solid #aaa;background:#fff;color:#000}}
+                .v241-cert .cert-no{{text-align:right;font-size:12px;margin-bottom:10px}}
+                .v241-cert h1{{text-align:center;letter-spacing:8px;margin:25px 0 45px;font-size:30px}}
+                .v241-cert table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+                .v241-cert th,.v241-cert td{{border:1px solid #222;padding:13px;text-align:center;font-size:14px}}
+                .v241-cert th{{background:#f4f4f4;width:18%}}
+                .v241-cert .cert-text{{text-align:center;margin-top:55px;font-size:18px}}
+                .v241-cert .cert-date{{text-align:center;margin-top:50px;font-size:15px}}
+                .v241-cert .cert-org{{text-align:center;font-size:22px;font-weight:700;margin-top:30px}}
+                </style>
+                """
+                st.markdown(_cert_body,unsafe_allow_html=True)
+
+                c_issue,c_print=st.columns(2)
+                with c_issue:
+                    if st.button("📌 증명서 발급·대장 저장",key="v241_issue",use_container_width=True):
+                        try:
+                            _login_email=str(st.session_state.get("user_email","") or st.session_state.get("login_email","") or "")
+                            _issued_by=str(st.session_state.get("user_name","") or st.session_state.get("name","") or _login_email or "관리자")
+                            _ins=supabase.table("employee_certificate_issues").insert({
+                                "emp_id":_eid,"emp_name":str(_er.get("emp_name","") or ""),
+                                "certificate_type":_ct,"purpose":_purpose,
+                                "issue_date":_issue_day.isoformat(),"issued_by":_issued_by,"status":"발급"
+                            }).execute()
+                            _row=(_ins.data or [{}])[0]
+                            _iid=_row.get("id")
+                            _cert_no=f"HSCARE-{_issue_day.strftime('%Y%m%d')}-{int(_iid):05d}" if _iid else f"HSCARE-{_issue_day.strftime('%Y%m%d')}"
+                            if _iid:
+                                supabase.table("employee_certificate_issues").update({"certificate_no":_cert_no}).eq("id",_iid).execute()
+                            st.session_state["v241_last_cert_no"]=_cert_no
+                            st.success(f"발급대장에 저장했습니다. 발급번호: {_cert_no}")
+                        except Exception as e:
+                            st.error(f"증명서 발급 저장 실패: {e}")
+
+                _final_no=st.session_state.get("v241_last_cert_no",_preview_no)
+                _print_cert=_cert_body.replace(_preview_no,str(_final_no))
+                _print_doc="""<!doctype html><html><head><meta charset="utf-8"><title>증명서</title>
+                <style>
+                @page{size:A4 portrait;margin:15mm}
+                html,body{margin:0;padding:0;background:white;color:black;font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif}
+                .v241-cert{width:180mm;box-sizing:border-box;margin:0 auto;padding:18mm 12mm;border:0}
+                .cert-no{text-align:right;font-size:11pt;margin-bottom:8mm}
+                h1{text-align:center;letter-spacing:8px;font-size:24pt;margin:5mm 0 18mm}
+                table{width:100%;border-collapse:collapse;table-layout:fixed}
+                th,td{border:1px solid #111;padding:4mm 2mm;text-align:center;font-size:11pt}
+                th{width:18%;background:#f4f4f4}
+                .cert-text{text-align:center;margin-top:25mm;font-size:14pt}
+                .cert-date{text-align:center;margin-top:22mm;font-size:11pt}
+                .cert-org{text-align:center;margin-top:12mm;font-size:17pt;font-weight:700}
+                </style></head><body>""" + _print_cert.split("<style>")[0] + """</body></html>"""
+                with c_print:
+                    if st.button("🖨️ A4 증명서 출력",key="v241_print",use_container_width=True):
+                        _pc=_print_doc.replace("</body></html>","""<script>
+                        window.addEventListener("load",function(){setTimeout(function(){window.focus();window.print();},400);});
+                        </script></body></html>""")
+                        st.components.v1.html(_pc,height=1050,scrolling=False)
+
+                st.divider()
+                st.markdown("##### 📚 증명서 발급대장 · 검색 · 재출력 · 취소")
+                _fc1,_fc2,_fc3=st.columns([1.3,1,1])
+                with _fc1:
+                    _kw=st.text_input("직원 검색",placeholder="성명 또는 사번",key="v242_cert_kw")
+                with _fc2:
+                    _from=st.date_input("조회 시작일",value=datetime(datetime.now().year,1,1).date(),key="v242_cert_from")
+                with _fc3:
+                    _to=st.date_input("조회 종료일",value=datetime.now().date(),key="v242_cert_to")
+
+                try:
+                    _issues=pd.DataFrame(
+                        supabase.table("employee_certificate_issues")
+                        .select("*").gte("issue_date",_from.isoformat()).lte("issue_date",_to.isoformat())
+                        .order("id",desc=True).limit(1000).execute().data or []
+                    )
+                except Exception:
+                    _issues=pd.DataFrame()
+
+                if not _issues.empty and _kw.strip():
+                    _needle=_kw.strip().lower()
+                    _issues=_issues[
+                        _issues.get("emp_name",pd.Series("",index=_issues.index)).fillna("").astype(str).str.lower().str.contains(_needle,regex=False) |
+                        _issues.get("emp_id",pd.Series("",index=_issues.index)).fillna("").astype(str).str.lower().str.contains(_needle,regex=False)
+                    ]
+
+                if _issues.empty:
+                    st.caption("조건에 해당하는 발급이력이 없습니다.")
+                else:
+                    _show=_issues.rename(columns={
+                        "certificate_no":"발급번호","emp_id":"사번","emp_name":"성명",
+                        "certificate_type":"증명서종류","purpose":"용도","issue_date":"발급일",
+                        "issued_by":"발급자","status":"상태","cancel_reason":"취소사유",
+                        "cancelled_at":"취소일시","created_at":"등록일"
+                    })
+                    _sc=[x for x in ["발급번호","사번","성명","증명서종류","용도","발급일","발급자","상태","취소사유","등록일"] if x in _show.columns]
+                    st.dataframe(_show[_sc],use_container_width=True,hide_index=True)
+
+                    import io as _cert_io
+                    _cert_buf=_cert_io.BytesIO()
+                    with pd.ExcelWriter(_cert_buf,engine="openpyxl") as _writer:
+                        _show[_sc].to_excel(_writer,index=False,sheet_name="증명서 발급대장")
+                        _ws=_writer.book["증명서 발급대장"]
+                        _ws.freeze_panes="A2"; _ws.auto_filter.ref=_ws.dimensions
+                        for _cell in _ws[1]:
+                            _cell.alignment=_cell.alignment.copy(horizontal="center",vertical="center")
+                        for _col in _ws.columns:
+                            _mx=max(len(str(_x.value or "")) for _x in _col)
+                            _ws.column_dimensions[_col[0].column_letter].width=min(max(_mx+3,12),35)
+                    st.download_button(
+                        "⬇️ 조회된 증명서 발급대장 Excel",
+                        data=_cert_buf.getvalue(),
+                        file_name=f"증명서_발급대장_{_from.strftime('%Y%m%d')}_{_to.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="v243_cert_excel",
+                        use_container_width=True
+                    )
+
+                    _issue_opts={}
+                    for _,_ir in _issues.iterrows():
+                        _lbl=f"{_ir.get('certificate_no','')} · {_ir.get('emp_name','')} · {_ir.get('certificate_type','')} · {_ir.get('issue_date','')}"
+                        _issue_opts[_lbl]=_ir.to_dict()
+                    _picked=st.selectbox("재출력/취소할 발급건",list(_issue_opts.keys()),key="v242_pick_issue")
+                    _pr=_issue_opts[_picked]
+                    _pstatus=str(_pr.get("status","발급") or "발급")
+                    st.caption(f"현재 상태: {_pstatus}")
+
+                    _rc1,_rc2=st.columns(2)
+                    with _rc1:
+                        if st.button("🖨️ 선택 증명서 재출력",key="v242_reprint",use_container_width=True):
+                            _r_emp=str(_pr.get("emp_name","") or "")
+                            _r_no=str(_pr.get("certificate_no","") or "")
+                            _r_type=str(_pr.get("certificate_type","") or "")
+                            _r_purpose=str(_pr.get("purpose","") or "")
+                            _r_date=str(_pr.get("issue_date","") or "")
+                            _r_eid=str(_pr.get("emp_id","") or "")
+                            try:
+                                _ed=(supabase.table("employees").select("*").eq("emp_id",_r_eid).limit(1).execute().data or [{}])[0]
+                            except Exception:
+                                _ed={}
+                            _rh=str(_ed.get("hire_date","") or "")
+                            _rrt=str(_ed.get("retire_date","") or "")
+                            _rperiod=f"{_rh} ~ {_rrt if _rrt else '재직중'}"
+                            _rbirth="-"
+                            try:
+                                _rp=(supabase.table("employee_private_info").select("resident_no").eq("emp_id",_r_eid).limit(1).execute().data or [{}])[0]
+                                _rn=re.sub(r"[^0-9]","",str(_rp.get("resident_no","") or ""))
+                                if len(_rn)>=7:
+                                    _ry=int(_rn[:2]); _rm=_rn[2:4]; _rd=_rn[4:6]; _rg=_rn[6]
+                                    _rc="19" if _rg in "1256" else "20" if _rg in "3478" else ""
+                                    if _rc: _rbirth=f"{_rc}{_ry:02d}.{_rm}.{_rd}."
+                            except Exception:
+                                pass
+                            try: _rdate_fmt=pd.to_datetime(_r_date).strftime("%Y. %m. %d.")
+                            except Exception: _rdate_fmt=_r_date
+                            _rdoc=f"""<!doctype html><html><head><meta charset="utf-8"><title>{_r_type}</title>
+                            <style>@page{{size:A4 portrait;margin:15mm}}body{{font-family:"Malgun Gothic",sans-serif;color:#000}}
+                            .c{{width:180mm;margin:0 auto;padding:18mm 12mm;box-sizing:border-box}}.n{{text-align:right;font-size:11pt}}
+                            h1{{text-align:center;letter-spacing:8px;font-size:24pt;margin:12mm 0 18mm}}
+                            table{{width:100%;border-collapse:collapse;table-layout:fixed}}th,td{{border:1px solid #111;padding:4mm 2mm;text-align:center;font-size:11pt}}
+                            th{{width:18%;background:#f4f4f4}}.txt{{text-align:center;margin-top:25mm;font-size:14pt}}
+                            .dt{{text-align:center;margin-top:22mm}}.org{{text-align:center;margin-top:12mm;font-size:17pt;font-weight:700}}</style>
+                            </head><body><div class="c"><div class="n">발급번호: {_r_no}</div><h1>{_r_type}</h1>
+                            <table><tr><th>성명</th><td>{_r_emp}</td><th>생년월일</th><td>{_rbirth}</td></tr>
+                            <tr><th>부서</th><td>{_ed.get('dept','')}</td><th>직위</th><td>{_ed.get('position','')}</td></tr>
+                            <tr><th>재직기간</th><td colspan="3">{_rperiod}</td></tr><tr><th>용도</th><td colspan="3">{_r_purpose}</td></tr></table>
+                            <p class="txt">{'상기와 같이 현재 재직하고 있음을 증명합니다.' if _r_type=='재직증명서' else '상기와 같이 재직하였음을 증명합니다.'}</p><p class="dt">{_rdate_fmt}</p>
+                            <p class="org">화성시장기요양지원센터장 <span style="font-size:10pt;font-weight:400">(직인)</span></p></div>
+                            <script>window.addEventListener("load",function(){{setTimeout(function(){{window.focus();window.print();}},400);}});</script>
+                            </body></html>"""
+                            st.components.v1.html(_rdoc,height=1050,scrolling=False)
+
+                    with _rc2:
+                        if _pstatus=="취소":
+                            st.warning("이미 취소된 발급건입니다.")
+                        else:
+                            _cancel_reason=st.text_input("발급취소 사유",key="v242_cancel_reason")
+                            if st.button("🚫 선택 발급건 취소",key="v242_cancel",use_container_width=True):
+                                if not _cancel_reason.strip():
+                                    st.warning("취소 사유를 입력해 주세요.")
+                                else:
+                                    try:
+                                        supabase.table("employee_certificate_issues").update({
+                                            "status":"취소","cancel_reason":_cancel_reason.strip(),
+                                            "cancelled_at":datetime.now().isoformat()
+                                        }).eq("id",int(_pr.get("id"))).execute()
+                                        st.success("발급건을 취소 처리했습니다. 기록은 삭제하지 않습니다."); st.rerun()
+                                    except Exception as e:
+                                        st.error(f"발급취소 실패: {e}")
+
+                st.info("증명서 관리: 발급·검색·재출력·취소·Excel 발급대장까지 연결되었습니다. 실제 직인 이미지 자동 삽입은 기존 로고/보안 설정과 분리하여 추후 선택 기능으로 적용합니다.")
+
+            with _tab_ledger:
+                _ledger=df_emp.copy().rename(columns={"emp_id":"사번","emp_name":"성명","dept":"부서","position":"직위","hire_date":"입사일","retire_date":"퇴사일","employment_status":"재직상태","phone":"연락처","email":"이메일","address":"주소"})
+                _cols=[x for x in ["사번","성명","부서","직위","입사일","퇴사일","재직상태","연락처","이메일","주소"] if x in _ledger.columns]
+                st.dataframe(_ledger[_cols],use_container_width=True,hide_index=True)
+                import io as _io
+                _buf=_io.BytesIO()
+                with pd.ExcelWriter(_buf,engine="openpyxl") as _writer:
+                    _ledger[_cols].to_excel(_writer,index=False,sheet_name="직원 인사 통합대장")
+                    _ws=_writer.book["직원 인사 통합대장"]; _ws.freeze_panes="A2"; _ws.auto_filter.ref=_ws.dimensions
+                    for _cell in _ws[1]: _cell.alignment=_cell.alignment.copy(horizontal="center",vertical="center")
+                    for _col in _ws.columns:
+                        _mx=max(len(str(_x.value or "")) for _x in _col)
+                        _ws.column_dimensions[_col[0].column_letter].width=min(max(_mx+3,10),35)
+                st.download_button("⬇️ 직원 인사 통합대장 Excel",_buf.getvalue(),f"직원_인사_통합대장_{datetime.now().strftime('%Y%m%d')}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+
+    if _hr_view=="💰 급여·수당 설정":
+        st.markdown("#### 💰 직원별 급여·수당 설정")
+        st.caption("기존 직원관리의 급여 기준값을 복원한 화면입니다. 여기서 저장한 값은 기존 급여 계산에서 사용하는 employees 정보를 수정합니다.")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif not has_permission("employee_write"):
+            st.info("급여 기준정보 수정은 관리자 권한이 필요합니다.")
+        else:
+            _salary_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r.to_dict() for _,r in df_emp.iterrows()}
+            _salary_sel=st.selectbox("직원 선택",list(_salary_opts.keys()),key="v22_salary_emp")
+            _sr=_salary_opts[_salary_sel]
+            _seid=str(_sr.get("emp_id",""))
+            def _num(row,key,default=0):
+                try:
+                    v=row.get(key,default)
+                    return default if pd.isna(v) else int(float(v or 0))
+                except Exception:
+                    return default
+            def _flt(row,key,default=0.0):
+                try:
+                    v=row.get(key,default)
+                    return default if pd.isna(v) else float(v or 0)
+                except Exception:
+                    return default
+            with st.form("v22_salary_form"):
+                c1,c2,c3=st.columns(3)
+                _base=c1.number_input("기본급",min_value=0,value=_num(_sr,"base_salary"),step=10000,format="%d")
+                _hour=c2.number_input("통상시급",min_value=0,value=_num(_sr,"hourly_wage"),step=100,format="%d")
+                _leave=c3.number_input("연간 총 연차",min_value=0.0,value=_flt(_sr,"total_annual_leave",15.0),step=0.5,format="%.2f")
+                c1,c2,c3=st.columns(3)
+                _family=c1.number_input("가족수당",min_value=0,value=_num(_sr,"family_allowance"),step=10000,format="%d")
+                _non_tax=c2.number_input("비과세",min_value=0,value=_num(_sr,"non_taxable"),step=10000,format="%d")
+                _other=c3.number_input("기타수당",min_value=0,value=_num(_sr,"other_allowance"),step=10000,format="%d")
+                st.markdown("##### 4대보험 적용")
+                c1,c2,c3,c4=st.columns(4)
+                _nat=c1.checkbox("국민연금",value=bool(_num(_sr,"is_national",1)))
+                _health=c2.checkbox("건강·장기요양",value=bool(_num(_sr,"is_health",1)))
+                _empins=c3.checkbox("고용보험",value=bool(_num(_sr,"is_employment",1)))
+                _industrial=c4.checkbox("산재보험",value=bool(_num(_sr,"is_industrial",1)))
+                if st.form_submit_button("💾 급여·수당 설정 저장",use_container_width=True):
+                    try:
+                        supabase.table("employees").update({
+                            "base_salary":_base,"hourly_wage":_hour,
+                            "total_annual_leave":_leave,"family_allowance":_family,
+                            "non_taxable":_non_tax,"other_allowance":_other,
+                            "is_national":1 if _nat else 0,"is_health":1 if _health else 0,
+                            "is_employment":1 if _empins else 0,"is_industrial":1 if _industrial else 0
+                        }).eq("emp_id",_seid).execute()
+                        st.success("급여·수당 기준정보가 저장되었습니다.")
+                        st.rerun()
+                    except Exception:
+                        st.error("급여·수당 설정을 저장하지 못했습니다. employees 급여 컬럼을 확인해 주세요.")
+
+    if _hr_view=="🧾 인사이력·경력사항":
+        st.markdown("#### 🗂️ 직원 인사이력·경력사항")
+        if df_emp.empty:
+            st.info("직원 등록 후 사용할 수 있습니다.")
+        else:
+            opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            sel=st.selectbox("직원 선택",list(opts.keys()),key="v21_hist_emp")
+            eid=opts[sel]
+            hist=_safe_table("employee_history",eid)
+            if not hist.empty:
+                display_table_kr(hist,use_container_width=True,hide_index=True)
+            else:
+                st.info("등록된 인사이력이 없습니다.")
+            if has_permission("employee_write"):
+                with st.form("v21_history_form",clear_on_submit=True):
+                    c1,c2=st.columns(2)
+                    effective_date=c1.date_input("발령일",format="YYYY-MM-DD")
+                    history_type=c2.selectbox("구분",["입사","승진","부서이동","호봉변경","휴직","복직","퇴직","기타"])
+                    c1,c2=st.columns(2)
+                    before_value=c1.text_input("변경 전")
+                    after_value=c2.text_input("변경 후")
+                    note=st.text_area("비고")
+                    if st.form_submit_button("인사이력 등록"):
+                        try:
+                            supabase.table("employee_history").insert({
+                                "emp_id":eid,"effective_date":effective_date.isoformat(),
+                                "history_type":history_type,"before_value":before_value,
+                                "after_value":after_value,"note":note
+                            }).execute()
+                            st.success("인사이력이 등록되었습니다."); st.rerun()
+                        except Exception as e:
+                            _msg=str(e).lower()
+                            if "does not exist" in _msg or "schema cache" in _msg:
+                                st.error("인사이력 저장 실패: employee_history 테이블이 없거나 스키마 반영이 필요합니다.")
+                            elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
+                                st.error("인사이력 저장 실패: 현재 계정의 RLS 권한을 확인해 주세요.")
+                            else:
+                                st.error("인사이력 저장 실패: v21.5로 교체 후 로그아웃/재로그인해 주세요.")
+
+        st.divider()
+        st.markdown("#### 🧾 경력사항")
+        _career=_safe_table("employee_careers",eid)
+        if not _career.empty:
+            display_table_kr(_career,use_container_width=True,hide_index=True)
+
+            if has_permission("employee_write"):
+                st.markdown("##### ✏️ 등록 경력 수정·삭제")
+                _career_rows={}
+                for _,_cr in _career.iterrows():
+                    _cid=_cr.get("id","")
+                    _label=f"{_cr.get('company_name','근무처 미입력')} · {_cr.get('position','')} · {_cr.get('start_date','')} ~ {_cr.get('end_date','')} [#{_cid}]"
+                    _career_rows[_label]=_cr.to_dict()
+                _career_manage=st.selectbox("수정·삭제할 경력 선택",list(_career_rows.keys()),key="v223_career_manage")
+                _cm=_career_rows[_career_manage]
+
+                def _career_date(v):
+                    try:
+                        x=pd.to_datetime(v,errors="coerce")
+                        return datetime.now().date() if pd.isna(x) else x.date()
+                    except Exception:
+                        return datetime.now().date()
+
+                with st.form("v223_career_edit_form"):
+                    c1,c2=st.columns(2)
+                    _e_company=c1.text_input("근무처",value=str(_cm.get("company_name","") or ""),key="v223_ec")
+                    _e_pos=c2.text_input("직위·직급",value=str(_cm.get("position","") or ""),key="v223_ep")
+                    c1,c2=st.columns(2)
+                    _e_start=c1.date_input("근무 시작일",value=_career_date(_cm.get("start_date")),key="v223_es")
+                    _e_end=c2.date_input("근무 종료일",value=_career_date(_cm.get("end_date")),key="v223_ee")
+                    c1,c2=st.columns(2)
+                    try:
+                        _rm=float(_cm.get("recognized_months",0) or 0)
+                    except Exception:
+                        _rm=0.0
+                    _e_rec=c1.number_input("인정경력(개월)",min_value=0.0,value=_rm,step=1.0,format="%.1f",key="v223_er")
+                    _types=["경력","신입 전 경력","유사경력","기타"]
+                    _cur_type=str(_cm.get("career_type","경력") or "경력")
+                    _e_type=c2.selectbox("경력구분",_types,index=_types.index(_cur_type) if _cur_type in _types else 0,key="v223_et")
+                    _e_duties=st.text_area("담당업무",value=str(_cm.get("duties","") or ""),key="v223_ed")
+                    _e_note=st.text_area("경력 비고",value=str(_cm.get("note","") or ""),key="v223_en")
+                    if st.form_submit_button("💾 선택 경력 수정 저장",use_container_width=True):
+                        try:
+                            supabase.table("employee_careers").update({
+                                "company_name":_e_company,"position":_e_pos,
+                                "start_date":_e_start.isoformat(),"end_date":_e_end.isoformat(),
+                                "recognized_months":_e_rec,"career_type":_e_type,
+                                "duties":_e_duties,"note":_e_note
+                            }).eq("id",_cm.get("id")).eq("emp_id",eid).execute()
+                            st.success("경력사항을 수정했습니다."); st.rerun()
+                        except Exception:
+                            st.error("경력사항 수정에 실패했습니다.")
+
+                _confirm=st.checkbox("선택한 경력사항 삭제에 동의합니다.",key="v223_career_delete_confirm")
+                if st.button("🗑️ 선택 경력 삭제",key="v223_career_delete",disabled=not _confirm):
+                    try:
+                        supabase.table("employee_careers").delete().eq("id",_cm.get("id")).eq("emp_id",eid).execute()
+                        st.success("선택한 경력사항을 삭제했습니다."); st.rerun()
+                    except Exception:
+                        st.error("경력사항 삭제에 실패했습니다.")
+        else:
+            st.info("등록된 경력사항이 없습니다.")
+        if has_permission("employee_write"):
+            st.markdown("##### ➕ 새 경력 등록")
+            with st.form("v22_career_form",clear_on_submit=True):
+                c1,c2=st.columns(2)
+                _company=c1.text_input("근무처")
+                _career_pos=c2.text_input("직위·직급")
+                c1,c2=st.columns(2)
+                _career_start=c1.date_input("근무 시작일",key="v22_career_start")
+                _career_end=c2.date_input("근무 종료일",key="v22_career_end")
+                c1,c2=st.columns(2)
+                _recognized=c1.number_input("인정경력(개월)",min_value=0.0,step=1.0,format="%.1f")
+                _career_type=c2.selectbox("경력구분",["경력","신입 전 경력","유사경력","기타"])
+                _duties=st.text_area("담당업무")
+                _career_note=st.text_area("경력 비고")
+                if st.form_submit_button("경력사항 등록"):
+                    try:
+                        supabase.table("employee_careers").insert({
+                            "emp_id":eid,"company_name":_company,"position":_career_pos,
+                            "start_date":_career_start.isoformat(),"end_date":_career_end.isoformat(),
+                            "recognized_months":_recognized,"career_type":_career_type,
+                            "duties":_duties,"note":_career_note
+                        }).execute()
+                        st.success("경력사항이 등록되었습니다."); st.rerun()
+                    except Exception:
+                        st.error("경력사항 저장 실패: v22.0 DB SQL 적용 여부를 확인해 주세요.")
+
+    if _hr_view=="📁 인사서류":
+        st.markdown("#### 📁 직원별 인사서류")
+        st.caption("입사서류·계약서·자격증 등을 직원별 비공개 Storage에 보관합니다.")
+        if df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        elif CURRENT_ROLE not in ("admin","manager"):
+            st.info("인사서류는 관리자/담당자만 관리할 수 있습니다.")
+        else:
+            _doc_opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            _doc_sel=st.selectbox("직원 선택",list(_doc_opts.keys()),key="v22_doc_emp")
+            _deid=_doc_opts[_doc_sel]
+            _docs=_safe_table("employee_documents",_deid)
+            if not _docs.empty:
+                _show=[c for c in ["document_type","document_name","document_date","expiry_date","original_filename","note","created_at"] if c in _docs.columns]
+                display_table_kr(_docs[_show] if _show else _docs,use_container_width=True,hide_index=True)
+
+                st.markdown("##### 📄 등록 문서 관리")
+                _doc_rows={}
+                for _,_dr in _docs.iterrows():
+                    _label=f"{_dr.get('document_type','기타')} · {_dr.get('document_name','')} · {_dr.get('original_filename','')}"
+                    _doc_rows[_label]=_dr.to_dict()
+                _manage_sel=st.selectbox("관리할 문서",list(_doc_rows.keys()),key="v221_doc_manage")
+                _md=_doc_rows[_manage_sel]
+                _mc1,_mc2,_mc3=st.columns(3)
+
+                # Private bucket은 signed URL로만 열람/다운로드
+                try:
+                    _signed=supabase.storage.from_("employee-documents").create_signed_url(
+                        str(_md.get("storage_path","")), 300
+                    )
+                    _signed_url=""
+                    if isinstance(_signed,dict):
+                        _signed_url=_signed.get("signedURL") or _signed.get("signedUrl") or ""
+                    else:
+                        _signed_url=getattr(_signed,"signed_url","") or ""
+                    if _signed_url:
+                        _mc1.link_button("👁️ 문서 열기",_signed_url,use_container_width=True)
+                        _mc2.link_button("⬇️ 다운로드",_signed_url,use_container_width=True)
+                    else:
+                        _mc1.info("열람 URL 생성 실패")
+                except Exception:
+                    _mc1.info("열람 URL 생성 실패")
+
+                if _mc3.button("🗑️ 문서 삭제",key="v221_doc_delete",use_container_width=True):
+                    try:
+                        supabase.storage.from_("employee-documents").remove([str(_md.get("storage_path",""))])
+                        supabase.table("employee_documents").delete().eq("id",_md.get("id")).execute()
+                        st.success("문서가 삭제되었습니다."); st.rerun()
+                    except Exception:
+                        st.error("문서 삭제에 실패했습니다.")
+
+                with st.expander("🔄 선택 문서 교체"):
+                    _replace=st.file_uploader("새 파일",type=["pdf","doc","docx","hwp","hwpx","xls","xlsx","jpg","jpeg","png"],key="v221_replace_file")
+                    if st.button("선택 문서를 새 파일로 교체",key="v221_replace_btn"):
+                        if _replace is None:
+                            st.warning("새 파일을 선택해 주세요.")
+                        else:
+                            try:
+                                import uuid as _uuid
+                                _ext=Path(_replace.name).suffix.lower()
+                                _new_path=f"{_deid}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{_uuid.uuid4().hex[:10]}{_ext}"
+                                supabase.storage.from_("employee-documents").upload(
+                                    _new_path,_replace.getvalue(),
+                                    {"content-type":_replace.type or "application/octet-stream","upsert":"false"}
+                                )
+                                supabase.table("employee_documents").update({
+                                    "original_filename":_replace.name,
+                                    "storage_path":_new_path,
+                                    "updated_at":datetime.now().isoformat()
+                                }).eq("id",_md.get("id")).execute()
+                                try:
+                                    supabase.storage.from_("employee-documents").remove([str(_md.get("storage_path",""))])
+                                except Exception:
+                                    pass
+                                st.success("문서가 교체되었습니다."); st.rerun()
+                            except Exception:
+                                st.error("문서 교체에 실패했습니다.")
+            else:
+                st.info("등록된 인사서류가 없습니다.")
+
+            # 계약서/자격증 등 만료 예정 알림
+            if not _docs.empty and "expiry_date" in _docs.columns:
+                _exp=_docs.copy()
+                # pandas Timestamp로 통일하여 datetime64[ns]와 Python date 간 비교 오류 방지
+                _exp["_expiry"]=pd.to_datetime(_exp["expiry_date"],errors="coerce").dt.normalize()
+                _today=pd.Timestamp(datetime.now().date())
+                _limit=_today+pd.Timedelta(days=60)
+                _valid_exp=_exp["_expiry"].notna()
+                _soon=_exp[_valid_exp & (_exp["_expiry"]>=_today) & (_exp["_expiry"]<=_limit)]
+                _expired=_exp[_valid_exp & (_exp["_expiry"]<_today)]
+                if not _expired.empty:
+                    st.error(f"유효기간이 지난 인사서류가 {_expired.shape[0]}건 있습니다.")
+                if not _soon.empty:
+                    st.warning(f"60일 이내 만료 예정 인사서류가 {_soon.shape[0]}건 있습니다.")
+
+            with st.form("v22_doc_upload_form",clear_on_submit=True):
+                c1,c2=st.columns(2)
+                _dtype=c1.selectbox("문서구분",["이력서","자기소개서","경력증명서","자격증","근로계약서","급여·연봉계약서","개인정보 서류","채용서류","기타"])
+                _dname=c2.text_input("문서명")
+                c1,c2=st.columns(2)
+                _ddate=c1.date_input("작성·계약일",key="v22_doc_date")
+                _has_exp=c2.checkbox("유효기간 있음")
+                _expiry=st.date_input("유효기간",key="v22_doc_expiry") if _has_exp else None
+                _dnote=st.text_input("비고")
+                _file=st.file_uploader("파일 선택",type=["pdf","doc","docx","hwp","hwpx","xls","xlsx","jpg","jpeg","png"],key="v22_hr_file")
+                if st.form_submit_button("📤 인사서류 업로드",use_container_width=True):
+                    if _file is None:
+                        st.warning("업로드할 파일을 선택해 주세요.")
+                    else:
+                        try:
+                            import uuid as _uuid
+                            _ext=Path(_file.name).suffix.lower()
+                            _storage_path=f"{_deid}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{_uuid.uuid4().hex[:10]}{_ext}"
+                            supabase.storage.from_("employee-documents").upload(
+                                _storage_path,_file.getvalue(),
+                                {"content-type":_file.type or "application/octet-stream","upsert":"false"}
+                            )
+                            supabase.table("employee_documents").insert({
+                                "emp_id":_deid,"document_type":_dtype,
+                                "document_name":_dname or _file.name,
+                                "document_date":_ddate.isoformat() if _ddate else None,
+                                "expiry_date":_expiry.isoformat() if _expiry else None,
+                                "original_filename":_file.name,"storage_path":_storage_path,
+                                "note":_dnote
+                            }).execute()
+                            st.success("인사서류가 업로드되었습니다."); st.rerun()
+                        except Exception:
+                            st.error("인사서류 업로드 실패: v22.0 DB/Storage SQL 적용 여부를 확인해 주세요.")
+
+    if _hr_view=="🔐 계좌·민감정보":
+        st.markdown("#### 💳 계좌·민감정보")
+        st.warning("주민등록번호와 계좌정보는 관리자 전용 별도 테이블에 저장하며 직원목록에는 표시하지 않습니다.")
+        if CURRENT_ROLE!="admin":
+            st.info("관리자만 민감정보를 조회·수정할 수 있습니다.")
+        elif df_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":str(r.get("emp_id","")) for _,r in df_emp.iterrows()}
+            sel=st.selectbox("직원 선택",list(opts.keys()),key="v21_secure_emp")
+            eid=opts[sel]
+            secure=_safe_table("employee_private_info",eid)
+            row=secure.iloc[0].to_dict() if not secure.empty else {}
+            with st.form("v21_secure_form"):
+                c1,c2,c3=st.columns(3)
+                bank_name=c1.text_input("은행명",value=str(row.get("bank_name","") or ""))
+                account_holder=c2.text_input("예금주",value=str(row.get("account_holder","") or ""))
+                account_number=c3.text_input("계좌번호",value=str(row.get("account_number","") or ""),type="password")
+                resident_no=st.text_input("주민등록번호",value="",type="password",
+                    help="기존 번호는 화면에 재표시하지 않습니다. 변경할 때만 새 번호를 입력하세요.")
+                note=st.text_area("민감정보 비고",value=str(row.get("note","") or ""))
+                if st.form_submit_button("🔐 민감정보 저장"):
+                    payload={"emp_id":eid,"bank_name":bank_name,"account_holder":account_holder,
+                             "account_number":account_number,"note":note}
+                    if resident_no.strip():
+                        payload["resident_no"]=resident_no.strip()
+                    try:
+                        supabase.table("employee_private_info").upsert(payload,on_conflict="emp_id").execute()
+                        st.success("관리자 전용 정보가 저장되었습니다."); st.rerun()
+                    except Exception as e:
+                        _msg=str(e).lower()
+                        if "does not exist" in _msg or "schema cache" in _msg:
+                            st.error("저장 실패: employee_private_info 테이블이 없거나 스키마 반영이 필요합니다.")
+                        elif "row-level security" in _msg or "permission" in _msg or "42501" in _msg:
+                            st.error("저장 실패: 관리자 RLS 권한을 확인해 주세요.")
+                        else:
+                            st.error("저장 실패: v21.5로 교체 후 로그아웃/재로그인해 주세요.")
+
+# TAB 2: 초과근무 사전 신청
+# -------------------------------------------------------------------
+if active_tab == 2:
+    st.header("⏱️ 초과근무 통합관리")
+    st.caption("직원별 현황·사전신청·신청내역을 관리합니다. 승인·실적처리와 급여연계는 초과근무 실적 메뉴에서 처리합니다.")
+
+    try:
+        _ot_all_res=supabase.table("overtime_records").select("*").order("id",desc=True).execute()
+        _ot_all=pd.DataFrame(_ot_all_res.data or [])
+        _ot_all=scope_dataframe_to_current_employee(_ot_all)
+    except Exception:
+        _ot_all=pd.DataFrame()
+
+    if not _ot_all.empty:
+        _oc1,_oc2,_oc3,_oc4=st.columns(4)
+        _ost=_ot_all.get("status",pd.Series([""]*len(_ot_all))).astype(str)
+        _oh=pd.to_numeric(_ot_all.get("actual_duration_hours",0),errors="coerce").fillna(0)
+        _op=pd.to_numeric(_ot_all.get("actual_pay",0),errors="coerce").fillna(0)
+        _oc1.metric("전체 신청",f"{len(_ot_all):,}건")
+        _oc2.metric("승인대기",f"{int((_ost=='신청').sum()):,}건")
+        _oc3.metric("누적 인정시간",f"{_oh.sum():,.1f}시간")
+        _oc4.metric("누적 계산수당",f"{_op.sum():,.0f}원")
+
+    _ot_view=workflow_button_nav(
+        "초과근무 업무 선택",
+        ["👤 직원별 현황","📝 초과근무 신청","📋 신청내역"],
+        key="v324_ot_view",
+        caption="확인하거나 처리할 업무를 큰 버튼으로 선택해 주세요.",
+        max_per_row=3
+    )
+
+    if _ot_view=="👤 직원별 현황":
+        st.markdown("#### 👤 직원별 초과근무 현황")
+        if _ot_all.empty:
+            st.info("등록된 초과근무 내역이 없습니다.")
+        else:
+            _names=sorted(_ot_all["emp_name"].dropna().astype(str).unique().tolist()) if "emp_name" in _ot_all.columns else []
+            if _names:
+                _on=st.selectbox("직원 선택",_names,key="v310_ot_person")
+                _ov=_ot_all[_ot_all["emp_name"].astype(str)==_on].copy()
+                a,b,c=st.columns(3)
+                a.metric("신청 건수",f"{len(_ov):,}건")
+                b.metric("인정시간",f"{pd.to_numeric(_ov.get('actual_duration_hours',0),errors='coerce').fillna(0).sum():,.1f}시간")
+                c.metric("계산수당",f"{pd.to_numeric(_ov.get('actual_pay',0),errors='coerce').fillna(0).sum():,.0f}원")
+                _cols=[x for x in ["work_date","work_type","start_time","end_time","act_start_time","act_end_time","actual_duration_hours","actual_pay","status"] if x in _ov.columns]
+                display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
+
+    if _ot_view=="📝 초과근무 신청":
+        st.markdown("#### 📝 초과근무 / 휴일근무 사전 신청")
+        st.caption("직원·근무일·예정시간·신청사유를 입력하여 사전 신청합니다.")
+        st.caption("아래에서 사전 신청 내용을 입력하고 제출합니다.")
+
+    if _ot_view=="📋 신청내역":
+        st.markdown("#### 📋 초과근무 신청내역")
+        if _ot_all.empty:
+            st.info("조회할 내역이 없습니다.")
+        else:
+            q1,q2=st.columns(2)
+            _oq=q1.text_input("직원명/사번 검색",key="v310_ot_q")
+            _os=q2.selectbox("승인상태",["전체","신청","승인","반려"],key="v310_ot_status")
+            _ov=_ot_all.copy()
+            if _oq:
+                _mask=pd.Series(False,index=_ov.index)
+                for _c in ["emp_name","emp_id"]:
+                    if _c in _ov.columns: _mask|=_ov[_c].astype(str).str.contains(_oq,case=False,na=False)
+                _ov=_ov[_mask]
+            if _os!="전체": _ov=_ov[_ov["status"].astype(str)==_os]
+            _cols=[x for x in ["id","work_date","emp_id","emp_name","work_type","duration_hours","actual_duration_hours","actual_pay","status","reason"] if x in _ov.columns]
+            display_table_kr(_ov[_cols],use_container_width=True,hide_index=True)
+
+            if has_permission("attendance_write") and not _ov.empty:
+                st.divider()
+                st.markdown("##### 🗑️ 신청내역 삭제")
+                _delmap={}
+                for _,_r in _ov.iterrows():
+                    _lbl=f"ID {_r.get('id')} | {_r.get('emp_name','')} | {_r.get('work_date','')} | {_r.get('work_type','')} | {_r.get('status','')}"
+                    _delmap[_lbl]=_r
+                _dl=st.selectbox("삭제할 신청내역",list(_delmap.keys()),key="v314_ot_del")
+                _dr=_delmap[_dl]
+                _did=int(_dr.get("id"))
+                _dw=pd.to_datetime(_dr.get("work_date"),errors="coerce")
+                _locked=False
+                _lock_month=""
+                if pd.notna(_dw):
+                    _wd=_dw.date()
+                    if _wd.day>=25:
+                        _ny=_wd.year+1 if _wd.month==12 else _wd.year
+                        _nm=1 if _wd.month==12 else _wd.month+1
+                    else:
+                        _ny,_nm=_wd.year,_wd.month
+                    _lock_month=f"{_ny:04d}-{_nm:02d}"
+                    try:
+                        _cl=supabase.table("payroll_monthly_closings").select("status").eq("pay_month",_lock_month).execute()
+                        _locked=bool(_cl.data and str(_cl.data[0].get("status",""))=="finalized")
+                    except Exception:
+                        _locked=False
+                if _locked:
+                    st.warning(f"이 신청은 {_lock_month} 급여가 마감되어 삭제할 수 없습니다. 급여 마감을 먼저 취소해야 합니다.")
+                else:
+                    _dc=st.checkbox("선택한 초과근무 신청을 삭제하는 것을 확인했습니다.",key="v314_ot_del_confirm")
+                    if st.button("🗑️ 선택 신청 삭제",type="primary",disabled=not _dc,key="v314_ot_delete"):
+                        try:
+                            supabase.table("overtime_records").delete().eq("id",_did).execute()
+                            write_audit_log("초과근무 신청 삭제","overtime_records",_did)
+                            st.success("선택한 초과근무 신청을 삭제했습니다.")
+                            st.rerun()
+                        except Exception as _e:
+                            st.error(f"신청 삭제 실패: {_e}")
+
+    if _ot_view=="📝 초과근무 신청":
+        st.divider()
+        st.markdown("### 📝 사전 신청 입력")
+        emp_res = supabase.table("employees").select("*").execute()
+        df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+        df_emp = filter_employees_for_work(scope_employee_master(df_emp))
+        if df_emp.empty:
+            st.warning("먼저 '직원 등록 및 정보 관리' 탭에서 직원을 등록해야 한다.")
+        else:
+            emp_list = df_emp['emp_name'] + " (" + df_emp['position'] + " / " + df_emp['emp_id'] + ")"
+            selected_emp_str = st.selectbox("직원 선택", emp_list, key="ot_emp")
+            selected_emp_id = selected_emp_str.split("/")[-1].replace(")", "").strip()
+            emp_info = df_emp[df_emp['emp_id'] == selected_emp_id].iloc[0]
+
+            work_date = st.date_input("근무 예정 일자", datetime.now())
+            work_type = st.radio("근무 구분", ["평일 초과근무 (18:00 이후)", "휴일근무"])
+        
+            col1, col2 = st.columns(2)
+            with col1:
+                start_time = st.time_input("예정 시작 시간", time(18, 0) if work_type == "평일 초과근무 (18:00 이후)" else time(9, 0))
+            with col2:
+                end_time = st.time_input("예정 종료 시간", time(20, 0))
+
+            reason = st.text_area("신청 사유")
+
+            start_dt = datetime.combine(work_date, start_time)
+            end_dt = datetime.combine(work_date, end_time)
+            duration_hours = (end_dt - start_dt).total_seconds() / 3600
+
+            if duration_hours < 0:
+                st.error("종료 시간은 시작 시간보다 늦어야 합니다.")
+            else:
+                multiplier = 1.5
+                raw_pay = duration_hours * emp_info['hourly_wage'] * multiplier
+                estimated_pay = truncate_ten(raw_pay)
+
+                st.info(f"💡 예상 근무시간: **{duration_hours:.1f}시간**")
+
+                if st.button("사전 신청서 제출"):
+                    ot_data = {
+                        "apply_dt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "emp_id": emp_info['emp_id'], "emp_name": emp_info['emp_name'],
+                        "dept": emp_info['dept'], "position": emp_info['position'],
+                        "work_date": str(work_date), "work_type": work_type,
+                        "start_time": str(start_time), "end_time": str(end_time),
+                        "duration_hours": duration_hours, "estimated_pay": estimated_pay,
+                        "act_start_time": str(start_time), "act_end_time": str(end_time),
+                        "actual_duration_hours": duration_hours, "actual_pay": estimated_pay,
+                        "status": "신청", "reason": reason, "act_reason": ""
+                    }
+                    supabase.table("overtime_records").insert(ot_data).execute()
+                    st.success("초과근무 신청 내역이 Supabase DB에 등록되었다.")
+
+
+# -------------------------------------------------------------------
+# TAB 3: 실제 수행 입력 & 근무일자별 전체 내역 & 급여 수동 연계 (전월 25일~당월 24일 기준)
+# -------------------------------------------------------------------
+if active_tab == 3:
+    st.header("✅ 초과근무 승인·실적처리")
+    st.caption("① 승인대기 확인 → ② 실제 수행시간 입력 → ③ 인정시간·수당 확인 → ④ 승인완료 → ⑤ 급여연계 확인 순서로 처리합니다.")
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 16px;">
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">1. 승인·실적 처리</b><br><span style="color:#667085;">실제 수행시간과 승인상태 확정</span>
+      </div>
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">2. 신청·확인서</b><br><span style="color:#667085;">확정된 초과근무 서식 확인·인쇄</span>
+      </div>
+      <div style="border:1px solid #d9e2f2;border-radius:12px;padding:13px 14px;background:#f8fbff;">
+        <b style="font-size:1.05rem;">3. 급여 연계</b><br><span style="color:#667085;">지급월별 승인수당 급여대장 반영</span>
+      </div>
+    </div>
+    """,unsafe_allow_html=True)
+    
+    ot_res = supabase.table("overtime_records").select("*").order("id", desc=True).execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+
+    df_ot = scope_dataframe_to_current_employee(df_ot)
+
+    if not df_ot.empty:
+        _s=df_ot.get("status",pd.Series([""]*len(df_ot))).astype(str)
+        _hh=pd.to_numeric(df_ot.get("actual_duration_hours",0),errors="coerce").fillna(0)
+        _pp=pd.to_numeric(df_ot.get("actual_pay",0),errors="coerce").fillna(0)
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("전체",f"{len(df_ot):,}건")
+        c2.metric("승인대기",f"{int((_s=='신청').sum()):,}건")
+        c3.metric("승인 인정시간",f"{_hh[_s=='승인'].sum():,.1f}시간")
+        c4.metric("승인 수당",f"{_pp[_s=='승인'].sum():,.0f}원")
+
+    if df_ot.empty:
+        st.info("등록된 초과근무 신청 내역이 없다.")
+    else:
+        _pending_ot=df_ot[df_ot.get("status",pd.Series([""]*len(df_ot))).astype(str)=="신청"].copy()
+        if not _pending_ot.empty:
+            st.markdown("#### 🔔 승인·실적처리 대기")
+            _pcols=[c for c in ["id","work_date","emp_id","emp_name","work_type","start_time","end_time","duration_hours","reason","status"] if c in _pending_ot.columns]
+            display_table_kr(_pending_ot[_pcols],use_container_width=True,hide_index=True)
+            st.caption("처리할 신청을 아래에서 선택한 뒤 실제 수행시간과 승인상태를 입력합니다.")
+        else:
+            st.success("현재 승인·실적처리 대기 중인 신청이 없습니다.")
+        st.markdown("#### ✏️ 실제 수행시간·승인 처리")
+        col_ot1, col_ot2 = st.columns([3, 1])
+        with col_ot1:
+            ot_options = [f"ID {r['id']} | [{r['status']}] [{r['work_date']}] {r['emp_name']} ({r['work_type']}) - 사전: {float(r['duration_hours']):.1f}h" for _, r in df_ot.iterrows()]
+            selected_ot_idx = st.selectbox("승인·실적 처리할 신청 선택", range(len(ot_options)), format_func=lambda x: ot_options[x], key="ot_actual_select")
+            target_ot = df_ot.iloc[selected_ot_idx]
+        
+        with col_ot2:
+            st.write("**🗑️ 선택 내역 삭제**")
+            if st.button("해당 초과근무 내역 삭제", type="primary", key="del_ot_btn"):
+                _dw=pd.to_datetime(target_ot.get("work_date"),errors="coerce")
+                _dl=False
+                _dpm=None
+                if pd.notna(_dw):
+                    _dd=_dw.date()
+                    if _dd.day >= 25:
+                        _dn=(_dw + pd.DateOffset(months=1)).date()
+                        _dpm=f"{_dn.year:04d}-{_dn.month:02d}"
+                    else:
+                        _dpm=f"{_dd.year:04d}-{_dd.month:02d}"
+                    try:
+                        _dq=supabase.table("payroll_monthly_closings").select("id").eq("pay_month",_dpm).eq("status","finalized").execute()
+                        _dl=bool(_dq.data)
+                    except Exception:
+                        _dl=False
+                if _dl:
+                    st.error(f"🔒 {_dpm} 급여 마감자료이므로 삭제할 수 없습니다. 관리자 마감취소 후 처리하세요.")
+                    st.stop()
+                supabase.table("overtime_records").delete().eq("id", int(target_ot['id'])).execute()
+                st.success(f"ID {target_ot['id']} 초과근무 내역이 정상적으로 삭제되었다.")
+                st.rerun()
+
+        emp_s_res = supabase.table("employees").select("*").eq("emp_id", target_ot['emp_id']).execute()
+        df_emp_single = pd.DataFrame(emp_s_res.data) if emp_s_res.data else pd.DataFrame()
+        df_emp_single = scope_employee_master(df_emp_single)
+        hourly_w = df_emp_single.iloc[0]['hourly_wage'] if not df_emp_single.empty else 12000
+
+        act_s_val = target_ot.get('act_start_time', target_ot['start_time'])
+        act_e_val = target_ot.get('act_end_time', target_ot['end_time'])
+        if pd.isna(act_s_val) or not act_s_val: act_s_val = target_ot['start_time']
+        if pd.isna(act_e_val) or not act_e_val: act_e_val = target_ot['end_time']
+
+        st.subheader(f"✏️ 실제 수행·승인 처리: {target_ot['emp_name']} ({target_ot['work_date']})")
+        
+        # v27.2: 급여 마감 완료 기간의 초과근무는 과거 지급자료로 보호
+        _ot_wd=pd.to_datetime(target_ot.get("work_date"),errors="coerce")
+        _ot_pay_month=None
+        _ot_payroll_locked=False
+        if pd.notna(_ot_wd):
+            _d=_ot_wd.date()
+            if _d.day >= 25:
+                _nm=(_ot_wd + pd.DateOffset(months=1)).date()
+                _ot_pay_month=f"{_nm.year:04d}-{_nm.month:02d}"
+            else:
+                _ot_pay_month=f"{_d.year:04d}-{_d.month:02d}"
+            try:
+                _cl=supabase.table("payroll_monthly_closings").select("*").eq("pay_month",_ot_pay_month).eq("status","finalized").execute()
+                _ot_payroll_locked=bool(_cl.data)
+            except Exception:
+                _ot_payroll_locked=False
+        if _ot_payroll_locked:
+            st.warning(f"🔒 {_ot_pay_month} 급여가 마감·지출 완료된 기간입니다. 기존 인정시간과 초과근무수당을 그대로 보존하며 수정·재계산할 수 없습니다.")
+        else:
+            st.caption(f"급여 반영월: {_ot_pay_month or '-'} · 미마감 자료는 인정시간 기준 계산식을 적용합니다.")
+
+        with st.form("actual_ot_form"):
+            col_a1, col_a2 = st.columns(2)
+
+            with col_a1:
+                st.write("**사전 신청 정보**")
+                st.write(f"- 근무 구분: {target_ot['work_type']}")
+                st.write(
+                    f"- 신청 시간: {target_ot['start_time']} ~ "
+                    f"{target_ot['end_time']} "
+                    f"({float(target_ot['duration_hours']):.1f}시간)"
+                )
+                st.write(f"- 신청 사유: {target_ot['reason']}")
+
+            with col_a2:
+                st.write("**실제 수행 근무시간 & 업무 내용 입력**")
+
+                try:
+                    init_s_time = datetime.strptime(
+                        str(act_s_val)[:8],
+                        "%H:%M:%S"
+                    ).time()
+
+                    init_e_time = datetime.strptime(
+                        str(act_e_val)[:8],
+                        "%H:%M:%S"
+                    ).time()
+
+                except Exception:
+                    init_s_time = time(18, 0)
+                    init_e_time = time(20, 0)
+
+                act_s_time = st.time_input(
+                    "실제 시작 시간",
+                    init_s_time,
+                    disabled=_ot_payroll_locked,
+                    key=f"actual_start_{target_ot['id']}"
+                )
+
+                act_e_time = st.time_input(
+                    "실제 종료 시간",
+                    init_e_time,
+                    disabled=_ot_payroll_locked,
+                    key=f"actual_end_{target_ot['id']}"
+                )
+
+                dummy_date = datetime.now().date()
+
+                s_dt = datetime.combine(
+                    dummy_date,
+                    act_s_time
+                )
+
+                e_dt = datetime.combine(
+                    dummy_date,
+                    act_e_time
+                )
+
+                calculated_act_hours = max(
+                    0.0,
+                    (e_dt - s_dt).total_seconds() / 3600
+                )
+
+                # 화면에 표시되는 인정시간을 급여 계산 기준으로 사용
+                recognized_hours = round(
+                    calculated_act_hours,
+                    1
+                )
+
+                st.metric(
+                    label="실제 인정 시간",
+                    value=f"{recognized_hours:.1f} 시간"
+                )
+
+                act_pay = truncate_ten(
+                    recognized_hours * hourly_w * 1.5
+                )
+
+                st.caption(
+                    f"수당 계산: 인정 {recognized_hours:.1f}시간 × "
+                    f"시간급 {float(hourly_w):,.0f}원 × 1.5 "
+                    f"= {act_pay:,.0f}원"
+                )
+
+                status_options = [
+                    "승인",
+                    "신청",
+                    "반려"
+                ]
+
+                current_status = (
+                    target_ot["status"]
+                    if target_ot["status"] in status_options
+                    else "신청"
+                )
+
+                status_choice = st.selectbox(
+                    "승인 상태",
+                    status_options,
+                    index=status_options.index(current_status),
+                    key=f"actual_status_{target_ot['id']}"
+                )
+
+                act_reason_value = (
+                    target_ot["act_reason"]
+                    if pd.notna(target_ot.get("act_reason"))
+                    else ""
+                )
+
+                act_reason_input = st.text_input(
+                    "실제 업무 수행 내용 / 확인 메모",
+                    value=act_reason_value,
+                    key=f"actual_reason_{target_ot['id']}"
+                )
+
+            # 반드시 col_a2 바깥, form 안쪽에 위치
+            submit_act = st.form_submit_button(
+                "실제 수행 내역 저장 및 승인 반영",
+                disabled=_ot_payroll_locked,
+                use_container_width=True
+            )
+
+            if submit_act:
+
+                if _ot_payroll_locked:
+                    st.error(
+                        "마감된 급여 반영기간의 초과근무는 "
+                        "수정하거나 재계산할 수 없습니다."
+                    )
+                    st.stop()
+
+                if act_e_time <= act_s_time:
+                    st.error(
+                        "실제 종료 시간은 시작 시간보다 늦어야 합니다."
+                    )
+                    st.stop()
+
+                update_data = {
+                    "act_start_time": str(act_s_time),
+                    "act_end_time": str(act_e_time),
+                    "actual_duration_hours": recognized_hours,
+                    "actual_pay": act_pay,
+                    "status": status_choice,
+                    "act_reason": act_reason_input
+                }
+
+                try:
+                    supabase.table(
+                        "overtime_records"
+                    ).update(
+                        update_data
+                    ).eq(
+                        "id",
+                        int(target_ot["id"])
+                    ).execute()
+
+                    st.success(
+                        f"[{target_ot['emp_name']}] 직원의 "
+                        f"수행 내역 및 승인 상태({status_choice})가 "
+                        "정상적으로 반영되었습니다."
+                    )
+
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(
+                        f"초과근무 승인·실적 저장 중 오류가 발생했습니다: {e}"
+                    )
+
+        latest_res = supabase.table("overtime_records").select("*").eq("id", int(target_ot['id'])).execute()
+        target_ot_latest = latest_res.data[0] if latest_res.data else target_ot
+
+        st.divider()
+        st.subheader("🖨️ 초과/휴일근무 신청 및 확인서 인쇄")
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
+        act_reason_disp = target_ot_latest['act_reason'] if pd.notna(target_ot_latest['act_reason']) and target_ot_latest['act_reason'] != "" else "입력된 실제 수행 내용 없음"
+
+        ot_confirm_template = f"""<style>
+        * {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}}
+        @media print {{ body, div, table, tr, th, td {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}} }}
+        </style>
+        
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
+                <h2 style="margin: 0; padding-top: 15px; font-size: 22px; text-decoration: underline;">초 과 / 휴 일 근 무 신 청 및 확 인 서</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 12px; width: 210px;" border="1">
+                    <tr style="height: 20px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 50px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px;" border="1">
+                <tr style="height: 38px;">
+                    <th style="padding: 6px; background: #f9f9f9; width: 20%;">성 명</th>
+                    <td style="padding: 6px; width: 30%;">{target_ot_latest['emp_name']} ({target_ot_latest['position']})</td>
+                    <th style="padding: 6px; background: #f9f9f9; width: 20%;">소 속</th>
+                    <td style="padding: 6px; width: 30%;">{target_ot_latest['dept']}</td>
+                </tr>
+                <tr style="height: 38px;">
+                    <th style="padding: 6px; background: #f9f9f9;">근무구분</th>
+                    <td style="padding: 6px;" colspan="3"><b>{target_ot_latest['work_type']}</b> (최종 상태: {target_ot_latest['status']})</td>
+                </tr>
+                <tr style="height: 38px;">
+                    <th style="padding: 6px; background: #f9f9f9;">사전 신청일시</th>
+                    <td style="padding: 6px;" colspan="3">{target_ot_latest['work_date']} ({target_ot_latest['start_time']} ~ {target_ot_latest['end_time']}) / {float(target_ot_latest['duration_hours']):.1f}시간</td>
+                </tr>
+                <tr style="height: 40px; background-color: #ffffcc;">
+                    <th style="padding: 6px; background: #fff2cc;">실제 수행 인정</th>
+                    <td style="padding: 6px;" colspan="3"><b>실제 근무시간: {target_ot_latest['act_start_time']} ~ {target_ot_latest['act_end_time']} ({float(target_ot_latest['actual_duration_hours']):.1f} 시간)</b></td>
+                </tr>
+                <tr>
+                    <th style="padding: 6px; background: #f9f9f9;">사유 및 업무내용</th>
+                    <td style="padding: 10px; height: 70px; vertical-align: top;" colspan="3">
+                        <b>[신청 사유]</b> {target_ot_latest['reason']}<br>
+                        <b>[실제 수행 내용]</b> {act_reason_disp}
+                    </td>
+                </tr>
+            </table>
+
+            <p style="text-align: center; margin-top: 35px; font-size: 14px;">위와 같이 근무를 신청하고 실제 수행 내역을 확인합니다.</p>
+            <p style="text-align: center; margin-top: 10px; font-size: 13px;">{target_ot_latest['work_date'][:4]}년 {target_ot_latest['work_date'][5:7]}월 {target_ot_latest['work_date'][8:10]}일</p>
+            
+            <p style="text-align: right; margin-top: 30px; font-size: 14px; font-weight: bold; padding-right: 10px;">
+                신청자 : {target_ot_latest['emp_name']} (인)
+            </p>
+        </div>
+        """
+        st.components.v1.html(ot_confirm_template, height=560, scrolling=True)
+
+        st.divider()
+        st.subheader("💰 지급월별 초과근무 급여연계 상세")
+
+        current_year = datetime.now().year
+        c_y, c_m = st.columns(2)
+        with c_y:
+            sel_year = st.selectbox("조회 지급연도 선택", range(current_year - 2, current_year + 3), index=2, key="ot_year_sel")
+        with c_m:
+            sel_month = st.selectbox("조회 지급월 선택 (25일 지급 기준)", range(1, 13), index=datetime.now().month - 1, key="ot_month_sel")
+
+        filter_month = f"{sel_year}-{sel_month:02d}"
+
+        # 당월 25일 지급 기준 산정기간 계산 (전월 25일 ~ 당월 24일)
+        pay_date_ref = datetime(sel_year, sel_month, 25).date()
+        period_start = (pay_date_ref.replace(day=1) - timedelta(days=1)).replace(day=25)
+        period_end = pay_date_ref - timedelta(days=1)
+        
+        st.caption(f"📅 **[{filter_month} 급여 산정 기간]**: {period_start} ~ {period_end} (전월 25일 ~ 당월 24일)")
+
+        # 산정기간 내 전체 데이터 조회 (근무일자 오름차순)
+        ot_m_res = supabase.table("overtime_records")\
+            .select("*")\
+            .gte("work_date", str(period_start))\
+            .lte("work_date", str(period_end))\
+            .order("work_date", desc=False)\
+            .execute()
+        df_ot_month = pd.DataFrame(ot_m_res.data) if ot_m_res.data else pd.DataFrame()
+
+        if df_ot_month.empty:
+            st.info(f"💡 해당 산정기간({period_start} ~ {period_end}) 내 등록된 초과/휴일근무 내역이 없습니다.")
+        else:
+            display_ot_df = df_ot_month[[
+                'id', 'work_date', 'emp_id', 'emp_name', 'dept', 'position', 
+                'work_type', 'act_start_time', 'act_end_time', 'actual_duration_hours', 'actual_pay', 'status'
+            ]].copy()
+
+            display_ot_df.columns = [
+                'ID', '근무일자', '사번', '이름', '부서', '직위', 
+                '근무구분', '시작시간', '종료시간', '인정시간(h)', '계산수당(원)', '승인상태'
+            ]
+
+            st.write(f"**[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(display_ot_df)}건)**")
+            
+            display_table_kr(
+                display_ot_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "계산수당(원)": st.column_config.NumberColumn("계산수당(원)", format="%d 원"),
+                    "인정시간(h)": st.column_config.NumberColumn("인정시간(h)", format="%.1f 시간")
+                }
+            )
+
+            approved_df = df_ot_month[df_ot_month['status'] == '승인']
+
+            # 월별 초과/휴일근무 목록 엑셀 다운로드
+            ot_export = display_ot_df.copy()
+            ot_export["인정시간(h)"] = pd.to_numeric(ot_export["인정시간(h)"], errors="coerce").fillna(0.0)
+            ot_export["계산수당(원)"] = pd.to_numeric(ot_export["계산수당(원)"], errors="coerce").fillna(0).astype(int)
+
+            ot_excel = io.BytesIO()
+            from openpyxl import Workbook
+            wb_ot = Workbook()
+            ws_ot = wb_ot.active
+            ws_ot.title = f"{filter_month}_초과휴일근무"
+
+            ot_thin = Side(style="thin", color="D9DDE3")
+            ot_border = Border(left=ot_thin, right=ot_thin, top=ot_thin, bottom=ot_thin)
+            ot_center = Alignment(horizontal="center", vertical="center")
+            ot_left = Alignment(horizontal="left", vertical="center")
+            ot_right = Alignment(horizontal="right", vertical="center")
+            ot_title_fill = PatternFill("solid", fgColor="D9EAF7")
+            ot_header_fill = PatternFill("solid", fgColor="F2F4F7")
+            ot_approved_fill = PatternFill("solid", fgColor="E2F0D9")
+            ot_metric_fill = PatternFill("solid", fgColor="FFF2CC")
+
+            ws_ot.merge_cells("A1:L1")
+            ws_ot["A1"] = "월별 초과/휴일근무 일자별 내역 및 급여 연계"
+            ws_ot["A1"].font = Font(name="맑은 고딕", size=16, bold=True)
+            ws_ot["A1"].fill = ot_title_fill
+            ws_ot["A1"].alignment = ot_left
+            ws_ot.row_dimensions[1].height = 30
+
+            ws_ot.merge_cells("A2:L2")
+            ws_ot["A2"] = f"[{filter_month} 급여 산정 기간] {period_start} ~ {period_end} (전월 25일 ~ 당월 24일)"
+            ws_ot["A2"].font = Font(name="맑은 고딕", size=10)
+            ws_ot["A2"].alignment = ot_left
+
+            ws_ot.merge_cells("A4:L4")
+            ws_ot["A4"] = f"[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(ot_export)}건)"
+            ws_ot["A4"].font = Font(name="맑은 고딕", size=11, bold=True)
+
+            for ci, name in enumerate(ot_export.columns, 1):
+                c = ws_ot.cell(5, ci, name)
+                c.font = Font(name="맑은 고딕", size=10, bold=True)
+                c.fill = ot_header_fill
+                c.alignment = ot_center
+                c.border = ot_border
+
+            for ri, (_, r) in enumerate(ot_export.iterrows(), 6):
+                for ci, name in enumerate(ot_export.columns, 1):
+                    value = r[name]
+                    if name == "인정시간(h)": value = float(value)
+                    if name == "계산수당(원)": value = int(value)
+                    c = ws_ot.cell(ri, ci, value)
+                    c.font = Font(name="맑은 고딕", size=10)
+                    c.border = ot_border
+                    if str(r["승인상태"]) == "승인":
+                        c.fill = ot_approved_fill
+                    c.alignment = ot_left if name in ["이름","부서","직위","근무구분"] else (ot_right if name in ["인정시간(h)","계산수당(원)"] else ot_center)
+                    if name == "인정시간(h)": c.number_format = '0.0" 시간"'
+                    if name == "계산수당(원)": c.number_format = '#,##0" 원"'
+
+            mr = 7 + len(ot_export)
+            metrics = [
+                ("기간 내 전체 신청 건수", len(df_ot_month), '0" 건"', 1, 4),
+                ("최종 승인 건수", len(approved_df), '0" 건"', 5, 8),
+                ("승인 총 수당 합계", int(approved_df["actual_pay"].sum()), '#,##0" 원"', 9, 12)
+            ]
+            for label, value, fmt, sc, ec in metrics:
+                ws_ot.merge_cells(start_row=mr, start_column=sc, end_row=mr, end_column=ec)
+                ws_ot.merge_cells(start_row=mr+1, start_column=sc, end_row=mr+1, end_column=ec)
+                ws_ot.cell(mr, sc, label)
+                ws_ot.cell(mr+1, sc, value)
+                for rr in [mr, mr+1]:
+                    for cc in range(sc, ec+1):
+                        ws_ot.cell(rr, cc).fill = ot_metric_fill
+                        ws_ot.cell(rr, cc).border = ot_border
+                        ws_ot.cell(rr, cc).alignment = ot_center
+                ws_ot.cell(mr, sc).font = Font(name="맑은 고딕", size=10, bold=True)
+                ws_ot.cell(mr+1, sc).font = Font(name="맑은 고딕", size=16, bold=True)
+                ws_ot.cell(mr+1, sc).number_format = fmt
+
+            for i, w in enumerate([8,14,10,12,27,12,29,13,13,14,16,12], 1):
+                ws_ot.column_dimensions[get_column_letter(i)].width = w
+            ws_ot.freeze_panes = "A6"
+            ws_ot.sheet_view.showGridLines = False
+            ws_ot.page_setup.orientation = "landscape"
+            ws_ot.page_setup.paperSize = ws_ot.PAPERSIZE_A4
+            ws_ot.page_setup.fitToWidth = 1
+            ws_ot.page_setup.fitToHeight = 0
+            ws_ot.sheet_properties.pageSetUpPr.fitToPage = True
+            ws_ot.print_area = f"A1:L{mr+1}"
+            wb_ot.save(ot_excel)
+
+            ot_b1, ot_b2 = st.columns(2)
+            with ot_b1:
+                st.download_button(
+                    "📥 해당월 목록 엑셀 다운로드 (.xlsx)",
+                    ot_excel.getvalue(),
+                    file_name=f"{filter_month}_초과휴일근무_일자별내역.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            ot_print_rows = ""
+            for _, r in ot_export.iterrows():
+                approved_style = "background:#f3faef !important;" if str(r["승인상태"]) == "승인" else ""
+                ot_print_rows += f"""<tr style="{approved_style}">
+                <td>{r['ID']}</td><td>{r['근무일자']}</td><td>{r['사번']}</td><td>{r['이름']}</td>
+                <td style="text-align:left">{r['부서']}</td><td>{r['직위']}</td><td style="text-align:left">{r['근무구분']}</td>
+                <td>{r['시작시간']}</td><td>{r['종료시간']}</td><td style="text-align:right">{float(r['인정시간(h)']):.1f} 시간</td>
+                <td style="text-align:right">{int(r['계산수당(원)']):,} 원</td><td>{r['승인상태']}</td></tr>"""
+
+            ot_print_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#1f2937;margin:0;}}
+            .pbtn {{width:100%;padding:9px;background:#fff;border:1px solid #d1d5db;border-radius:7px;cursor:pointer;font-weight:bold;}}
+            .sheet {{padding:8px 2px;background:#fff;}}
+            h2 {{font-size:19px;margin:0 0 14px;}}
+            .period {{font-size:10px;color:#6b7280;margin-bottom:16px;}}
+            .ttl {{font-size:11px;font-weight:bold;margin-bottom:8px;}}
+            table {{width:100%;border-collapse:collapse;font-size:8px;}}
+            th {{background:#f2f4f7 !important;color:#6b7280;padding:6px 3px;border:1px solid #dfe3e8;white-space:nowrap;}}
+            td {{padding:6px 3px;border:1px solid #e5e7eb;text-align:center;white-space:nowrap;}}
+            .metrics {{display:flex;gap:12px;margin-top:15px;}}
+            .metric {{flex:1;background:#fff2cc !important;border:1px solid #eadf9c;padding:9px;border-radius:5px;}}
+            .mv {{font-size:20px;margin-top:6px;}}
+            @page {{size:A4 landscape;margin:7mm;}}
+            @media print {{
+              .no-print {{display:none !important;}}
+              *,body,div,table,tr,th,td {{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}}
+              .sheet {{padding:0;}}
+            }}
+            </style>
+            <div class="no-print"><button class="pbtn" onclick="window.print()">🖨️ 해당월 목록 인쇄</button></div>
+            <div class="sheet">
+            <h2>📊 월별 초과/휴일근무 일자별 내역 및 급여 연계</h2>
+            <div class="period">📅 [{filter_month} 급여 산정 기간]: {period_start} ~ {period_end} (전월 25일 ~ 당월 24일)</div>
+            <div class="ttl">[{filter_month} 지급분] 전체 초과/휴일근무 근무일자별 상세 목록 (총 {len(ot_export)}건)</div>
+            <table><thead><tr>{''.join(f'<th>{c}</th>' for c in ot_export.columns)}</tr></thead><tbody>{ot_print_rows}</tbody></table>
+            <div class="metrics">
+              <div class="metric">기간 내 전체 신청 건수<div class="mv">{len(df_ot_month)} 건</div></div>
+              <div class="metric">최종 승인 건수<div class="mv">{len(approved_df)} 건</div></div>
+              <div class="metric">승인 총 수당 합계<div class="mv">{int(approved_df['actual_pay'].sum()):,} 원</div></div>
+            </div></div>
+            """
+            with ot_b2:
+                st.components.v1.html(ot_print_html, height=55, scrolling=False)
+
+            
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            col_stat1.metric("기간 내 전체 신청 건수", f"{len(df_ot_month)} 건")
+            col_stat2.metric("최종 승인 건수", f"{len(approved_df)} 건")
+            col_stat3.metric("승인 총 수당 합계", f"{int(approved_df['actual_pay'].sum()):,} 원")
+
+            st.markdown("---")
+            
+            link_col1, link_col2 = st.columns([3, 1])
+            with link_col1:
+                st.write(f"💡 아래 버튼을 누르면 해당 산정기간({period_start} ~ {period_end}) 동안 **[승인]** 처리된 초과/휴일근무 수당이 **{filter_month} 통합 급여대장**에 일괄 반영됩니다.")
+            with link_col2:
+                if st.button("🔄 해당월 급여대장 수당 연계 반영", type="primary", use_container_width=True):
+                    if approved_df.empty:
+                        st.warning("승인된 근무 내역이 없어 연계할 데이터가 없습니다.")
+                    else:
+                        emp_totals = approved_df.groupby('emp_id')['actual_pay'].sum().to_dict()
+                        pay_date_str = str(pay_date_ref)
+                        
+                        for emp_id, ot_sum_pay in emp_totals.items():
+                            adj_check = supabase.table("monthly_payroll_adjust")\
+                                .select("*")\
+                                .eq("pay_month", filter_month)\
+                                .eq("pay_run_no", 1)\
+                                .eq("emp_id", emp_id)\
+                                .execute()
+                            
+                            if adj_check.data:
+                                supabase.table("monthly_payroll_adjust")\
+                                    .update({"ot_pay": int(ot_sum_pay), "ot_pay_overridden": True})\
+                                    .eq("pay_month", filter_month)\
+                                    .eq("pay_run_no", 1)\
+                                    .eq("emp_id", emp_id)\
+                                    .execute()
+                            else:
+                                emp_info_res = supabase.table("employees").select("*").eq("emp_id", emp_id).execute()
+                                if emp_info_res.data:
+                                    e = emp_info_res.data[0]
+                                    supabase.table("monthly_payroll_adjust").insert({
+                                        "pay_month": filter_month,
+                                        "pay_run_no": 1,
+                                        "pay_run_name": "정기급여",
+                                        "pay_date": pay_date_str,
+                                        "emp_id": emp_id,
+                                        "base_salary": safe_int(e.get("base_salary")),
+                                        "ot_pay": int(ot_sum_pay),
+                                        "ot_pay_overridden": True,
+                                        "family_allowance": safe_int(e.get("family_allowance")),
+                                        "non_taxable": safe_int(e.get("non_taxable")),
+                                        "other_allowance": safe_int(e.get("other_allowance")),
+                                        "national_pension": safe_int(e.get("national_pension")),
+                                        "health_insurance": safe_int(e.get("health_insurance")),
+                                        "longterm_care": safe_int(e.get("longterm_care")),
+                                        "employment_insurance": safe_int(e.get("employment_insurance")),
+                                        "income_tax": safe_int(e.get("income_tax")),
+                                        "local_tax": safe_int(e.get("local_tax")),
+                                        "other_deduction": safe_int(e.get("other_deduction"))
+                                    }).execute()
+
+                        st.success(f"✅ [{filter_month} 급여지급분] 산정기간({period_start} ~ {period_end}) 승인 내역({len(approved_df)}건)이 통합 급여대장에 성공적으로 연계·반영되었습니다!")
+                        st.rerun()
+
+# -------------------------------------------------------------------
+# TAB 4: 연차 통합관리 v30.0
+# -------------------------------------------------------------------
+if active_tab == 4:
+    st.header("🌴 연차 통합관리")
+    st.caption("연차 현황·신청·사용내역·직원별 대장·기간통계를 한 화면에서 관리합니다.")
+
+    try:
+        _lv_er=supabase.table("employees").select("*").execute()
+        _lv_emp=pd.DataFrame(_lv_er.data or [])
+        _lv_emp=filter_employees_for_work(scope_employee_master(_lv_emp))
+    except Exception:
+        _lv_emp=pd.DataFrame()
+
+    try:
+        _lv_rr=supabase.table("leave_records").select("*").order("id",desc=True).execute()
+        _lv_all=pd.DataFrame(_lv_rr.data or [])
+        _lv_all=scope_dataframe_to_current_employee(_lv_all)
+    except Exception:
+        _lv_all=pd.DataFrame()
+
+    # v30.1 연차 발생·이월·조정 대장
+    try:
+        _lg_res=supabase.table("leave_grants").select("*").order("grant_date",desc=False).order("id",desc=False).execute()
+        _lv_grants=pd.DataFrame(_lg_res.data or [])
+        _lv_grants=scope_dataframe_to_current_employee(_lv_grants)
+        _grant_table_ok=True
+    except Exception:
+        _lv_grants=pd.DataFrame()
+        _grant_table_ok=False
+
+    # 공통 요약자료
+    _lv_summary=[]
+    if not _lv_emp.empty:
+        for _,_e in _lv_emp.iterrows():
+            _eid=str(_e.get("emp_id",""))
+            _rec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _annual=_rec[_rec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _rec.empty and "leave_type" in _rec.columns) else pd.DataFrame()
+            _used=pd.to_numeric(_annual.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _annual.empty else 0.0
+            _legacy_total=float(_e.get("total_annual_leave",0) or 0)
+            _eg=_lv_grants[_lv_grants["emp_id"].astype(str)==_eid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _eg.empty:
+                _eg["_days"]=pd.to_numeric(_eg.get("grant_days",0),errors="coerce").fillna(0)
+                _total=float(_eg["_days"].sum())
+                _source="발생대장"
+            else:
+                _total=_legacy_total
+                _source="기존설정"
+            _lv_summary.append({
+                "사번":_eid,"이름":str(_e.get("emp_name","")),"부서":str(_e.get("dept","")),
+                "직위":str(_e.get("position","")),"총 부여 연차":_total,"사용 연차":float(_used),
+                "잔여 연차":float(_total-_used),"사용률 (%)":round((_used/_total*100),1) if _total>0 else 0.0,
+                "산정기준":_source
+            })
+    _lv_sum=pd.DataFrame(_lv_summary)
+
+    _lv_view=workflow_button_nav(
+        "연차 업무 선택",
+        ["👤 직원별 연차현황","➕ 발생·이월","📝 연차신청","🗂️ 사용내역"],
+        key="v324_leave_view",
+        caption="직원별 현황 확인, 연차 발생·이월, 신청, 사용내역 중 필요한 업무를 선택해 주세요.",
+        max_per_row=4
+    )
+
+    if _lv_view=="👤 직원별 연차현황":
+        st.markdown("#### 👤 직원별 연차현황")
+        if _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _sopts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _sk=st.selectbox("직원 선택",list(_sopts.keys()),key="v303_status_emp")
+            _se=_sopts[_sk]; _sid=str(_se.get("emp_id",""))
+            _sr=_lv_all[_lv_all["emp_id"].astype(str)==_sid].copy() if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _sa=_sr[_sr["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _sr.empty and "leave_type" in _sr.columns) else pd.DataFrame()
+            _su=float(pd.to_numeric(_sa.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()) if not _sa.empty else 0.0
+
+            _sg=_lv_grants[_lv_grants["emp_id"].astype(str)==_sid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _sg.empty:
+                _stotal=float(pd.to_numeric(_sg.get("grant_days",0),errors="coerce").fillna(0).sum())
+                _ssource="발생·이월 대장"
+            else:
+                _stotal=float(_se.get("total_annual_leave",0) or 0)
+                _ssource="기존 직원설정"
+
+            st.caption(f"{_se.get('emp_name','')} / {_se.get('dept','')} / {_se.get('position','')} · 산정기준: {_ssource}")
+            s1,s2,s3=st.columns(3)
+            s1.metric("총 부여 연차",f"{_stotal:,.1f}일")
+            s2.metric("사용 연차",f"{_su:,.1f}일")
+            s3.metric("잔여 연차",f"{_stotal-_su:,.1f}일")
+
+            if not _sg.empty:
+                st.markdown("##### 발생·이월 현황")
+                _gc=[c for c in ["grant_year","grant_type","grant_date","grant_days","expiry_date","note"] if c in _sg.columns]
+                display_table_kr(_sg[_gc].sort_values("grant_date",ascending=False),use_container_width=True,hide_index=True)
+
+            st.markdown("##### 연차·휴가 사용이력")
+            if _sr.empty:
+                st.info("사용이력이 없습니다.")
+            else:
+                _sc=[c for c in ["apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _sr.columns]
+                display_table_kr(_sr[_sc],use_container_width=True,hide_index=True)
+
+    if _lv_view=="➕ 발생·이월":
+        st.markdown("#### ➕ 연차 발생·이월·조정 관리")
+        if not _grant_table_ok:
+            st.warning("연차 발생대장 테이블이 없습니다. v30.1 SQL을 먼저 실행해 주세요.")
+        elif _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _gopts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _gk=st.selectbox("직원",list(_gopts.keys()),key="v301_grant_emp")
+            _ge=_gopts[_gk]; _gid=str(_ge.get("emp_id",""))
+            _gg=_lv_grants[_lv_grants["emp_id"].astype(str)==_gid].copy() if (not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+
+            if not _gg.empty:
+                _gg["_days"]=pd.to_numeric(_gg["grant_days"],errors="coerce").fillna(0)
+                _g_total=float(_gg["_days"].sum())
+                _carry=float(_gg.loc[_gg["grant_type"].astype(str)=="이월","_days"].sum())
+                _new=float(_gg.loc[_gg["grant_type"].astype(str)=="신규발생","_days"].sum())
+                _adj=float(_gg.loc[_gg["grant_type"].astype(str).isin(["조정","소멸"]),"_days"].sum())
+            else:
+                _g_total=_carry=_new=_adj=0.0
+
+            _used_rec=_lv_all[_lv_all["emp_id"].astype(str)==_gid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _used_ann=_used_rec[_used_rec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _used_rec.empty and "leave_type" in _used_rec.columns) else pd.DataFrame()
+            _g_used=float(pd.to_numeric(_used_ann.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum()) if not _used_ann.empty else 0.0
+
+            g1,g2,g3,g4=st.columns(4)
+            g1.metric("이월",f"{_carry:,.1f}일")
+            g2.metric("신규발생",f"{_new:,.1f}일")
+            g3.metric("유효 부여합계",f"{_g_total:,.1f}일")
+            g4.metric("현재 잔여",f"{_g_total-_g_used:,.1f}일")
+
+            st.markdown("##### 발생·이월 등록")
+            a1,a2,a3=st.columns(3)
+            _gtype=a1.selectbox("구분",["이월","신규발생","조정","소멸"],key="v301_grant_type")
+            _gdate=a2.date_input("발생/처리일",datetime.now().date(),key="v301_grant_date")
+            _gdays=a3.number_input("일수",step=0.5,value=0.0,key="v301_grant_days")
+            b1,b2=st.columns(2)
+            _gyear=b1.number_input("귀속연도",min_value=2000,max_value=2100,value=datetime.now().year,step=1,key="v301_grant_year")
+            _has_expiry=b2.checkbox("사용기한 있음",key="v301_has_expiry")
+            _expiry=st.date_input("사용기한",datetime.now().date(),key="v301_expiry",disabled=not _has_expiry)
+            _gnote=st.text_input("비고 / 발생근거",key="v301_grant_note")
+            st.caption("조정은 증감 방향에 따라 +/− 일수로 입력할 수 있습니다. 소멸은 음수(-) 일수로 등록하면 잔액에서 차감됩니다.")
+
+            if st.button("💾 발생·이월 내역 등록",type="primary",use_container_width=True,key="v301_grant_save"):
+                if _gdays==0:
+                    st.warning("일수는 0일로 등록할 수 없습니다.")
+                elif _gtype in ["이월","신규발생"] and _gdays<0:
+                    st.warning("이월·신규발생 일수는 0보다 커야 합니다.")
+                elif _gtype=="소멸" and _gdays>0:
+                    st.warning("소멸은 음수(-) 일수로 입력해 주세요.")
+                else:
+                    supabase.table("leave_grants").insert({
+                        "emp_id":_gid,"emp_name":str(_ge.get("emp_name","")),
+                        "grant_year":int(_gyear),"grant_type":_gtype,
+                        "grant_date":str(_gdate),"grant_days":float(_gdays),
+                        "expiry_date":str(_expiry) if _has_expiry else None,
+                        "note":_gnote
+                    }).execute()
+                    write_audit_log(f"연차 {_gtype} 등록","leave_grants",_gid)
+                    st.success("연차 발생·이월 내역을 등록했습니다."); st.rerun()
+
+            st.markdown("##### 발생·이월 이력")
+            if _gg.empty:
+                st.info("등록된 발생·이월 이력이 없습니다.")
+                _legacy=float(_ge.get("total_annual_leave",0) or 0)
+                if _legacy:
+                    st.warning(f"현재 기존 직원설정의 총 연차 {_legacy:,.1f}일을 사용 중입니다. 발생대장으로 전환하려면 이월/신규발생 내역을 등록해 주세요.")
+            else:
+                _gcols=[c for c in ["id","grant_year","grant_type","grant_date","grant_days","expiry_date","note","created_at"] if c in _gg.columns]
+                display_table_kr(_gg[_gcols].sort_values(["grant_date","id"],ascending=[False,False]),use_container_width=True,hide_index=True)
+                if has_permission("leave_write"):
+                    _gdel=st.selectbox("삭제할 발생이력 ID",_gg["id"].tolist(),key="v301_grant_del")
+                    _gconfirm=st.checkbox("선택한 발생·이월 이력 삭제 확인",key="v301_grant_confirm")
+                    if st.button("🗑️ 발생이력 삭제",disabled=not _gconfirm,key="v301_grant_delete"):
+                        supabase.table("leave_grants").delete().eq("id",int(_gdel)).execute()
+                        write_audit_log("연차 발생이력 삭제","leave_grants",_gdel)
+                        st.success("삭제했습니다."); st.rerun()
+
+    if _lv_view=="📝 연차신청":
+        st.markdown("#### 📝 연차·휴가 신청")
+        if _lv_emp.empty:
+            st.info("등록된 직원이 없습니다.")
+        else:
+            _opts={f"{r.get('emp_name','')} ({r.get('position','')} / {r.get('emp_id','')})":r for _,r in _lv_emp.iterrows()}
+            _ek=st.selectbox("직원 선택",list(_opts.keys()),key="v300_leave_emp")
+            _ei=_opts[_ek]
+            _eid=str(_ei.get("emp_id",""))
+            _erec=_lv_all[_lv_all["emp_id"].astype(str)==_eid] if (not _lv_all.empty and "emp_id" in _lv_all.columns) else pd.DataFrame()
+            _ea=_erec[_erec["leave_type"].astype(str).str.contains("연차|반차",na=False)] if (not _erec.empty and "leave_type" in _erec.columns) else pd.DataFrame()
+            _eu=pd.to_numeric(_ea.get("used_days",pd.Series(dtype=float)),errors="coerce").fillna(0).sum() if not _ea.empty else 0
+            _eg=_lv_grants[_lv_grants["emp_id"].astype(str)==_eid].copy() if (_grant_table_ok and not _lv_grants.empty and "emp_id" in _lv_grants.columns) else pd.DataFrame()
+            if not _eg.empty:
+                _etot=float(pd.to_numeric(_eg.get("grant_days",0),errors="coerce").fillna(0).sum())
+                _balance_source="발생·이월 대장"
+            else:
+                _etot=float(_ei.get("total_annual_leave",0) or 0)
+                _balance_source="기존 직원설정"
+            st.caption(f"연차 산정기준: {_balance_source}")
+            m1,m2,m3=st.columns(3)
+            m1.metric("부여",f"{_etot:,.1f}일"); m2.metric("사용",f"{_eu:,.1f}일"); m3.metric("잔여",f"{_etot-_eu:,.1f}일")
+
+            _type=st.selectbox("휴가 종류",["연차 (1일)","오전반차 (0.5일)","오후반차 (0.5일)","병가","경조휴가","특별휴가"],key="v300_leave_type")
+            d1,d2=st.columns(2)
+            _sd=d1.date_input("휴가 시작일",datetime.now().date(),key="v300_leave_sd")
+            _ed=d2.date_input("휴가 종료일",datetime.now().date(),key="v300_leave_ed")
+            _days=0.5 if "반차" in _type else float((_ed-_sd).days+1)
+            st.metric("신청 일수",f"{_days:,.1f}일")
+            _reason=st.text_area("휴가 사유",key="v300_leave_reason")
+            # v30.2 동일 사번의 동일일/기간 중복 신청 사전 확인
+            _dup_rows=pd.DataFrame()
+            if not _erec.empty and "start_date" in _erec.columns and "end_date" in _erec.columns:
+                _dup_chk=_erec.copy()
+                _dup_chk["_sd"]=pd.to_datetime(_dup_chk["start_date"],errors="coerce").dt.date
+                _dup_chk["_ed"]=pd.to_datetime(_dup_chk["end_date"],errors="coerce").dt.date
+                # 기존 휴가기간과 신규 신청기간이 하루라도 겹치면 중복 후보
+                _dup_rows=_dup_chk[(_dup_chk["_sd"]<=_ed)&(_dup_chk["_ed"]>=_sd)].copy()
+
+            _dup_confirm=False
+            if not _dup_rows.empty:
+                st.warning(f"⚠️ 동일 사번({_eid})에 신청기간과 겹치는 기존 휴가신청 {_dup_rows.shape[0]}건이 있습니다.")
+                _dc=[c for c in ["id","apply_dt","leave_type","start_date","end_date","used_days","reason"] if c in _dup_rows.columns]
+                display_table_kr(_dup_rows[_dc],use_container_width=True,hide_index=True)
+                _dup_confirm=st.checkbox(
+                    "기존 신청과 날짜가 중복되는 것을 확인했으며, 그래도 신청을 등록합니다.",
+                    key="v302_leave_dup_confirm"
+                )
+
+            if st.button("📝 연차 신청 저장",type="primary",use_container_width=True,key="v300_leave_save"):
+                if _ed<_sd:
+                    st.warning("휴가 종료일은 시작일보다 빠를 수 없습니다.")
+                elif ("연차" in _type or "반차" in _type) and _days>(_etot-_eu):
+                    st.warning(f"잔여 연차({_etot-_eu:,.1f}일)보다 신청 일수({_days:,.1f}일)가 많습니다.")
+                elif not _dup_rows.empty and not _dup_confirm:
+                    st.warning("중복 신청 확인 문구를 체크한 후 다시 저장해 주세요.")
+                else:
+                    supabase.table("leave_records").insert({
+                        "apply_dt":datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "emp_id":_eid,"emp_name":str(_ei.get("emp_name","")),
+                        "dept":str(_ei.get("dept","")),"position":str(_ei.get("position","")),
+                        "leave_type":_type,"start_date":str(_sd),"end_date":str(_ed),
+                        "used_days":float(_days),"reason":_reason
+                    }).execute()
+                    st.success("연차 신청내역을 저장했습니다."); st.rerun()
+
+            # v30.4: 연차신청 화면에서 최근 저장 신청서를 A4 한 페이지로 바로 출력
+            st.divider()
+            st.markdown("##### 🖨️ 연차 신청서 바로 출력")
+            _print_rec=_erec.copy() if not _erec.empty else pd.DataFrame()
+            if _print_rec.empty:
+                st.info("선택한 직원의 저장된 연차·휴가 신청내역이 없습니다. 신청 저장 후 바로 출력할 수 있습니다.")
+            else:
+                _print_rec=_print_rec.sort_values("id",ascending=False) if "id" in _print_rec.columns else _print_rec
+                _pmap={}
+                for _,_r in _print_rec.iterrows():
+                    _lbl=f"{_r.get('start_date','')} | {_r.get('leave_type','')} | {_r.get('used_days',0)}일"
+                    _pmap[_lbl]=_r
+                _plabel=st.selectbox("출력할 신청내역",list(_pmap.keys()),key="v304_leave_print_sel")
+                _pr=_pmap[_plabel]
+
+                _logo=f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height:32px;">' if st.session_state.logo_b64 else ''
+                _apply_date=str(_pr.get("apply_dt",""))[:10]
+                try:
+                    _ad=pd.to_datetime(_apply_date).strftime("%Y. %m. %d.")
+                except Exception:
+                    _ad=_apply_date
+                _reason_print=str(_pr.get("reason","") or "").replace("<","&lt;").replace(">","&gt;")
+                _leave_type_raw=str(_pr.get("leave_type","") or "")
+                _leave_type_print={
+                    "연차 (1일)":"연차",
+                    "오전반차 (0.5일)":"오전반차",
+                    "오후반차 (0.5일)":"오후반차"
+                }.get(_leave_type_raw,_leave_type_raw)
+
+                _leave_doc=f"""
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+@page {{ size:A4 portrait; margin:12mm; }}
+* {{ box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+html,body {{ margin:0; padding:0; font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif; color:#111; background:#fff; }}
+.toolbar {{ text-align:right; margin:0 0 6px 0; }}
+.toolbar button {{ padding:7px 14px; border:0; border-radius:5px; cursor:pointer; }}
+.sheet {{ width:186mm; min-height:270mm; margin:0 auto; border:1.5px solid #111; padding:11mm 10mm; }}
+.head {{ position:relative; width:100%; height:34mm; }}
+.brand {{ position:absolute; left:0; top:0; width:24mm; min-height:25mm; }}
+.title {{ position:absolute; left:25mm; right:66mm; top:9mm; text-align:center; font-size:23px; line-height:1.15; font-weight:700; letter-spacing:1.2px; white-space:nowrap !important; word-break:keep-all !important; }}
+.approval {{ position:absolute; right:0; top:0; border-collapse:collapse; width:62mm; font-size:13px; text-align:center; }}
+.approval th,.approval td {{ border:1px solid #222; padding:5px 3px; font-size:13px; }}
+.approval .sign {{ height:19mm; }}
+.main {{ width:100%; border-collapse:collapse; margin-top:11mm; font-size:16px; }}
+.main th,.main td {{ border:1px solid #222; padding:4.5mm 3.5mm; font-size:16px; }}
+.main th {{ width:23%; background:#f5f5f5; text-align:center; }}
+.reason {{ height:36mm; vertical-align:top; }}
+.statement {{ text-align:center; margin-top:22mm; font-size:17px; }}
+.date {{ text-align:center; margin-top:9mm; font-size:16px; }}
+.signer {{ text-align:right; margin-top:17mm; padding-right:8mm; font-size:17px; font-weight:700; }}
+.org {{ text-align:center; margin-top:22mm; font-size:19px; font-weight:700; }}
+@media print {{
+  .toolbar {{ display:none !important; }}
+  .sheet {{ border:1.5px solid #111; width:100%; min-height:0; margin:0; page-break-inside:avoid; }}
+  body {{ overflow:visible; }}
+}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">🖨️ 한 페이지 인쇄</button></div>
+<div class="sheet">
+  <div class="head">
+    <div class="brand">{_logo}</div>
+    <div class="title">휴 가 (연 차) 신 청 서</div>
+    <table class="approval">
+      <tr><th rowspan="2" style="width:9mm;">결<br>재</th><th>담 당</th><th>대 리</th><th>센터장</th></tr>
+      <tr><td class="sign"></td><td class="sign"></td><td class="sign"></td></tr>
+    </table>
+  </div>
+  <table class="main">
+    <tr><th>성 명</th><td>{_pr.get('emp_name','')} ({_pr.get('position','')})</td><th>소 속</th><td>{_pr.get('dept','')}</td></tr>
+    <tr><th>휴가구분</th><td colspan="3">{_leave_type_print} &nbsp; (사용일수: {float(_pr.get('used_days',0) or 0):.1f}일)</td></tr>
+    <tr><th>휴가기간</th><td colspan="3">{_pr.get('start_date','')} ~ {_pr.get('end_date','')}</td></tr>
+    <tr><th>휴가사유</th><td colspan="3" class="reason">{_reason_print}</td></tr>
+  </table>
+  <div class="statement">위와 같이 휴가(연차)를 신청합니다.</div>
+  <div class="date">{_ad}</div>
+  <div class="signer">신청인: {_pr.get('emp_name','')} (인)</div>
+  <div class="org">화성시장기요양지원센터장 귀하</div>
+</div></body></html>
+"""
+                st.components.v1.html(_leave_doc,height=820,scrolling=True)
+
+    if _lv_view=="🗂️ 사용내역":
+        st.markdown("#### 🗂️ 연차·휴가 사용내역")
+        if _lv_all.empty:
+            st.info("등록된 연차·휴가 내역이 없습니다.")
+        else:
+            f1,f2=st.columns(2)
+            _fn=f1.text_input("직원명/사번 검색",key="v300_hist_name")
+            _ft=f2.selectbox("휴가 종류",["전체"]+sorted(_lv_all["leave_type"].dropna().astype(str).unique().tolist()),key="v300_hist_type")
+            _hist=_lv_all.copy()
+            if _fn:
+                _mask=pd.Series(False,index=_hist.index)
+                for c in ["emp_name","emp_id"]:
+                    if c in _hist.columns: _mask|=_hist[c].astype(str).str.contains(_fn,case=False,na=False)
+                _hist=_hist[_mask]
+            if _ft!="전체": _hist=_hist[_hist["leave_type"].astype(str)==_ft]
+            _cols=[c for c in ["id","apply_dt","emp_id","emp_name","dept","position","leave_type","start_date","end_date","used_days","reason"] if c in _hist.columns]
+            display_table_kr(_hist[_cols],use_container_width=True,hide_index=True)
+
+            if has_permission("leave_write") and not _hist.empty:
+                st.divider()
+                st.markdown("##### 🗑️ 연차·휴가 신청 삭제")
+                _del_opts={}
+                for _,_r in _hist.iterrows():
+                    _label=f"ID {_r.get('id')} | {_r.get('emp_name','')} | {_r.get('start_date','')} ~ {_r.get('end_date','')} | {_r.get('leave_type','')}"
+                    _del_opts[_label]=int(_r.get("id"))
+                _dlabel=st.selectbox("삭제할 신청내역",list(_del_opts.keys()),key="v300_leave_delid")
+                _did=_del_opts[_dlabel]
+                _drow=_hist[_hist["id"]==_did].iloc[0]
+                st.caption(f"삭제 대상: {_drow.get('emp_name','')}({_drow.get('emp_id','')}) / {_drow.get('leave_type','')} / {_drow.get('start_date','')} ~ {_drow.get('end_date','')} / {_drow.get('used_days',0)}일")
+                _confirm=st.checkbox("위 연차·휴가 신청을 삭제하는 것을 확인했습니다.",key="v300_leave_delconfirm")
+                if st.button("🗑️ 선택 신청 삭제",type="primary",disabled=not _confirm,key="v300_leave_delete"):
+                    supabase.table("leave_records").delete().eq("id",int(_did)).execute()
+                    write_audit_log("연차 신청 삭제","leave_records",_did)
+                    st.success("선택한 연차·휴가 신청을 삭제했습니다."); st.rerun()
+
+# -------------------------------------------------------------------
+# TAB 5: 연차 신청서 독립 출력 탭
+# -------------------------------------------------------------------
+if active_tab == 5:
+    st.header("🖨️ 휴가 (연차) 신청서 인쇄")
+    
+    l_records_res = supabase.table("leave_records").select("*").order("id", desc=True).execute()
+    df_leave_records = pd.DataFrame(l_records_res.data) if l_records_res.data else pd.DataFrame()
+
+    df_leave_records = scope_dataframe_to_current_employee(df_leave_records)
+    if df_leave_records.empty:
+        st.info("등록된 연차/휴가 신청 내역이 없다.")
+    else:
+        leave_options = [f"[{r['start_date']}] {r['emp_name']} {r['position']} - {r['leave_type']}" for _, r in df_leave_records.iterrows()]
+        selected_l_index = st.selectbox("출력할 연차 신청서 선택", range(len(leave_options)), format_func=lambda x: leave_options[x])
+        target_l = df_leave_records.iloc[selected_l_index]
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 35px; float: left;">' if st.session_state.logo_b64 else ''
+
+        leave_template = f"""<style>
+        * {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}}
+        @media print {{ body, div, table, tr, th, td {{-webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;}} }}
+        </style>
+        
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 해당 서식 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
+                <h2 style="margin: 0; padding-top: 15px; font-size: 24px; text-decoration: underline;">휴 가 (연 차) 신 청 서</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 12px; width: 210px;" border="1">
+                    <tr style="height: 20px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 50px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;" border="1">
+                <tr style="height: 40px;">
+                    <th style="padding: 8px; background: #f9f9f9; width: 20%;">성 명</th>
+                    <td style="padding: 8px; width: 30%;">{target_l['emp_name']} ({target_l['position']})</td>
+                    <th style="padding: 8px; background: #f9f9f9; width: 20%;">소 속</th>
+                    <td style="padding: 8px; width: 30%;">{target_l['dept']}</td>
+                </tr>
+                <tr style="height: 40px;">
+                    <th style="padding: 8px; background: #f9f9f9;">휴가구분</th>
+                    <td style="padding: 8px;" colspan="3">{target_l['leave_type']} (사용일수: {target_l['used_days']}일)</td>
+                </tr>
+                <tr style="height: 40px;">
+                    <th style="padding: 8px; background: #f9f9f9;">휴가기간</th>
+                    <td style="padding: 8px;" colspan="3">{target_l['start_date']} ~ {target_l['end_date']}</td>
+                </tr>
+                <tr>
+                    <th style="padding: 8px; background: #f9f9f9;">휴가사유</th>
+                    <td style="padding: 12px; height: 80px; vertical-align: top;" colspan="3">{target_l['reason']}</td>
+                </tr>
+            </table>
+
+            <p style="text-align: center; margin-top: 50px; font-size: 15px;">위와 같이 휴가(연차)를 신청합니다.</p>
+            <p style="text-align: center; margin-top: 15px; font-size: 13px;">{target_l['apply_dt'][:10]}</p>
+            
+            <p style="text-align: right; margin-top: 40px; font-size: 15px; font-weight: bold; padding-right: 10px;">
+                신청인: {target_l['emp_name']} (인)
+            </p>
+        </div>
+        """
+        st.components.v1.html(leave_template, height=560, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 6: 통합 급여대장 (수정 및 엑셀)
+# -------------------------------------------------------------------
+if active_tab == 6:
+    st.header("📊 통합 급여대장 (수정 및 엑셀)")
+    st.info("① 지급월·차수 선택 → ② 급여 확인·수정 → ③ 저장 → ④ 마감·엑셀 출력 순서로 처리합니다.")
+
+    run_col1, run_col2, run_col3 = st.columns([1, 1, 2])
+    with run_col1:
+        pay_date = st.date_input("지급일 선택", datetime.now(), key="payroll_date")
+    with run_col2:
+        pay_run_no = st.selectbox("급여대장 차수", [1, 2], format_func=lambda x: f"{x}차 대장", key="pay_run_no")
+    with run_col3:
+        default_run_name = "정기급여" if pay_run_no == 1 else "명절상여금"
+        pay_run_name = st.text_input("급여대장 명칭", value=default_run_name, key=f"pay_run_name_{pay_run_no}").strip() or default_run_name
+    pay_month = pay_date.strftime("%Y-%m")
+    st.caption(f"현재 편집 대상: {pay_month} · {pay_run_no}차 · {pay_run_name} · 지급일 {pay_date.isoformat()}")
+
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pay_date)
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_employee_master(df_ot)
+
+    multi_run_ready = True
+    try:
+        adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
+        df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+        df_adjust = scope_employee_master(df_adjust)
+    except Exception:
+        multi_run_ready = False
+        df_adjust = pd.DataFrame()
+        st.error("먼저 V1.3 다중 급여대장 SQL 설정 파일을 Supabase에서 실행해 주세요.")
+
+    closing_table_ready = True
+    current_closing = None
+    try:
+        closing_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
+        current_closing = closing_res.data[0] if closing_res.data else None
+    except Exception:
+        closing_table_ready = False
+
+    # v26.2: finalized payroll is read-only until an administrator cancels closing.
+    payroll_locked = bool(current_closing and current_closing.get("status") == "finalized")
+    if payroll_locked:
+        st.warning(f"🔒 {pay_month} {pay_run_no}차 급여는 마감되었습니다. 관리자 마감취소 전에는 수정·저장·재확정할 수 없습니다.")
+
+    if df_emp.empty:
+        st.warning("등록된 직원이 없다.")
+    else:
+        calculated_rows = []
+        no = 1
+        
+        ot_start_date = (pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date = pay_date - timedelta(days=1)
+
+        for idx, emp in df_emp.iterrows():
+            adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
+
+            emp_ot = df_ot[
+                (df_ot['emp_id'] == emp['emp_id']) & 
+                (df_ot['work_date'] >= str(ot_start_date)) & 
+                (df_ot['work_date'] <= str(ot_end_date))
+            ] if not df_ot.empty else pd.DataFrame()
+
+            calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+            if not adj_match.empty:
+                adj = adj_match.iloc[0]
+                base = adj['base_salary']
+                ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
+                family = adj['family_allowance']
+                holiday_bonus = safe_int(adj.get('holiday_bonus'))
+                non_tax = adj['non_taxable']
+                other_allow = adj['other_allowance']
+                emp_national = adj['national_pension']
+                emp_health = adj['health_insurance']
+                emp_longterm = adj['longterm_care']
+                emp_employment = adj['employment_insurance']
+                emp_income_tax = safe_int(adj.get('income_tax'))
+                emp_local_tax = safe_int(adj.get('local_tax'))
+                other_deduct = adj['other_deduction']
+            else:
+                ot_pay = calculated_ot_pay
+                base = emp['base_salary']
+                family = emp['family_allowance']
+                holiday_bonus = 0
+                non_tax = emp['non_taxable']
+                other_allow = emp['other_allowance']
+                other_deduct = emp['other_deduction']
+
+                emp_national = safe_int(emp.get('national_pension'))
+                emp_health = safe_int(emp.get('health_insurance'))
+                emp_longterm = safe_int(emp.get('longterm_care'))
+                emp_employment = safe_int(emp.get('employment_insurance'))
+                emp_income_tax = safe_int(emp.get('income_tax'))
+                emp_local_tax = safe_int(emp.get('local_tax'))
+
+                if pay_run_no == 2:
+                    base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    holiday_bonus = safe_int(emp.get('holiday_bonus'))
+                    emp_national = emp_health = emp_longterm = emp_employment = 0
+                    emp_income_tax = emp_local_tax = 0
+
+            biz_national = safe_int(emp.get('employer_national_pension'))
+            biz_health = safe_int(emp.get('employer_health_insurance'))
+            biz_longterm = safe_int(emp.get('employer_longterm_care'))
+            biz_employment = safe_int(emp.get('employer_employment_insurance'))
+            biz_industrial = safe_int(emp.get('employer_industrial_insurance'))
+            retirement_accrual = safe_int(emp.get('retirement_accrual'))
+            if pay_run_no == 2 and adj_match.empty:
+                biz_national = biz_health = biz_longterm = biz_employment = biz_industrial = retirement_accrual = 0
+
+            if not adj_match.empty:
+                biz_national = safe_int(adj.get('employer_national_pension')) if pd.notna(adj.get('employer_national_pension')) else biz_national
+                biz_health = safe_int(adj.get('employer_health_insurance')) if pd.notna(adj.get('employer_health_insurance')) else biz_health
+                biz_longterm = safe_int(adj.get('employer_longterm_care')) if pd.notna(adj.get('employer_longterm_care')) else biz_longterm
+                biz_employment = safe_int(adj.get('employer_employment_insurance')) if pd.notna(adj.get('employer_employment_insurance')) else biz_employment
+                biz_industrial = safe_int(adj.get('employer_industrial_insurance')) if pd.notna(adj.get('employer_industrial_insurance')) else biz_industrial
+                retirement_accrual = safe_int(adj.get('retirement_accrual')) if pd.notna(adj.get('retirement_accrual')) else retirement_accrual
+
+            calculated_rows.append({
+                "No": no, "사번": emp['emp_id'], "이름": emp['emp_name'], "생년월일": emp['birth_date'], "부서": emp['dept'], "직위": emp['position'], "호봉": emp['hobong'],
+                "기본급": base, "초과수당(승인)": ot_pay, "가족수당": family, "명절상여": holiday_bonus, "비과세": non_tax, "기타수당": other_allow,
+                "국민연금(본인)": emp_national, "건강보험(본인)": emp_health, "장기요양(본인)": emp_longterm, "고용보험(본인)": emp_employment,
+                "소득세": emp_income_tax, "지방소득세": emp_local_tax, "기타공제": other_deduct,
+                "국민연금(사업자)": biz_national, "건강보험(사업자)": biz_health, "장기요양(사업자)": biz_longterm, "고용보험(사업자)": biz_employment, "산재보험(사업자)": biz_industrial,
+                "퇴직적립금": retirement_accrual
+            })
+            no += 1
+
+        df_calc = pd.DataFrame(calculated_rows)
+
+        st.subheader(f"✏️ {pay_month} {pay_run_no}차 {pay_run_name} 엑셀형 편집기")
+        st.info("셀을 클릭하여 직접 수정하거나 엑셀의 여러 셀을 붙여넣을 수 있습니다.")
+
+        identity_columns = ["No", "사번", "이름", "생년월일", "부서", "직위", "호봉"]
+        amount_columns = [
+            "기본급", "초과수당(승인)", "가족수당", "명절상여", "비과세", "기타수당",
+            "국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)",
+            "소득세", "지방소득세", "기타공제", "국민연금(사업자)",
+            "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)",
+            "산재보험(사업자)", "퇴직적립금"
+        ]
+        column_config = {
+            "No": st.column_config.NumberColumn("No", width="small"),
+            "사번": st.column_config.TextColumn("사번", width="small"),
+            "이름": st.column_config.TextColumn("이름", width="small"),
+            "생년월일": st.column_config.TextColumn("생년월일", width="medium"),
+            "부서": st.column_config.TextColumn("부서", width="small"),
+            "직위": st.column_config.TextColumn("직위", width="small"),
+            "호봉": st.column_config.TextColumn("호봉", width="small")
+        }
+        for col in amount_columns:
+            column_config[col] = st.column_config.NumberColumn(
+                col, min_value=0, step=10, format="localized", width="medium",
+                help="10원 단위로 입력할 수 있습니다."
+            )
+
+        reset_version_key = f"payroll_editor_reset_version_{pay_month}_{pay_run_no}"
+        if reset_version_key not in st.session_state:
+            st.session_state[reset_version_key] = 0
+        editor_key = f"payroll_excel_editor_{pay_month}_{pay_run_no}_{st.session_state[reset_version_key]}"
+        edited_payroll = st.data_editor(
+            df_calc,
+            key=editor_key,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=(list(df_calc.columns) if payroll_locked else identity_columns),
+            column_config=column_config,
+            height=min(650, max(220, 38 * (len(df_calc) + 2)))
+        )
+
+        invalid_cells = []
+        for col in amount_columns:
+            numeric_values = pd.to_numeric(edited_payroll[col], errors="coerce")
+            bad_rows = edited_payroll[numeric_values.isna() | (numeric_values < 0)]
+            invalid_cells.extend([f"{name} - {col}" for name in bad_rows["이름"].astype(str).tolist()])
+            edited_payroll[col] = numeric_values.fillna(0).round().astype(int)
+
+        if invalid_cells:
+            st.error("금액은 0 이상의 숫자로 입력해 주세요: " + ", ".join(invalid_cells[:8]) + (" 외" if len(invalid_cells) > 8 else ""))
+
+        gross_series = edited_payroll[["기본급", "초과수당(승인)", "가족수당", "명절상여", "비과세", "기타수당"]].sum(axis=1)
+        deduction_series = edited_payroll[["국민연금(본인)", "건강보험(본인)", "장기요양(본인)", "고용보험(본인)", "소득세", "지방소득세", "기타공제"]].sum(axis=1)
+        employer_series = edited_payroll[["국민연금(사업자)", "건강보험(사업자)", "장기요양(사업자)", "고용보험(사업자)", "산재보험(사업자)"]].sum(axis=1)
+        net_series = gross_series - deduction_series
+        if (net_series < 0).any():
+            invalid_cells.append("공제합계가 급여총액을 초과한 직원")
+            st.error("공제합계가 급여총액보다 큰 직원이 있습니다. 실지급액이 음수가 되지 않도록 확인해 주세요.")
+
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("급여총액", f"{int(gross_series.sum()):,}원")
+        metric_cols[1].metric("근로자 공제합계", f"{int(deduction_series.sum()):,}원")
+        metric_cols[2].metric("실지급액", f"{int(net_series.sum()):,}원")
+        metric_cols[3].metric("사업주 부담보험", f"{int(employer_series.sum()):,}원")
+        metric_cols[4].metric("퇴직적립금", f"{int(edited_payroll['퇴직적립금'].sum()):,}원")
+
+        # v26.2: payroll ledger arithmetic validation used by payslip/closing.
+        ledger_check_diff = (gross_series - deduction_series - net_series).round(0)
+        ledger_check_ok = bool((ledger_check_diff.abs() <= 1).all())
+        if ledger_check_ok:
+            st.success("✅ 급여대장 자동검증 정상: 직원별 지급총액 - 공제총액 = 실지급액이 모두 일치합니다.")
+        else:
+            st.error("❌ 급여대장 자동검증 불일치가 있습니다. 수정 후 저장·마감해 주세요.")
+
+        action_col1, action_col2 = st.columns([3, 1])
+        with action_col1:
+            save_adjustments = st.button(
+                "💾 수정사항 개별 급여명세서에 연동 저장",
+                disabled=(bool(invalid_cells) or payroll_locked),
+                use_container_width=True
+            )
+        with action_col2:
+            if st.button("↩ 저장값 다시 불러오기", use_container_width=True):
+                st.session_state[reset_version_key] += 1
+                st.rerun()
+
+        if save_adjustments:
+            for idx, r in edited_payroll.iterrows():
+                pay_adj_data = {
+                    "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                    "pay_date": pay_date.isoformat(), "emp_id": r['사번'], "base_salary": int(r['기본급']),
+                    "ot_pay": int(r['초과수당(승인)']), "family_allowance": int(r['가족수당']),
+                    "holiday_bonus": int(r['명절상여']),
+                    "non_taxable": int(r['비과세']), "other_allowance": int(r['기타수당']),
+                    "national_pension": int(r['국민연금(본인)']), "health_insurance": int(r['건강보험(본인)']),
+                    "longterm_care": int(r['장기요양(본인)']), "employment_insurance": int(r['고용보험(본인)']),
+                    "income_tax": int(r['소득세']), "local_tax": int(r['지방소득세']), "other_deduction": int(r['기타공제'])
+                    , "ot_pay_overridden": True,
+                    "employer_national_pension": int(r['국민연금(사업자)']),
+                    "employer_health_insurance": int(r['건강보험(사업자)']),
+                    "employer_longterm_care": int(r['장기요양(사업자)']),
+                    "employer_employment_insurance": int(r['고용보험(사업자)']),
+                    "employer_industrial_insurance": int(r['산재보험(사업자)']),
+                    "retirement_accrual": int(r['퇴직적립금'])
+                }
+                supabase.table("monthly_payroll_adjust").upsert(
+                    pay_adj_data, on_conflict="pay_month,pay_run_no,emp_id"
+                ).execute()
+            st.success(f"{pay_month} {pay_run_no}차 {pay_run_name} 수정 수구가 저장되었습니다.")
+
+        payroll_html_rows = ""
+        sum_base = sum_ot = sum_family = sum_holiday = sum_nontax = sum_gross = 0
+        sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
+        sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
+
+        for idx, row in edited_payroll.iterrows():
+            total_gross = row['기본급'] + row['초과수당(승인)'] + row['가족수당'] + row['명절상여'] + row['비과세'] + row['기타수당']
+            emp_deduction_total = row['국민연금(본인)'] + row['건강보험(본인)'] + row['장기요양(본인)'] + row['고용보험(본인)'] + row['소득세'] + row['지방소득세'] + row['기타공제']
+            net_pay = total_gross - emp_deduction_total
+            biz_deduction_total = row['국민연금(사업자)'] + row['건강보험(사업자)'] + row['장기요양(사업자)'] + row['고용보험(사업자)'] + row['산재보험(사업자)']
+
+            sum_base += row['기본급']; sum_ot += row['초과수당(승인)']; sum_family += row['가족수당']; sum_holiday += row['명절상여']; sum_nontax += row['비과세']; sum_gross += total_gross
+            sum_nat += row['국민연금(본인)']; sum_hea += row['건강보험(본인)']; sum_long += row['장기요양(본인)']; sum_emp += row['고용보험(본인)']
+            sum_inc += row['소득세']; sum_loc += row['지방소득세']; sum_other_d += row['기타공제']; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
+            sum_b_nat += row['국민연금(사업자)']; sum_b_hea += row['건강보험(사업자)']; sum_b_long += row['장기요양(사업자)']; sum_b_emp += row['고용보험(사업자)']; sum_b_ind += row['산재보험(사업자)']; sum_b_tot += biz_deduction_total; sum_retire += row['퇴직적립금']
+
+            payroll_html_rows += f"""
+            <tr>
+                <td>{row['No']}</td><td>{row['이름']}</td><td>{row['생년월일']}</td><td>{row['호봉']}</td>
+                <td style="text-align:right;">{row['기본급']:,}</td>
+                <td style="text-align:right;">{row['초과수당(승인)']:,}</td>
+                <td style="text-align:right;">{row['가족수당']:,}</td>
+                <td style="text-align:right;">{row['명절상여']:,}</td>
+                <td style="text-align:right;">{row['비과세']:,}</td>
+                <td style="text-align:right; font-weight:bold;">{total_gross:,}</td>
+                <td style="text-align:right;">{row['국민연금(본인)']:,}</td>
+                <td style="text-align:right;">{row['건강보험(본인)']:,}</td>
+                <td style="text-align:right;">{row['장기요양(본인)']:,}</td>
+                <td style="text-align:right;">{row['고용보험(본인)']:,}</td>
+                <td style="text-align:right;">{row['소득세']:,}</td>
+                <td style="text-align:right;">{row['지방소득세']:,}</td>
+                <td style="text-align:right; font-weight:bold;">{emp_deduction_total:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#fffae6;">{net_pay:,}</td>
+                <td style="text-align:right;">{row['국민연금(사업자)']:,}</td>
+                <td style="text-align:right;">{row['건강보험(사업자)']:,}</td>
+                <td style="text-align:right;">{row['장기요양(사업자)']:,}</td>
+                <td style="text-align:right;">{row['고용보험(사업자)']:,}</td>
+                <td style="text-align:right;">{row['산재보험(사업자)']:,}</td>
+                <td style="text-align:right; font-weight:bold;">{biz_deduction_total:,}</td>
+                <td style="text-align:right;">{row['퇴직적립금']:,}</td>
+            </tr>
+            """
+
+        st.divider()
+        # v20.4 급여대장 주요 합계
+        show_payroll_summary(edited_payroll, "ledger")
+        
+        st.subheader("🔒 월 급여 확정 및 회계자료")
+        snapshot, accounting_export = build_payroll_snapshot(pay_month, pay_date, edited_payroll, pay_run_no, pay_run_name)
+        current_hash = payload_hash(snapshot, accounting_export)
+
+        if not closing_table_ready or not multi_run_ready:
+            st.warning("먼저 제공된 V1.4 SQL 설정 파일을 Supabase에서 실행해야 급여 확정 기능을 사용할 수 있습니다.")
+        elif current_closing and current_closing.get("status") == "finalized":
+            saved_hash = current_closing.get("content_hash", "")
+            if saved_hash == current_hash:
+                st.success(f"{pay_month} {pay_run_no}차 {pay_run_name}이 확정되었습니다. (수정확정 {current_closing.get('revision', 1)}차)")
+            else:
+                st.warning("확정 후 급여대장 값이 변경되었습니다. 변경 내용을 저장한 뒤 재확정해 주세요.")
+        else:
+            st.info("현재 월은 아직 확정되지 않았습니다. 편집값을 확인한 뒤 확정해 주세요.")
+
+        confirm_col, cancel_col = st.columns(2)
+        with confirm_col:
+            confirm_label = "🔒 마감 완료" if payroll_locked else ("🔒 월 급여 확정" if not current_closing else "🔁 월 급여 재확정")
+            if st.button(confirm_label, disabled=(payroll_locked or not closing_table_ready or not multi_run_ready or bool(invalid_cells) or not ledger_check_ok), use_container_width=True):
+                for _, r in edited_payroll.iterrows():
+                    supabase.table("monthly_payroll_adjust").upsert({
+                        "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                        "pay_date": pay_date.isoformat(), "emp_id": r['사번'],
+                        "base_salary": safe_int(r['기본급']), "ot_pay": safe_int(r['초과수당(승인)']),
+                        "ot_pay_overridden": True, "family_allowance": safe_int(r['가족수당']),
+                        "holiday_bonus": safe_int(r['명절상여']),
+                        "non_taxable": safe_int(r['비과세']), "other_allowance": safe_int(r['기타수당']),
+                        "national_pension": safe_int(r['국민연금(본인)']), "health_insurance": safe_int(r['건강보험(본인)']),
+                        "longterm_care": safe_int(r['장기요양(본인)']), "employment_insurance": safe_int(r['고용보험(본인)']),
+                        "income_tax": safe_int(r['소득세']), "local_tax": safe_int(r['지방소득세']),
+                        "other_deduction": safe_int(r['기타공제']),
+                        "employer_national_pension": safe_int(r['국민연금(사업자)']),
+                        "employer_health_insurance": safe_int(r['건강보험(사업자)']),
+                        "employer_longterm_care": safe_int(r['장기요양(사업자)']),
+                        "employer_employment_insurance": safe_int(r['고용보험(사업자)']),
+                        "employer_industrial_insurance": safe_int(r['산재보험(사업자)']),
+                        "retirement_accrual": safe_int(r['퇴직적립금'])
+                    }, on_conflict="pay_month,pay_run_no,emp_id").execute()
+
+                revision = safe_int(current_closing.get("revision", 0)) + 1 if current_closing else 1
+                supabase.table("payroll_monthly_closings").upsert({
+                    "pay_month": pay_month, "pay_run_no": pay_run_no, "pay_run_name": pay_run_name,
+                    "pay_date": pay_date.isoformat(),
+                    "status": "finalized", "revision": revision,
+                    "payroll_data": snapshot, "accounting_export": accounting_export,
+                    "content_hash": current_hash, "finalized_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }, on_conflict="pay_month,pay_run_no").execute()
+                st.success(f"{pay_month} {pay_run_no}차 {pay_run_name}을 수정확정 {revision}차로 저장했습니다.")
+                st.rerun()
+
+        with cancel_col:
+            can_cancel = bool(payroll_locked and CURRENT_ROLE == "admin")
+            if payroll_locked and CURRENT_ROLE != "admin":
+                st.caption("마감취소는 관리자만 가능합니다.")
+            if st.button("🔓 관리자 마감취소", disabled=not can_cancel, use_container_width=True):
+                supabase.table("payroll_monthly_closings").update({
+                    "status": "cancelled", "updated_at": datetime.now().isoformat()
+                }).eq("pay_month", pay_month).eq("pay_run_no", pay_run_no).execute()
+                st.warning(f"{pay_month} {pay_run_no}차 급여 확정을 취소했습니다.")
+                st.rerun()
+
+        export_ready = bool(
+            current_closing and current_closing.get("status") == "finalized"
+            and current_closing.get("content_hash") == current_hash
+        )
+        if export_ready:
+            import json
+            export_bytes = json.dumps(
+                current_closing["accounting_export"], ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            st.download_button(
+                "📤 확정 회계자료 JSON 다운로드", data=export_bytes,
+                file_name=f"급여회계자료_{pay_month}_{pay_run_no}차_{pay_run_name}_확정{current_closing.get('revision', 1)}차.json",
+                mime="application/json", use_container_width=True
+            )
+            st.caption("회계 지출 합계: " + f"{current_closing['accounting_export']['accounting_total']:,}원 · 근로자 공제액은 중복 합산하지 않습니다.")
+
+        summary_html_row = f"""
+        <tr style="background-color: #e6f2ff; font-weight: bold;">
+            <td colspan="4">합 계</td>
+            <td style="text-align:right;">{sum_base:,}</td>
+            <td style="text-align:right;">{sum_ot:,}</td>
+            <td style="text-align:right;">{sum_family:,}</td>
+            <td style="text-align:right;">{sum_holiday:,}</td>
+            <td style="text-align:right;">{sum_nontax:,}</td>
+            <td style="text-align:right;">{sum_gross:,}</td>
+            <td style="text-align:right;">{sum_nat:,}</td>
+            <td style="text-align:right;">{sum_hea:,}</td>
+            <td style="text-align:right;">{sum_long:,}</td>
+            <td style="text-align:right;">{sum_emp:,}</td>
+            <td style="text-align:right;">{sum_inc:,}</td>
+            <td style="text-align:right;">{sum_loc:,}</td>
+            <td style="text-align:right;">{sum_deduct_tot:,}</td>
+            <td style="text-align:right; background-color:#ffe680;">{sum_net:,}</td>
+            <td style="text-align:right;">{sum_b_nat:,}</td>
+            <td style="text-align:right;">{sum_b_hea:,}</td>
+            <td style="text-align:right;">{sum_b_long:,}</td>
+            <td style="text-align:right;">{sum_b_emp:,}</td>
+            <td style="text-align:right;">{sum_b_ind:,}</td>
+            <td style="text-align:right;">{sum_b_tot:,}</td>
+            <td style="text-align:right;">{sum_retire:,}</td>
+        </tr>
+        """
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            excel_view_df(edited_payroll).to_excel(writer, index=False, sheet_name=f"{pay_month}_{pay_run_no}차")
+            _sv=payroll_summary_values(edited_payroll)
+            pd.DataFrame([{"항목":k,"합계금액":v} for k,v in _sv.items()]).to_excel(
+                writer,index=False,sheet_name="급여주요합계"
+            )
+            worksheet = writer.sheets[f"{pay_month}_{pay_run_no}차"]
+            style_excel_sheet(worksheet)
+            if "급여주요합계" in writer.sheets:
+                style_excel_sheet(writer.sheets["급여주요합계"])
+            for col_idx, col_name in enumerate(edited_payroll.columns, 1):
+                if col_name in amount_columns:
+                    for cell in worksheet.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
+                        cell[0].number_format = '#,##0'
+        excel_data = output.getvalue()
+
+        st.download_button(
+            label="📥 통합 급여대장 엑셀 다운로드 (.xlsx)",
+            data=excel_data, file_name=f"통합급여대장_{pay_month}_{pay_run_no}차_{pay_run_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
+
+        payroll_template = f"""
+        <div style="font-family: 'Malgun Gothic', sans-serif; font-size: 11px; width: 100%; overflow-x: auto;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; clear: both;">
+                <div style="font-size: 14px; font-weight: bold;">지급일 &nbsp;&nbsp;&nbsp; {pay_date}</div>
+                <div>(단위: 원 / 원단위 절사)</div>
+            </div>
+            
+            <table border="1" style="width: 100%; border-collapse: collapse; text-align: center;" cellpadding="3">
+                <thead>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="3" style="width: 25px;">No</th>
+                        <th rowspan="3" style="width: 50px;">이름</th>
+                        <th rowspan="3" style="width: 65px;">생년월일</th>
+                        <th rowspan="3" style="width: 40px;">호봉</th>
+                        <th colspan="5">지급 내역</th>
+                        <th rowspan="3">급여총액</th>
+                        <th colspan="7">근로자 본인 부담금</th>
+                        <th rowspan="3" style="background-color: #fff2cc;">실지급액</th>
+                        <th colspan="6">사업자 부담 사회보험금</th>
+                        <th rowspan="3">사업주부담<br>퇴직적립금</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="2">기본급</th>
+                        <th rowspan="2">초과수당</th>
+                        <th rowspan="2">가족수당</th>
+                        <th rowspan="2">명절상여</th>
+                        <th rowspan="2">비과세</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
+                        <th rowspan="2">공제합계</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>산재</th>
+                        <th rowspan="2">사업자합계</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>0.90%</th><th>간이세액</th><th>10%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>1.15%</th><th>7.26%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {summary_html_row}
+                    {payroll_html_rows}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.components.v1.html(payroll_template, height=520, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 7: 개별 급여명세서 인쇄
+# -------------------------------------------------------------------
+if active_tab == 7:
+    st.header("📄 개별 급여명세서 인쇄")
+    st.info("지급월과 급여대장 차수를 선택한 뒤 직원을 선택하여 명세서를 확인·인쇄합니다.")
+
+    _sl1,_sl2=st.columns(2)
+    with _sl1:
+        pay_month_slip = st.date_input("명세서 지급 월 선택", datetime.now(), key="slip_month").strftime("%Y-%m")
+    with _sl2:
+        slip_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="slip_run_no")
+
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    _slip_ref_date=pd.to_datetime(pay_month_slip+"-01")+pd.offsets.MonthEnd(0)
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), _slip_ref_date)
+
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_dataframe_to_current_employee(df_ot)
+
+    if df_emp.empty:
+        st.warning("선택한 지급월에 재직 중인 직원이 없습니다.")
+    else:
+        emp_slip_list = (
+            df_emp["emp_name"].fillna("").astype(str)
+            + " (" + df_emp["position"].fillna("").astype(str)
+            + " / " + df_emp["emp_id"].astype(str) + ")"
+        )
+        selected_slip_str = st.selectbox("직원 선택", emp_slip_list, key="slip_emp")
+        selected_slip_id = selected_slip_str.split("/")[-1].replace(")", "").strip()
+        emp = df_emp[df_emp["emp_id"].astype(str) == selected_slip_id].iloc[0]
+
+        current_hourly_wage = int(emp['hourly_wage'])
+
+        adj_single_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).eq("emp_id", emp['emp_id']).execute()
+        df_adj_single = pd.DataFrame(adj_single_res.data) if adj_single_res.data else pd.DataFrame()
+
+        slip_pay_date = datetime.strptime(f"{pay_month_slip}-25", "%Y-%m-%d").date()
+        ot_start_date_slip = (slip_pay_date.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date_slip = slip_pay_date - timedelta(days=1)
+
+        emp_ot = df_ot[
+            (df_ot['emp_id'] == emp['emp_id']) & 
+            (df_ot['work_date'] >= str(ot_start_date_slip)) & 
+            (df_ot['work_date'] <= str(ot_end_date_slip))
+        ] if not df_ot.empty else pd.DataFrame()
+
+        weekday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("평일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
+        holiday_ot_hours = emp_ot[emp_ot['work_type'].str.contains("휴일", na=False)]['actual_duration_hours'].sum() if not emp_ot.empty else 0.0
+        total_ot_hours = weekday_ot_hours + holiday_ot_hours
+        calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+        if not df_adj_single.empty:
+            adj = df_adj_single.iloc[0]
+            base = adj['base_salary']
+            ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
+            family = adj['family_allowance']
+            holiday_bonus = safe_int(adj.get('holiday_bonus'))
+            non_tax = adj['non_taxable']
+            other_allow = adj['other_allowance']
+            emp_national = adj['national_pension']
+            emp_health = adj['health_insurance']
+            emp_longterm = adj['longterm_care']
+            emp_employment = adj['employment_insurance']
+            emp_income_tax = safe_int(adj.get('income_tax'))
+            emp_local_tax = safe_int(adj.get('local_tax'))
+            other_deduct = adj['other_deduction']
+        else:
+            ot_pay = calculated_ot_pay
+            base = emp['base_salary']
+            family = emp['family_allowance']
+            holiday_bonus = 0
+            non_tax = emp['non_taxable']
+            other_allow = emp['other_allowance']
+            other_deduct = emp['other_deduction']
+
+            emp_national = safe_int(emp.get('national_pension'))
+            emp_health = safe_int(emp.get('health_insurance'))
+            emp_longterm = safe_int(emp.get('longterm_care'))
+            emp_employment = safe_int(emp.get('employment_insurance'))
+            emp_income_tax = safe_int(emp.get('income_tax'))
+            emp_local_tax = safe_int(emp.get('local_tax'))
+            if slip_run_no == 2:
+                base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                holiday_bonus = safe_int(emp.get('holiday_bonus'))
+                emp_national = emp_health = emp_longterm = emp_employment = 0
+                emp_income_tax = emp_local_tax = 0
+
+        total_gross = base + ot_pay + family + holiday_bonus + non_tax + other_allow
+        emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
+        net_pay = total_gross - emp_deduction_total
+
+        # v26.2: compare payslip totals with finalized payroll ledger snapshot.
+        try:
+            _slip_close_res = supabase.table("payroll_monthly_closings").select("*").eq("pay_month", pay_month_slip).eq("pay_run_no", slip_run_no).execute()
+            _slip_close = _slip_close_res.data[0] if _slip_close_res.data else None
+        except Exception:
+            _slip_close = None
+        if _slip_close and _slip_close.get("status") == "finalized":
+            _snap = _slip_close.get("payroll_data") or {}
+            if isinstance(_snap, str):
+                try:
+                    import json as _json_v262
+                    _snap = _json_v262.loads(_snap)
+                except Exception:
+                    _snap = {}
+            _snap_emp = next((x for x in (_snap.get("employees",[]) if isinstance(_snap,dict) else []) if str(x.get("emp_id","")) == str(emp["emp_id"])), None)
+            if _snap_emp:
+                _match = (
+                    safe_int(_snap_emp.get("gross_pay")) == safe_int(total_gross)
+                    and safe_int(_snap_emp.get("employee_deductions")) == safe_int(emp_deduction_total)
+                    and safe_int(_snap_emp.get("net_pay")) == safe_int(net_pay)
+                )
+                if _match:
+                    st.success("✅ 급여명세서 자동검증 정상: 마감된 급여대장과 지급총액·공제총액·실지급액이 일치합니다.")
+                else:
+                    st.error("❌ 급여명세서와 마감된 급여대장이 일치하지 않습니다. 관리자 확인이 필요합니다.")
+            else:
+                st.warning("마감 급여대장에서 해당 직원 자료를 찾지 못했습니다.")
+        else:
+            st.info("현재 지급월/차수는 아직 마감되지 않아 급여대장↔명세서 확정 일치검증 대상이 아닙니다.")
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 32px; float: left;">' if st.session_state.logo_b64 else ''
+
+        payslip_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 급여명세서 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 30px; font-family: 'Malgun Gothic', sans-serif; max-width: 680px; margin: auto; background: #fff;">
+            {logo_html}
+            <h2 style="text-align: center; margin-top: 0; margin-bottom: 25px; font-size: 24px; text-decoration: underline; clear: both;">
+                {pay_month_slip}월 {slip_run_no}차 급 여 명 세 서
+            </h2>
+
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;" border="1">
+                <tr>
+                    <th style="padding: 6px; background: #f2f2f2; width: 15%;">성 명</th>
+                    <td style="padding: 6px; width: 35%;">{emp['emp_name']} ({emp['position']})</td>
+                    <th style="padding: 6px; background: #f2f2f2; width: 15%;">소 속</th>
+                    <td style="padding: 6px; width: 35%;">{emp['dept']}</td>
+                </tr>
+                <tr>
+                    <th style="padding: 6px; background: #f2f2f2;">사 번</th>
+                    <td style="padding: 6px;">{emp['emp_id']}</td>
+                    <th style="padding: 6px; background: #f2f2f2;">생년월일</th>
+                    <td style="padding: 6px;">{emp['birth_date']}</td>
+                </tr>
+            </table>
+
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;" border="1">
+                <tr style="background: #e6f2ff;">
+                    <th style="padding: 8px; width: 50%;" colspan="2">지급 항목</th>
+                    <th style="padding: 8px; width: 50%;" colspan="2">공제 항목</th>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">기본급</td>
+                    <td style="padding: 6px; text-align: right;">{base:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">국민연금</td>
+                    <td style="padding: 6px; text-align: right;">{emp_national:,} 원</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">시간외/휴일수당 ({total_ot_hours:.1f}h)</td>
+                    <td style="padding: 6px; text-align: right;">{ot_pay:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">건강보험</td>
+                    <td style="padding: 6px; text-align: right;">{emp_health:,} 원</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">가족수당</td>
+                    <td style="padding: 6px; text-align: right;">{family:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">장기요양보험</td>
+                    <td style="padding: 6px; text-align: right;">{emp_longterm:,} 원</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">비과세 식대/보육</td>
+                    <td style="padding: 6px; text-align: right;">{non_tax:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">고용보험</td>
+                    <td style="padding: 6px; text-align: right;">{emp_employment:,} 원</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">명절상여</td>
+                    <td style="padding: 6px; text-align: right;">{holiday_bonus:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">소득세 / 지방소득세</td>
+                    <td style="padding: 6px; text-align: right;">{(emp_income_tax + emp_local_tax):,} 원</td>
+                </tr>
+                <tr>
+                    <td style="padding: 6px; background: #f9f9f9;">기타수당</td>
+                    <td style="padding: 6px; text-align: right;">{other_allow:,} 원</td>
+                    <td style="padding: 6px; background: #f9f9f9;">기타공제</td>
+                    <td style="padding: 6px; text-align: right;">{other_deduct:,} 원</td>
+                </tr>
+                <tr style="font-weight: bold; background: #f2f2f2;">
+                    <td style="padding: 8px;">지급액 계</td>
+                    <td style="padding: 8px; text-align: right;">{total_gross:,} 원</td>
+                    <td style="padding: 8px;">공제액 계</td>
+                    <td style="padding: 8px; text-align: right;">{emp_deduction_total:,} 원</td>
+                </tr>
+            </table>
+
+            <div style="border: 2px solid #333; padding: 10px; text-align: center; background: #fffde7; margin-bottom: 20px;">
+                <span style="font-size: 16px; font-weight: bold;">실지급액 : {net_pay:,} 원</span>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; text-align: center; font-size: 12px;" border="1">
+                <tr style="background-color: #f2f2f2; height: 28px;">
+                    <th style="width: 25%;">통상시급</th>
+                    <th style="width: 25%;">시간외·연장근로시간</th>
+                    <th style="width: 25%;">휴일근로시간</th>
+                    <th style="width: 25%;">야간근로시간</th>
+                </tr>
+                <tr style="height: 32px;">
+                    <td><b>{current_hourly_wage:,} 원</b></td>
+                    <td>{f"{weekday_ot_hours:.1f}h" if weekday_ot_hours > 0 else '-'}</td>
+                    <td>{f"{holiday_ot_hours:.1f}h" if holiday_ot_hours > 0 else '-'}</td>
+                    <td>-</td>
+                </tr>
+            </table>
+
+            <div style="font-size: 13px; font-weight: bold; text-align: center; margin-bottom: 8px; background-color: #f2f2f2; padding: 5px; border: 1px solid #000;">
+                계 산 방 법
+            </div>
+            <table style="width: 100%; border-collapse: collapse; font-size: 11px;" border="1">
+                <tr style="background-color: #f9f9f9; text-align: center; height: 25px;">
+                    <th style="width: 35%;">구분</th>
+                    <th style="width: 65%;">산출식 또는 산출방법</th>
+                </tr>
+                <tr style="height: 24px;">
+                    <td style="text-align: center;">일할급여 계산기준<br>(중간 입사/퇴사 시)</td>
+                    <td style="padding-left: 10px;">기본급 ÷ 해당 월일수 × 근무일수</td>
+                </tr>
+                <tr style="height: 24px;">
+                    <td style="text-align: center;">연장근로수당</td>
+                    <td style="padding-left: 10px;">연장근로시간수 × 통상시급({current_hourly_wage:,}원) × 1.5</td>
+                </tr>
+                <tr style="height: 24px;">
+                    <td style="text-align: center;">휴일근로수당</td>
+                    <td style="padding-left: 10px;">휴일근로시간수 × 통상시급({current_hourly_wage:,}원) × 1.5</td>
+                </tr>
+                <tr style="height: 24px;">
+                    <td style="text-align: center;">야간근로수당</td>
+                    <td style="padding-left: 10px;">야간근로시간수 × 통상시급({current_hourly_wage:,}원) × 1.5</td>
+                </tr>
+            </table>
+            <p style="font-size: 10px; color: #333; margin-top: 5px; margin-bottom: 15px;">
+                * 통상시급 : 정기적이고 일률적으로 지급하는 급여 ÷ 소정근로시간(209시간)
+            </p>
+
+            <p style="text-align: center; margin-top: 20px; font-size: 12px; color: #444;">귀하의 노고에 진심으로 감사드립니다.</p>
+        </div>
+        """
+        st.components.v1.html(payslip_template, height=890, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 8: 통합 급여대장 인쇄
+# -------------------------------------------------------------------
+if active_tab in (7, 8):
+    if active_tab == 7:
+        st.divider()
+        st.header("🖨️ 급여대장 인쇄")
+        st.caption("통합 급여대장과 같은 화면에서 지급일·대장 차수를 선택한 뒤 바로 인쇄할 수 있습니다.")
+    else:
+        st.header("🖨️ 통합 급여대장 인쇄")
+
+    print_col1, print_col2 = st.columns(2)
+    with print_col1:
+        pay_date_print = st.date_input("출력할 급여 지급일 선택", datetime.now(), key="payroll_print_date")
+    with print_col2:
+        print_run_no = st.selectbox("출력할 급여대장", [1, 2], format_func=lambda x: f"{x}차 대장", key="print_run_no")
+    pay_month_print = pay_date_print.strftime("%Y-%m")
+
+    emp_res = supabase.table("employees").select("*").execute()
+    df_emp = pd.DataFrame(emp_res.data) if emp_res.data else pd.DataFrame()
+    df_emp = filter_employees_for_work(scope_employee_master(df_emp), pay_date_print)
+    ot_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot = pd.DataFrame(ot_res.data) if ot_res.data else pd.DataFrame()
+    df_ot = scope_employee_master(df_ot)
+
+    adj_res = supabase.table("monthly_payroll_adjust").select("*").eq("pay_month", pay_month_print).eq("pay_run_no", print_run_no).execute()
+    df_adjust = pd.DataFrame(adj_res.data) if adj_res.data else pd.DataFrame()
+    df_adjust = scope_employee_master(df_adjust)
+
+    if df_emp.empty:
+        st.warning("등록된 직원이 없다.")
+    else:
+        payroll_print_rows = ""
+        no = 1
+
+        sum_base = sum_ot = sum_family = sum_holiday = sum_nontax = sum_gross = 0
+        sum_nat = sum_hea = sum_long = sum_emp = sum_inc = sum_loc = sum_other_d = sum_deduct_tot = sum_net = 0
+        sum_b_nat = sum_b_hea = sum_b_long = sum_b_emp = sum_b_ind = sum_b_tot = sum_retire = 0
+
+        ot_start_date_print = (pay_date_print.replace(day=1) - timedelta(days=1)).replace(day=25)
+        ot_end_date_print = pay_date_print - timedelta(days=1)
+
+        for idx, emp in df_emp.iterrows():
+            adj_match = df_adjust[df_adjust['emp_id'] == emp['emp_id']] if not df_adjust.empty else pd.DataFrame()
+            emp_ot = df_ot[
+                (df_ot['emp_id'] == emp['emp_id']) & 
+                (df_ot['work_date'] >= str(ot_start_date_print)) & 
+                (df_ot['work_date'] <= str(ot_end_date_print))
+            ] if not df_ot.empty else pd.DataFrame()
+
+            calculated_ot_pay = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+            if not adj_match.empty:
+                adj = adj_match.iloc[0]
+                base = adj['base_salary']
+                ot_pay = adj['ot_pay'] if adj.get('ot_pay_overridden', False) else calculated_ot_pay
+                family = adj['family_allowance']
+                holiday_bonus = safe_int(adj.get('holiday_bonus'))
+                non_tax = adj['non_taxable']
+                other_allow = adj['other_allowance']
+                emp_national = adj['national_pension']
+                emp_health = adj['health_insurance']
+                emp_longterm = adj['longterm_care']
+                emp_employment = adj['employment_insurance']
+                emp_income_tax = safe_int(adj.get('income_tax'))
+                emp_local_tax = safe_int(adj.get('local_tax'))
+                other_deduct = adj['other_deduction']
+            else:
+                ot_pay = calculated_ot_pay
+                base = emp['base_salary']
+                family = emp['family_allowance']
+                holiday_bonus = 0
+                non_tax = emp['non_taxable']
+                other_allow = emp['other_allowance']
+                other_deduct = emp['other_deduction']
+
+                emp_national = safe_int(emp.get('national_pension'))
+                emp_health = safe_int(emp.get('health_insurance'))
+                emp_longterm = safe_int(emp.get('longterm_care'))
+                emp_employment = safe_int(emp.get('employment_insurance'))
+                emp_income_tax = safe_int(emp.get('income_tax'))
+                emp_local_tax = safe_int(emp.get('local_tax'))
+                if print_run_no == 2:
+                    base = ot_pay = family = non_tax = other_allow = other_deduct = 0
+                    holiday_bonus = safe_int(emp.get('holiday_bonus'))
+                    emp_national = emp_health = emp_longterm = emp_employment = 0
+                    emp_income_tax = emp_local_tax = 0
+
+            tot_g = base + ot_pay + family + holiday_bonus + non_tax + other_allow
+            emp_deduction_total = emp_national + emp_health + emp_longterm + emp_employment + emp_income_tax + emp_local_tax + other_deduct
+            net_pay = tot_g - emp_deduction_total
+
+            biz_national = safe_int(adj.get('employer_national_pension')) if not adj_match.empty else safe_int(emp.get('employer_national_pension'))
+            biz_health = safe_int(adj.get('employer_health_insurance')) if not adj_match.empty else safe_int(emp.get('employer_health_insurance'))
+            biz_longterm = safe_int(adj.get('employer_longterm_care')) if not adj_match.empty else safe_int(emp.get('employer_longterm_care'))
+            biz_employment = safe_int(adj.get('employer_employment_insurance')) if not adj_match.empty else safe_int(emp.get('employer_employment_insurance'))
+            biz_industrial = safe_int(adj.get('employer_industrial_insurance')) if not adj_match.empty else safe_int(emp.get('employer_industrial_insurance'))
+            biz_deduction_total = biz_national + biz_health + biz_longterm + biz_employment + biz_industrial
+            retirement_accrual = safe_int(adj.get('retirement_accrual')) if not adj_match.empty else safe_int(emp.get('retirement_accrual'))
+
+            sum_base += base; sum_ot += ot_pay; sum_family += family; sum_holiday += holiday_bonus; sum_nontax += non_tax; sum_gross += tot_g
+            sum_nat += emp_national; sum_hea += emp_health; sum_long += emp_longterm; sum_emp += emp_employment
+            sum_inc += emp_income_tax; sum_loc += emp_local_tax; sum_other_d += other_deduct; sum_deduct_tot += emp_deduction_total; sum_net += net_pay
+            sum_b_nat += biz_national; sum_b_hea += biz_health; sum_b_long += biz_longterm; sum_b_emp += biz_employment; sum_b_ind += biz_industrial; sum_b_tot += biz_deduction_total; sum_retire += retirement_accrual
+
+            payroll_print_rows += f"""
+            <tr style="height: 26px;">
+                <td>{no}</td><td>{emp['emp_name']}</td><td>{emp['birth_date']}</td><td>{emp['hobong']}</td>
+                <td style="text-align:right;">{base:,}</td>
+                <td style="text-align:right;">{ot_pay:,}</td>
+                <td style="text-align:right;">{family:,}</td>
+                <td style="text-align:right;">{holiday_bonus:,}</td>
+                <td style="text-align:right;">{non_tax:,}</td>
+                <td style="text-align:right; font-weight:bold;">{tot_g:,}</td>
+                <td style="text-align:right;">{emp_national:,}</td>
+                <td style="text-align:right;">{emp_health:,}</td>
+                <td style="text-align:right;">{emp_longterm:,}</td>
+                <td style="text-align:right;">{emp_employment:,}</td>
+                <td style="text-align:right;">{emp_income_tax:,}</td>
+                <td style="text-align:right;">{emp_local_tax:,}</td>
+                <td style="text-align:right; font-weight:bold;">{emp_deduction_total:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#fffae6;">{net_pay:,}</td>
+                <td style="text-align:right;">{biz_national:,}</td>
+                <td style="text-align:right;">{biz_health:,}</td>
+                <td style="text-align:right;">{biz_longterm:,}</td>
+                <td style="text-align:right;">{biz_employment:,}</td>
+                <td style="text-align:right;">{biz_industrial:,}</td>
+                <td style="text-align:right; font-weight:bold;">{biz_deduction_total:,}</td>
+                <td style="text-align:right;">{retirement_accrual:,}</td>
+            </tr>
+            """
+            no += 1
+
+        summary_print_row = f"""
+        <tr style="background-color: #e6f2ff; font-weight: bold; height: 28px;">
+            <td colspan="4">합 계</td>
+            <td style="text-align:right;">{sum_base:,}</td>
+            <td style="text-align:right;">{sum_ot:,}</td>
+            <td style="text-align:right;">{sum_family:,}</td>
+            <td style="text-align:right;">{sum_holiday:,}</td>
+            <td style="text-align:right;">{sum_nontax:,}</td>
+            <td style="text-align:right;">{sum_gross:,}</td>
+            <td style="text-align:right;">{sum_nat:,}</td>
+            <td style="text-align:right;">{sum_hea:,}</td>
+            <td style="text-align:right;">{sum_long:,}</td>
+            <td style="text-align:right;">{sum_emp:,}</td>
+            <td style="text-align:right;">{sum_inc:,}</td>
+            <td style="text-align:right;">{sum_loc:,}</td>
+            <td style="text-align:right;">{sum_deduct_tot:,}</td>
+            <td style="text-align:right; background-color:#ffe680;">{sum_net:,}</td>
+            <td style="text-align:right;">{sum_b_nat:,}</td>
+            <td style="text-align:right;">{sum_b_hea:,}</td>
+            <td style="text-align:right;">{sum_b_long:,}</td>
+            <td style="text-align:right;">{sum_b_emp:,}</td>
+            <td style="text-align:right;">{sum_b_ind:,}</td>
+            <td style="text-align:right;">{sum_b_tot:,}</td>
+            <td style="text-align:right;">{sum_retire:,}</td>
+        </tr>
+        """
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
+
+        payroll_print_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 급여대장 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 20px; font-family: 'Malgun Gothic', sans-serif; background: #fff; width: 100%; box-sizing: border-box;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; clear: both;">
+                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{pay_month_print}월 {print_run_no}차 통합 급여대장</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 11px; width: 210px;" border="1">
+                    <tr style="height: 18px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 40px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px;">
+                <div style="font-size: 12px; font-weight: bold;">지급일자: {pay_date_print}</div>
+                <div>(단위: 원 / 원단위 절사)</div>
+            </div>
+
+            <table border="1" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 10px;" cellpadding="2">
+                <thead>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="3" style="width: 25px;">No</th>
+                        <th rowspan="3" style="width: 50px;">이름</th>
+                        <th rowspan="3" style="width: 65px;">생년월일</th>
+                        <th rowspan="3" style="width: 40px;">호봉</th>
+                        <th colspan="5">지급 내역</th>
+                        <th rowspan="3">급여총액</th>
+                        <th colspan="7">근로자 본인 부담금</th>
+                        <th rowspan="3" style="background-color: #fff2cc;">실지급액</th>
+                        <th colspan="6">사업자 부담 사회보험금</th>
+                        <th rowspan="3">사업주부담<br>퇴직적립금</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th rowspan="2">기본급</th>
+                        <th rowspan="2">초과수당</th>
+                        <th rowspan="2">가족수당</th>
+                        <th rowspan="2">명절상여</th>
+                        <th rowspan="2">비과세</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>소득세</th><th>지방세</th>
+                        <th rowspan="2">공제합계</th>
+                        <th>국민</th><th>건강</th><th>장기요양</th><th>고용</th><th>산재</th>
+                        <th rowspan="2">사업자합계</th>
+                    </tr>
+                    <tr style="background-color: #ffffcc;">
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>0.90%</th><th>간이세액</th><th>10%</th>
+                        <th>4.75%</th><th>3.595%</th><th>12.95%</th><th>1.15%</th><th>7.26%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {summary_print_row}
+                    {payroll_print_rows}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.components.v1.html(payroll_print_template, height=600, scrolling=True)
+
+# -------------------------------------------------------------------
+# TAB 9: 월별 급여대장 총괄표
+# -------------------------------------------------------------------
+if active_tab == 9:
+    st.header("📑 월별 급여대장 총괄표 (12개월 누적 요약)")
+    st.info("연도를 선택하면 월별 급여·수당·공제·사업주부담액을 12개월 누적으로 확인할 수 있습니다.")
+    
+    c_y9 = st.selectbox("조회 연도 선택", range(datetime.now().year - 2, datetime.now().year + 3), index=2, key="annual_summary_year")
+    
+    emp_all_res = supabase.table("employees").select("*").execute()
+    df_emp_all = pd.DataFrame(emp_all_res.data) if emp_all_res.data else pd.DataFrame()
+    df_emp_all = scope_employee_master(df_emp_all)
+
+    ot_all_res = supabase.table("overtime_records").select("*").eq("status", "승인").execute()
+    df_ot_all = pd.DataFrame(ot_all_res.data) if ot_all_res.data else pd.DataFrame()
+    df_ot_all = scope_employee_master(df_ot_all)
+
+    adj_all_res = supabase.table("monthly_payroll_adjust").select("*").execute()
+    df_adj_all = pd.DataFrame(adj_all_res.data) if adj_all_res.data else pd.DataFrame()
+    df_adj_all = scope_employee_master(df_adj_all)
+
+    if df_emp_all.empty:
+        st.warning("등록된 직원 정보가 없다.")
+    else:
+        monthly_summary_rows = []
+        tot_ann_count = tot_ann_base = tot_ann_ot_hours = tot_ann_ot = tot_ann_fam = tot_ann_holiday = tot_ann_nontax = tot_ann_other_a = 0
+        tot_ann_gross = tot_ann_nat = tot_ann_hea = tot_ann_long = tot_ann_emp = tot_ann_inc = tot_ann_loc = 0
+        tot_ann_other_d = tot_ann_deduct = tot_ann_net = tot_ann_retire = 0
+
+        for m in range(1, 13):
+            m_str = f"{c_y9}-{m:02d}"
+            m_emp_count = len(df_emp_all)
+            m_base = m_ot = m_fam = m_holiday = m_nontax = m_other_a = 0
+            m_nat = m_hea = m_long = m_emp = m_inc = m_loc = m_other_d = 0
+            m_retire = 0
+            m_ot_hours = 0.0
+
+            # 지급월 산정기간(전월 25일 ~ 당월 24일) 계산
+            pay_ref = datetime(c_y9, m, 25).date()
+            m_p_start = (pay_ref.replace(day=1) - timedelta(days=1)).replace(day=25)
+            m_p_end = pay_ref - timedelta(days=1)
+
+            m_ot_records = df_ot_all[
+                (df_ot_all['work_date'] >= str(m_p_start)) & 
+                (df_ot_all['work_date'] <= str(m_p_end))
+            ] if not df_ot_all.empty else pd.DataFrame()
+
+            if not m_ot_records.empty:
+                m_ot_hours = m_ot_records['actual_duration_hours'].sum()
+
+            for _, emp in df_emp_all.iterrows():
+                adj_m = df_adj_all[(df_adj_all['pay_month'] == m_str) & (df_adj_all['emp_id'] == emp['emp_id'])] if not df_adj_all.empty else pd.DataFrame()
+                
+                emp_ot = df_ot_all[
+                    (df_ot_all['emp_id'] == emp['emp_id']) & 
+                    (df_ot_all['work_date'] >= str(m_p_start)) & 
+                    (df_ot_all['work_date'] <= str(m_p_end))
+                ] if not df_ot_all.empty else pd.DataFrame()
+                
+                calc_ot = int(emp_ot['actual_pay'].sum()) if not emp_ot.empty else 0
+
+                if not adj_m.empty:
+                    base = safe_int(adj_m['base_salary'].sum())
+                    fam = safe_int(adj_m['family_allowance'].sum())
+                    m_holiday += safe_int(adj_m['holiday_bonus'].sum()) if 'holiday_bonus' in adj_m.columns else 0
+                    nontax = safe_int(adj_m['non_taxable'].sum())
+                    other_a = safe_int(adj_m['other_allowance'].sum())
+                    nat = safe_int(adj_m['national_pension'].sum())
+                    hea = safe_int(adj_m['health_insurance'].sum())
+                    lng = safe_int(adj_m['longterm_care'].sum())
+                    e_emp = safe_int(adj_m['employment_insurance'].sum())
+                    inc = safe_int(adj_m['income_tax'].sum()) if 'income_tax' in adj_m.columns else 0
+                    loc = safe_int(adj_m['local_tax'].sum()) if 'local_tax' in adj_m.columns else 0
+                    other_d = safe_int(adj_m['other_deduction'].sum())
+                    retire = safe_int(adj_m['retirement_accrual'].fillna(0).sum()) if 'retirement_accrual' in adj_m.columns else 0
+                    ot = 0
+                    for _, adj in adj_m.iterrows():
+                        if bool(adj.get('ot_pay_overridden', False)):
+                            run_ot = safe_int(adj.get('ot_pay'))
+                        elif safe_int(adj.get('pay_run_no', 1)) == 1:
+                            run_ot = calc_ot
+                        else:
+                            run_ot = 0
+                        ot += run_ot
+                else:
+                    ot = calc_ot
+                    base = emp['base_salary']
+                    fam = emp['family_allowance']
+                    nontax = emp['non_taxable']
+                    other_a = emp['other_allowance']
+                    other_d = emp['other_deduction']
+
+                    nat = safe_int(emp.get('national_pension'))
+                    hea = safe_int(emp.get('health_insurance'))
+                    lng = safe_int(emp.get('longterm_care'))
+                    e_emp = safe_int(emp.get('employment_insurance'))
+                    inc = safe_int(emp.get('income_tax'))
+                    loc = safe_int(emp.get('local_tax'))
+                    retire = safe_int(emp.get('retirement_accrual'))
+
+                m_base += base; m_ot += ot; m_fam += fam; m_nontax += nontax; m_other_a += other_a
+                m_nat += nat; m_hea += hea; m_long += lng; m_emp += e_emp
+                m_inc += inc; m_loc += loc; m_other_d += other_d
+                m_retire += retire
+
+            m_gross = m_base + m_ot + m_fam + m_holiday + m_nontax + m_other_a
+            m_deduct = m_nat + m_hea + m_long + m_emp + m_inc + m_loc + m_other_d
+            m_net = m_gross - m_deduct
+            tot_ann_base += m_base; tot_ann_ot_hours += m_ot_hours; tot_ann_ot += m_ot; tot_ann_fam += m_fam; tot_ann_holiday += m_holiday; tot_ann_nontax += m_nontax; tot_ann_other_a += m_other_a
+            tot_ann_gross += m_gross; tot_ann_nat += m_nat; tot_ann_hea += m_hea; tot_ann_long += m_long; tot_ann_emp += m_emp
+            tot_ann_inc += m_inc; tot_ann_loc += m_loc; tot_ann_other_d += m_other_d; tot_ann_deduct += m_deduct; tot_ann_net += m_net
+            tot_ann_retire += m_retire
+
+            monthly_summary_rows.append(f"""
+            <tr style="height: 26px;">
+                <td><b>{m}월</b> ({m_str})</td>
+                <td>{m_emp_count} 명</td>
+                <td style="text-align:right;">{m_base:,}</td>
+                <td style="text-align:right; background-color:#f0f8ff;"><b>{m_ot_hours:.1f} 시간</b></td>
+                <td style="text-align:right;">{m_ot:,}</td>
+                <td style="text-align:right;">{m_fam:,}</td>
+                <td style="text-align:right;">{m_holiday:,}</td>
+                <td style="text-align:right;">{m_nontax:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#f9f9f9;">{m_gross:,}</td>
+                <td style="text-align:right;">{m_nat:,}</td>
+                <td style="text-align:right;">{m_hea:,}</td>
+                <td style="text-align:right;">{m_long:,}</td>
+                <td style="text-align:right;">{m_emp:,}</td>
+                <td style="text-align:right;">{m_inc:,}</td>
+                <td style="text-align:right;">{m_loc:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#f9f9f9;">{m_deduct:,}</td>
+                <td style="text-align:right; font-weight:bold; background-color:#fffae6;">{m_net:,}</td>
+                <td style="text-align:right;">{m_retire:,}</td>
+            </tr>
+            """)
+
+        ann_sum_html_row = f"""
+        <tr style="background-color: #e6f2ff; font-weight: bold; height: 30px;">
+            <td colspan="2">연간 누적 합계</td>
+            <td style="text-align:right;">{tot_ann_base:,}</td>
+            <td style="text-align:right; background-color:#d0e8ff;">{tot_ann_ot_hours:.1f} 시간</td>
+            <td style="text-align:right;">{tot_ann_ot:,}</td>
+            <td style="text-align:right;">{tot_ann_fam:,}</td>
+            <td style="text-align:right;">{tot_ann_holiday:,}</td>
+            <td style="text-align:right;">{tot_ann_nontax:,}</td>
+            <td style="text-align:right;">{tot_ann_gross:,}</td>
+            <td style="text-align:right;">{tot_ann_nat:,}</td>
+            <td style="text-align:right;">{tot_ann_hea:,}</td>
+            <td style="text-align:right;">{tot_ann_long:,}</td>
+            <td style="text-align:right;">{tot_ann_emp:,}</td>
+            <td style="text-align:right;">{tot_ann_inc:,}</td>
+            <td style="text-align:right;">{tot_ann_loc:,}</td>
+            <td style="text-align:right;">{tot_ann_deduct:,}</td>
+            <td style="text-align:right; background-color:#ffe680;">{tot_ann_net:,}</td>
+            <td style="text-align:right;">{tot_ann_retire:,}</td>
+        </tr>
+        """
+
+        logo_html = f'<img src="data:image/png;base64,{st.session_state.logo_b64}" style="max-height: 28px; float: left;">' if st.session_state.logo_b64 else ''
+
+        annual_summary_template = f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">🖨️ 총괄표 인쇄하기</button>
+        </div>
+        <div style="border: 2px solid #000; padding: 25px; font-family: 'Malgun Gothic', sans-serif; background: #fff; width: 100%; box-sizing: border-box;">
+            {logo_html}
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; clear: both;">
+                <h2 style="margin: 0; padding-top: 5px; font-size: 22px; text-decoration: underline;">{c_y9}년도 월별 급여대장 총괄표</h2>
+                <table style="border-collapse: collapse; text-align: center; font-size: 11px; width: 210px;" border="1">
+                    <tr style="height: 18px; background-color: #f2f2f2;">
+                        <th rowspan="2" style="width: 25px; background-color: #e6e6e6;">결<br>재</th>
+                        <th style="width: 60px;">담 당</th>
+                        <th style="width: 60px;">대 리</th>
+                        <th style="width: 65px;">센터장</th>
+                    </tr>
+                    <tr style="height: 40px;">
+                        <td></td><td></td><td></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div style="text-align: right; margin-bottom: 8px; font-size: 11px;">(단위: 원 / 원단위 절사)</div>
+
+            <table border="1" style="width: 100%; border-collapse: collapse; text-align: center; font-size: 11px;" cellpadding="3">
+                <thead>
+                    <tr style="background-color: #ffffcc; height: 32px;">
+                        <th style="width: 80px;">지급월</th>
+                        <th style="width: 45px;">인원</th>
+                        <th>기본급</th>
+                        <th style="background-color: #e6f2ff;">승인 초과시간</th>
+                        <th>초과수당</th>
+                        <th>가족수당</th>
+                        <th>명절상여</th>
+                        <th>비과세</th>
+                        <th style="background-color: #fff2cc;">급여총액</th>
+                        <th>국민연금</th>
+                        <th>건강보험</th>
+                        <th>장기요양</th>
+                        <th>고용보험</th>
+                        <th>소득세</th>
+                        <th>지방세</th>
+                        <th style="background-color: #fff2cc;">공제합계</th>
+                        <th style="background-color: #ffe680;">실지급액</th>
+                        <th>퇴직적립금</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {ann_sum_html_row}
+                    {''.join(monthly_summary_rows)}
+                    {ann_sum_html_row}
+                </tbody>
+            </table>
+        </div>
+        """
+        st.components.v1.html(annual_summary_template, height=650, scrolling=True)
+
+
+# -------------------------------------------------------------------
+# TAB 10: 출장 신청·관리
+# -------------------------------------------------------------------
+if active_tab == 10:
+    st.header("🚗 출장 통합관리")
+    st.caption("출장 신청 → 변경 → 승인 → 복명 → 정산 → 증빙 → 월별현황을 한 업무화면에서 관리합니다. 세부 복명·출력·규정도 이 화면에서 바로 연결합니다.")
+
+    # v28.9: 출장 관련 규정을 시작페이지 최상단에 배치
+    with st.expander("📖 출장 관련 복무규정 바로보기", expanded=False):
+        st.markdown("""
+**제25조(출장명령)**  
+직무수행을 위해 출장하는 직원은 출장신청서를 제출하고 출장명령을 받아야 합니다. 지정된 출장기일 안에 업무수행에 전력을 다하고, 업무를 완수하지 못할 사유가 생기면 즉시 상사에게 보고하여 지시를 받아야 합니다.
+
+**제26조(출장 중의 사정변경)**  
+출장 목적지 외 장소 방문 또는 출장기일 연장이 필요한 경우 사전에 상사에게 보고하고 승인을 받아야 합니다. 부득이하게 사전승인을 받지 못한 경우 귀원 즉시 사후승인을 받아야 합니다.
+
+**제27조(출장보고)**  
+출장용무를 마치고 귀원한 때에는 지체 없이 출장보고서를 제출해야 합니다. 다만 경미하거나 비밀에 속하는 사항은 구두보고가 가능합니다.
+
+**제28조(출장여비)**  
+출장여비는 「여비관리 세칙」에 따릅니다.
+
+---
+
+### 💰 2026 여비업무 적용기준
+
+| 구분 | 기준 |
+|---|---|
+| **근무지 내 국내출장** | 같은 시·군 안의 출장 또는 여행거리 12km 미만 |
+| **4시간 이상** | 20,000원 정액 |
+| **4시간 미만** | 10,000원 정액 |
+| **공용차량 이용** | 근무지 내 정액에서 10,000원 감액 |
+| **근무지 외 국내출장** | 운임·식비·숙박비·일비 정산 |
+| **근무지 외 일비** | 25,000원/일 |
+| **근무지 외 식비** | 25,000원/일 |
+
+**차량 이용 기준**
+- 센터차량을 직접 운전하거나 **센터차량에 동승**한 경우 공용차량 이용으로 처리하여 근무지 내 출장여비에서 10,000원을 감액합니다.
+- 개인차량 동승은 공용차량 동승과 구분하여 처리합니다.
+- 근무지 내 출장은 원칙적으로 정액 외 운임·일비·식비·숙박비를 별도로 지급하지 않습니다. 불가피한 유료도로 통행료 등은 별도 확인합니다.
+- 다른 시·군이고 여행거리 12km 이상이어도 교통여건 등을 고려해 기관장이 근무지 내 출장으로 처리할 수 있는 예외가 있으므로 최종 정산 시 확인합니다.
+        """)
+
+    _trip_view=workflow_button_nav(
+        "출장 업무 선택",
+        ["📋 출장현황","📝 신청·변경","✅ 승인관리","📄 복명·보고","💳 여비정산","📎 증빙관리","📊 월별현황"],
+        key="v324_trip_view",
+        caption="출장 현황부터 신청·승인·복명·정산·증빙까지 원하는 업무를 선택해 주세요.",
+        max_per_row=4
+    )
+
+    # 출장 원장
+    try:
+        _v289_res=supabase.table("business_trips").select("*").order("id",desc=True).execute()
+        _v289_df=pd.DataFrame(_v289_res.data or [])
+        _v289_df=scope_dataframe_to_current_employee(_v289_df)
+    except Exception:
+        _v289_df=pd.DataFrame()
+
+    if not _v289_df.empty:
+        _ap=_v289_df.get("apply_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _rp=_v289_df.get("report_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _sp=_v289_df.get("settlement_status",pd.Series([""]*len(_v289_df))).astype(str)
+        _k1,_k2,_k3,_k4=st.columns(4)
+        _k1.metric("출장 전체",f"{len(_v289_df):,}건")
+        _k2.metric("승인대기",f"{int(_ap.isin(['신청','승인대기']).sum()):,}건")
+        _k3.metric("복명 필요",f"{int((~_rp.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+        _k4.metric("정산 필요",f"{int((~_sp.isin(['정산완료','지급완료'])).sum()):,}건")
+
+    # 공통 직원자료
+    try:
+        _v289_er=supabase.table("employees").select("*").execute()
+        _v289_emp=pd.DataFrame(_v289_er.data or [])
+        _v289_emp=filter_employees_for_work(scope_employee_master(_v289_emp))
+    except Exception:
+        _v289_emp=pd.DataFrame()
+
+    if _trip_view=="📋 출장현황":
+        st.markdown("### 📋 출장현황")
+        st.caption("출장 신청부터 승인·복명·정산까지 현재 진행상태를 확인합니다.")
+        if _v289_df.empty:
+            st.info("등록된 출장 내역이 없습니다.")
+        else:
+            _fc1,_fc2,_fc3=st.columns(3)
+            _status_filter=_fc1.selectbox("승인상태",["전체","신청","승인","반려","취소"],key="v289_status_filter")
+            _name_filter=_fc2.text_input("출장자 검색",key="v289_name_filter")
+            _dest_filter=_fc3.text_input("출장지/목적 검색",key="v289_dest_filter")
+            _show=_v289_df.copy()
+            if _status_filter!="전체" and "apply_status" in _show.columns:
+                _show=_show[_show["apply_status"].astype(str)==_status_filter]
+            if _name_filter and "emp_name" in _show.columns:
+                _show=_show[_show["emp_name"].astype(str).str.contains(_name_filter,case=False,na=False)]
+            if _dest_filter:
+                _mask=pd.Series(False,index=_show.index)
+                for _c in ["destination","purpose"]:
+                    if _c in _show.columns: _mask|=_show[_c].astype(str).str.contains(_dest_filter,case=False,na=False)
+                _show=_show[_mask]
+            _cols=[c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","apply_status","report_status","settlement_status"] if c in _show.columns]
+            display_table_kr(_show[_cols],use_container_width=True,hide_index=True)
+
+    if _trip_view=="📝 신청·변경":
+        st.markdown("### 📝 출장 신청·변경")
+        st.caption("새 출장을 신청하거나 등록된 출장의 일정·출장지 변경을 요청합니다.")
+        st.markdown("#### 신규 출장 신청")
+        if _v289_emp.empty:
+            st.info("직원 데이터가 없습니다.")
+        else:
+            _opts={f"{r.get('emp_name','')} ({r.get('emp_id','')})":r for _,r in _v289_emp.iterrows() if str(r.get("emp_name","")).strip()}
+            _ek=st.selectbox("출장자",list(_opts.keys()),key="v289_emp")
+            _er=_opts[_ek]
+            c1,c2,c3=st.columns(3)
+            c1.text_input("성명",str(_er.get("emp_name","")),disabled=True,key="v289_en")
+            c2.text_input("직위",str(_er.get("position","")),disabled=True,key="v289_ep")
+            c3.text_input("부서",str(_er.get("dept","")),disabled=True,key="v289_ed")
+            _tt=st.radio("출장 구분",["일반출장","교육·연수출장"],horizontal=True,key="v289_type")
+            _purpose=st.text_input("출장목적",key="v289_purpose")
+            d1,d2=st.columns(2)
+            with d1:
+                _sd=st.date_input("출장 시작일",key="v289_sd")
+                _st=st.time_input("시작시간",value=time(9,0),key="v289_st")
+            with d2:
+                _ed=st.date_input("출장 종료일",key="v289_edate")
+                _et=st.time_input("종료시간",value=time(18,0),key="v289_et")
+            _dest=st.text_input("출장지",key="v289_dest")
+            m1,m2,m3=st.columns(3)
+            _transport=m1.selectbox("이동수단",["대중교통","자차","센터차량","센터차량 동승","개인차량 동승","도보","기타"],key="v289_transport")
+            _distance=m2.number_input("총 거리(km)",min_value=0.0,step=1.0,key="v289_distance")
+            _fuel=m3.selectbox("자차 유종",["해당없음","가솔린","디젤","LPG"],disabled=(_transport!="자차"),key="v289_fuel")
+            _sdt=datetime.combine(_sd,_st); _edt=datetime.combine(_ed,_et)
+            _hours=max(0,(_edt-_sdt).total_seconds()/3600)
+            _base=20000 if _hours>=4 else 10000
+            if _transport in ["센터차량","센터차량 동승"]: _base=max(0,_base-10000)
+            st.metric("단시간 출장여비 기준(참고)",f"{_base:,}원")
+            st.caption("근무지 내 출장으로 판정되는 경우의 정액 참고값입니다. 최종 근무지 내·외 판정은 같은 시·군 여부와 여행거리 12km 기준을 함께 확인합니다.")
+            _note=st.text_area("비고 / 출장 사전 특이사항",key="v289_note")
+            if st.button("🚗 출장 신청 등록",type="primary",use_container_width=True,disabled=not has_permission("trip_write"),key="v289_apply"):
+                if not _purpose or not _dest: st.warning("출장목적과 출장지를 입력해 주세요.")
+                elif _edt<=_sdt: st.warning("출장 종료일시는 시작일시보다 늦어야 합니다.")
+                else:
+                    supabase.table("business_trips").insert({
+                        "emp_id":str(_er.get("emp_id","")),"emp_name":str(_er.get("emp_name","")),
+                        "department":str(_er.get("dept","")),"position":str(_er.get("position","")),
+                        "trip_type":_tt,"purpose":_purpose,"start_at":_sdt.isoformat(),"end_at":_edt.isoformat(),
+                        "destination":_dest,"transport_type":_transport,"distance_km":float(_distance),
+                        "fuel_type":_fuel,"rule_base_amount":int(_base),"note":_note,
+                        "apply_status":"신청","report_status":"미작성","settlement_status":"미정산"
+                    }).execute()
+                    st.success("출장 신청이 등록되었습니다."); st.rerun()
+
+        st.divider()
+        st.markdown("#### 🔄 출장 변경 신청")
+        if not _v289_df.empty:
+            _cid=st.selectbox("변경할 출장",_v289_df["id"].tolist(),format_func=lambda x:f"#{x} | {_v289_df.loc[_v289_df['id']==x,'emp_name'].iloc[0]} | {_v289_df.loc[_v289_df['id']==x,'destination'].iloc[0]}",key="v289_cid")
+            _cr=_v289_df[_v289_df["id"]==_cid].iloc[0]
+            _ctype=st.selectbox("변경 구분",["목적지 변경","출장기간 변경","이동수단 변경","기타"],key="v289_ctype")
+            _reason=st.text_area("변경 사유",key="v289_reason")
+            x1,x2=st.columns(2)
+            _nd=x1.text_input("변경 출장지(해당 시)",key="v289_nd")
+            _atype=x2.radio("승인 구분",["사전승인","사후승인"],horizontal=True,key="v289_atype")
+            _os=pd.to_datetime(_cr.get("start_at"),errors="coerce"); _oe=pd.to_datetime(_cr.get("end_at"),errors="coerce")
+            _ctime=st.checkbox("출장기간/시간 변경",value=(_ctype=="출장기간 변경"),key="v289_ctime")
+            _ns=_ne=None
+            if _ctime:
+                y1,y2=st.columns(2)
+                with y1:
+                    _nsd=st.date_input("변경 시작일",_os.date() if pd.notna(_os) else datetime.now().date(),key="v289_nsd")
+                    _nst=st.time_input("변경 시작시간",_os.time() if pd.notna(_os) else time(9,0),key="v289_nst")
+                with y2:
+                    _ned=st.date_input("변경 종료일",_oe.date() if pd.notna(_oe) else datetime.now().date(),key="v289_ned")
+                    _net=st.time_input("변경 종료시간",_oe.time() if pd.notna(_oe) else time(18,0),key="v289_net")
+                _ns=datetime.combine(_nsd,_nst); _ne=datetime.combine(_ned,_net)
+            if st.button("📝 출장 변경 신청",use_container_width=True,key="v289_change"):
+                if not _reason: st.warning("변경 사유를 입력해 주세요.")
+                elif _ctime and (_ns is None or _ne is None or _ne<=_ns): st.warning("올바른 변경시간을 입력해 주세요.")
+                else:
+                    supabase.table("business_trip_changes").insert({
+                        "trip_id":int(_cid),"change_type":_ctype,"change_reason":_reason,"new_destination":_nd,
+                        "new_start_at":_ns.isoformat() if _ns else None,"new_end_at":_ne.isoformat() if _ne else None,
+                        "approval_type":_atype,"approval_status":"신청"
+                    }).execute()
+                    st.success("출장 변경신청을 등록했습니다."); st.rerun()
+
+    if _trip_view=="✅ 승인관리":
+        st.markdown("### ✅ 출장 승인관리")
+        st.caption("승인대기 출장과 변경요청을 확인하고 처리합니다.")
+        if _v289_df.empty:
+            st.info("처리할 출장 내역이 없습니다.")
+        else:
+            _as=_v289_df.get("apply_status",pd.Series([""]*len(_v289_df))).astype(str)
+            _aw=_v289_df[_as.isin(["신청","승인대기"])].copy()
+            if not _aw.empty:
+                st.markdown("##### 🔔 승인처리 필요")
+                _ac=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","transport_type","apply_status"] if c in _aw.columns]
+                display_table_kr(_aw[_ac],use_container_width=True,hide_index=True)
+            else:
+                st.success("현재 승인대기 중인 출장 신청이 없습니다.")
+            _aid=st.selectbox("처리할 출장",_v289_df["id"].tolist(),key="v289_aid")
+            _ar=_v289_df[_v289_df["id"]==_aid].iloc[0]
+            st.write(f"**출장자:** {_ar.get('emp_name','')}　 **출장지:** {_ar.get('destination','')}　 **현재상태:** {_ar.get('apply_status','')}")
+            a1,a2,a3=st.columns(3)
+            if a1.button("✅ 출장 승인",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_ok"):
+                supabase.table("business_trips").update({"apply_status":"승인"}).eq("id",_aid).execute(); write_audit_log("출장 승인","business_trips",_aid); st.rerun()
+            if a2.button("↩️ 반려",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_rej"):
+                supabase.table("business_trips").update({"apply_status":"반려"}).eq("id",_aid).execute(); write_audit_log("출장 반려","business_trips",_aid); st.rerun()
+            if a3.button("❌ 취소",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_cancel"):
+                supabase.table("business_trips").update({"apply_status":"취소"}).eq("id",_aid).execute(); write_audit_log("출장 취소","business_trips",_aid); st.rerun()
+            st.divider()
+            try:
+                _changes=pd.DataFrame((supabase.table("business_trip_changes").select("*").eq("approval_status","신청").order("id",desc=True).execute().data or []))
+                if not _changes.empty:
+                    st.markdown("##### 출장변경 승인대기")
+                    display_table_kr(_changes,use_container_width=True,hide_index=True)
+                    _chid=st.selectbox("변경 승인처리 ID",_changes["id"].tolist(),key="v289_chid")
+                    _chr=_changes[_changes["id"]==_chid].iloc[0]
+                    q1,q2=st.columns(2)
+                    if q1.button("✅ 변경 승인",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_chok"):
+                        supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id",_chid).execute()
+                        _up={}
+                        if pd.notna(_chr.get("new_destination")) and str(_chr.get("new_destination")).strip(): _up["destination"]=str(_chr.get("new_destination")).strip()
+                        if pd.notna(_chr.get("new_start_at")) and _chr.get("new_start_at"): _up["start_at"]=str(_chr.get("new_start_at"))
+                        if pd.notna(_chr.get("new_end_at")) and _chr.get("new_end_at"): _up["end_at"]=str(_chr.get("new_end_at"))
+                        if _up:
+                            _up["updated_at"]=datetime.now().isoformat()
+                            supabase.table("business_trips").update(_up).eq("id",int(_chr["trip_id"])).execute()
+                        write_audit_log("출장 변경 승인","business_trip_changes",_chid); st.rerun()
+                    if q2.button("↩️ 변경 반려",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_chrej"):
+                        supabase.table("business_trip_changes").update({"approval_status":"반려","approved_at":datetime.now().isoformat()}).eq("id",_chid).execute(); st.rerun()
+                else: st.success("승인대기 중인 출장변경 신청이 없습니다.")
+            except Exception as _e: st.caption(f"변경승인 목록 확인: {_e}")
+
+    if _trip_view=="📄 복명·보고":
+        st.markdown("### 📄 복명·보고")
+        st.caption("승인된 출장의 수행결과와 복명 처리대상을 확인합니다.")
+        if _v289_df.empty:
+            st.info("복명 처리할 출장 내역이 없습니다.")
+        else:
+            _rp=_v289_df.get("report_status",pd.Series([""]*len(_v289_df))).astype(str)
+            _rw=_v289_df[~_rp.isin(["완료","보고완료","제출완료"])].copy()
+            st.metric("미보고",f"{len(_rw):,}건")
+            if not _rw.empty:
+                st.markdown("##### 🔔 복명서 작성 필요")
+                _rc=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","apply_status","report_status"] if c in _rw.columns]
+                display_table_kr(_rw[_rc],use_container_width=True,hide_index=True)
+            _rid=st.selectbox("복명 처리할 출장",_v289_df["id"].tolist(),
+                format_func=lambda x:f"#{x} | {_v289_df.loc[_v289_df['id']==x,'emp_name'].iloc[0]} | {_v289_df.loc[_v289_df['id']==x,'destination'].iloc[0]}",
+                key="v316_report_trip")
+            _rr=_v289_df[_v289_df["id"]==_rid].iloc[0]
+            st.markdown(
+                f"**출장자:** {_rr.get('emp_name','')}　 **출장지:** {_rr.get('destination','')}　 "
+                f"**승인:** {_rr.get('apply_status','')}　 **복명:** {_rr.get('report_status','')}"
+            )
+            st.caption("아래 통합 상세업무 영역에서 복명내용·여비·증빙을 저장하고 출장신청서/복명서를 출력할 수 있습니다.")
+
+    if _trip_view=="💳 여비정산":
+        st.markdown("### 💳 여비정산")
+        st.caption("복명 후 여비 정산상태와 지급 진행상황을 확인합니다.")
+        if not _v289_df.empty:
+            _ss=_v289_df.get("settlement_status",pd.Series([""]*len(_v289_df))).astype(str)
+            _sw=_v289_df[~_ss.isin(["정산완료","지급완료"])].copy()
+            if not _sw.empty:
+                st.markdown("##### 🔔 정산처리 필요")
+                _sc=[c for c in ["id","emp_name","destination","start_at","total_cost","settlement_status"] if c in _sw.columns]
+                display_table_kr(_sw[_sc],use_container_width=True,hide_index=True)
+            _sid=st.selectbox("정산할 출장",_v289_df["id"].tolist(),key="v289_sid")
+            _sr=_v289_df[_v289_df["id"]==_sid].iloc[0]
+            _opts=["미정산","정산대기","정산완료","지급완료"]
+            _cur=str(_sr.get("settlement_status","미정산") or "미정산")
+            _new=st.selectbox("정산상태",_opts,index=_opts.index(_cur) if _cur in _opts else 0,key="v289_settle")
+            if st.button("💾 정산상태 저장",use_container_width=True,disabled=not has_permission("trip_approve"),key="v289_setsave"):
+                supabase.table("business_trips").update({"settlement_status":_new}).eq("id",_sid).execute()
+                write_audit_log(f"출장 정산상태 변경: {_new}","business_trips",_sid); st.success("저장했습니다."); st.rerun()
+
+    if _trip_view=="📎 증빙관리":
+        st.markdown("### 📎 증빙관리")
+        st.caption("출장별 사진·영수증·수료증 등 등록된 증빙을 확인합니다.")
+        if _v289_df.empty:
+            st.info("출장 내역이 없습니다.")
+        else:
+            _fid=st.selectbox("증빙 확인할 출장",_v289_df["id"].tolist(),
+                format_func=lambda x:f"#{x} | {_v289_df.loc[_v289_df['id']==x,'emp_name'].iloc[0]} | {_v289_df.loc[_v289_df['id']==x,'destination'].iloc[0]}",
+                key="v317_file_trip")
+            try:
+                _files=pd.DataFrame(
+                    supabase.table("business_trip_files").select("*")
+                    .eq("trip_id",int(_fid)).order("id",desc=True).execute().data or []
+                )
+            except Exception:
+                _files=pd.DataFrame()
+            if _files.empty:
+                st.info("선택한 출장에 등록된 증빙이 없습니다.")
+            else:
+                _fcols=[c for c in ["id","file_type","file_name","created_at"] if c in _files.columns]
+                display_table_kr(_files[_fcols],use_container_width=True,hide_index=True)
+            st.caption("증빙 업로드·교체와 복명서 사진 자동삽입은 아래 '복명·정산·증빙·문서출력'에서 처리합니다.")
+
+    if _trip_view=="📊 월별현황":
+        st.markdown("### 📊 월별현황")
+        st.caption("월별 출장 건수와 여비 현황을 확인합니다.")
+        if not _v289_df.empty and "start_at" in _v289_df.columns:
+            _tmp=_v289_df.copy(); _tmp["_dt"]=pd.to_datetime(_tmp["start_at"],errors="coerce")
+            z1,z2=st.columns(2)
+            _yy=z1.selectbox("연도",sorted(_tmp["_dt"].dropna().dt.year.unique().tolist(),reverse=True),key="v289_yy")
+            _mm=z2.selectbox("월",list(range(1,13)),index=datetime.now().month-1,key="v289_mm")
+            _mon=_tmp[(_tmp["_dt"].dt.year==_yy)&(_tmp["_dt"].dt.month==_mm)]
+            c1,c2,c3=st.columns(3)
+            c1.metric("출장 건수",f"{len(_mon):,}건")
+            c2.metric("출장비",f"{pd.to_numeric(_mon.get('total_cost',0),errors='coerce').fillna(0).sum():,.0f}원")
+            c3.metric("출장거리",f"{pd.to_numeric(_mon.get('distance_km',0),errors='coerce').fillna(0).sum():,.2f}km")
+            _cols=[c for c in ["id","start_at","end_at","emp_name","purpose","destination","distance_km","total_cost","apply_status","report_status","settlement_status"] if c in _mon.columns]
+            display_table_kr(_mon[_cols],use_container_width=True,hide_index=True)
+
+    st.divider()
+
+    st.divider()
+    st.markdown("#### 🧾 출장 상세업무")
+    _trip_detail_open=st.radio(
+        "상세업무 선택",
+        ["닫기","복명·정산·증빙·문서출력"],
+        horizontal=True,
+        key="v318_trip_detail_open",
+        label_visibility="collapsed"
+    )
+    if _trip_detail_open=="복명·정산·증빙·문서출력":
+
+        try:
+            trip_res2 = supabase.table("business_trips").select("*").order("id", desc=True).execute()
+            df_trip2 = pd.DataFrame(trip_res2.data) if trip_res2.data else pd.DataFrame()
+            df_trip2 = scope_dataframe_to_current_employee(df_trip2)
+        except Exception:
+            df_trip2 = pd.DataFrame()
+
+        if not df_trip2.empty:
+            _d1,_d2,_d3,_d4=st.columns(4)
+            _dr=df_trip2.get("report_status",pd.Series([""]*len(df_trip2))).astype(str)
+            _ds=df_trip2.get("settlement_status",pd.Series([""]*len(df_trip2))).astype(str)
+            _d1.metric("출장",f"{len(df_trip2):,}건")
+            _d2.metric("미보고",f"{int((~_dr.isin(['완료','보고완료','제출완료'])).sum()):,}건")
+            _d3.metric("정산대기",f"{int((_ds=='정산대기').sum()):,}건")
+            _d4.metric("지급완료",f"{int((_ds=='지급완료').sum()):,}건")
+
+        if df_trip2.empty:
+            st.info("출장 신청 내역이 없습니다. 먼저 출장 신청을 등록해 주세요.")
+        else:
+            approved_trip = df_trip2[df_trip2["apply_status"] == "승인"] if "apply_status" in df_trip2.columns else df_trip2
+            if approved_trip.empty:
+                st.info("승인된 출장 건이 없습니다.")
+            else:
+                labels = {
+                    int(r["id"]): f"#{int(r['id'])} | {r.get('emp_name','')} | {str(r.get('start_at',''))[:10]} | {r.get('destination','')}"
+                    for _, r in approved_trip.iterrows()
+                }
+                rid = st.selectbox("복명할 출장 선택", list(labels.keys()), format_func=lambda x: labels[x])
+                rr = approved_trip[approved_trip["id"] == rid].iloc[0]
+
+                st.markdown("##### 📌 신청 내용 자동연계")
+                a,b,c,d = st.columns(4)
+                a.metric("출장자", str(rr.get("emp_name","")))
+                b.metric("출장지", str(rr.get("destination","")))
+                c.metric("이동수단", str(rr.get("transport_type","")))
+                d.metric("거리", f"{float(rr.get('distance_km',0) or 0):,.1f} km")
+                st.write("**출장목적:**", rr.get("purpose",""))
+                st.write("**출장시간:**", str(rr.get("start_at","")), "~", str(rr.get("end_at","")))
+
+                participants = st.text_input("참석자", value=str(rr.get("participants","") or ""))
+                default_report = """[참여 목적]
+
+        [참여 내용]
+
+        [주요 교육·업무 내용]
+
+        [업무 적용 및 결과]
+        """
+                report_content = st.text_area(
+                    "출장 보고 내용",
+                    value=str(rr.get("report_content","") or default_report),
+                    height=280
+                )
+
+                st.markdown("##### 💰 여비 정산")
+                _ts=pd.to_datetime(rr.get("start_at"),errors="coerce")
+                _te=pd.to_datetime(rr.get("end_at"),errors="coerce")
+                _hours=max(0.0,(_te-_ts).total_seconds()/3600) if pd.notna(_ts) and pd.notna(_te) else 0.0
+                _days=max(1,(_te.date()-_ts.date()).days+1) if pd.notna(_ts) and pd.notna(_te) else 1
+                _nights=max(0,(_te.date()-_ts.date()).days) if pd.notna(_ts) and pd.notna(_te) else 0
+                _dist=float(rr.get("distance_km",0) or 0)
+                _same_area=st.radio(
+                    "출장 지역 기준",
+                    ["같은 시·군 안","다른 시·군"],
+                    horizontal=True,
+                    key=f"v319_area_{rid}"
+                )
+                _is_local=(_same_area=="같은 시·군 안") or (_dist<12)
+                _scope="근무지 내 출장" if _is_local else "근무지 외 출장"
+                st.info(f"**판정: {_scope}** · 출장시간 {_hours:,.1f}시간 · 등록거리 {_dist:,.1f}km · {_days}일/{_nights}박")
+                st.caption("2026 공무원 여비 기준: 같은 시·군 안의 출장 또는 여행거리 12km 미만은 근무지 내 출장입니다. 근무지 외 출장은 다른 시·군이면서 여행거리 12km 이상인 경우입니다.")
+
+                _public_vehicle=str(rr.get("transport_type","")) in ["센터차량","센터차량 동승"]
+                if _is_local:
+                    _local_base=20000 if _hours>=4 else 10000
+                    _local_default=max(0,_local_base-(10000 if _public_vehicle else 0))
+                    st.markdown("###### 근무지 내 출장 정산")
+                    q1,q2,q3=st.columns(3)
+                    q1.metric("기준 정액",f"{_local_base:,}원")
+                    q2.metric("공용차량 감액",f"{10000 if _public_vehicle else 0:,}원")
+                    q3.metric("권장 지급액",f"{_local_default:,}원")
+                    transport_cost=0
+                    toll_cost=0
+                    lodging_cost=0
+                    meal_cost=0
+                    other_cost=st.number_input("기타 인정경비",min_value=0,step=1000,value=int(rr.get("other_cost",0) or 0),key=f"v319_other_in_{rid}")
+                    daily_cost=st.number_input("근무지 내 출장여비",min_value=0,step=1000,value=int(_local_default),key=f"v319_local_{rid}")
+                    st.caption("4시간 이상 20,000원 / 4시간 미만 10,000원. 센터차량 등 공용차량 이용 시 10,000원 감액합니다.")
+                else:
+                    st.markdown("###### 근무지 외 출장 정산")
+                    _daily_default=25000*_days
+                    if _public_vehicle:
+                        _daily_default=int(_daily_default/2)
+                    _meal_default=25000*_days
+                    e1,e2,e3,e4=st.columns(4)
+                    with e1:
+                        transport_cost=st.number_input("운임(실비)",min_value=0,step=1000,value=int(rr.get("transport_cost",0) or 0),key=f"v319_trans_{rid}")
+                    with e2:
+                        toll_cost=st.number_input("통행료(실비)",min_value=0,step=1000,value=int(rr.get("toll_cost",0) or 0),key=f"v319_toll_{rid}")
+                    with e3:
+                        lodging_cost=st.number_input("숙박비(실비)",min_value=0,step=1000,value=int(rr.get("lodging_cost",0) or 0),key=f"v319_lodge_{rid}")
+                    with e4:
+                        other_cost=st.number_input("기타 인정경비",min_value=0,step=1000,value=int(rr.get("other_cost",0) or 0),key=f"v319_other_out_{rid}")
+                    f1,f2=st.columns(2)
+                    with f1:
+                        daily_cost=st.number_input("일비",min_value=0,step=1000,value=int(_daily_default),key=f"v319_daily_{rid}")
+                    with f2:
+                        meal_cost=st.number_input("식비",min_value=0,step=1000,value=int(_meal_default),key=f"v319_meal_{rid}")
+                    st.caption("2026 공무원 국내여비 지급표 기준: 일비 25,000원/일, 식비 25,000원/일. 공용차량 이용 시 일비는 1/2. 숙박비는 실비로 서울 100,000원, 광역시 80,000원, 그 밖의 지역 70,000원 상한을 확인합니다.")
+
+                total_trip_cost=int(transport_cost+toll_cost+lodging_cost+other_cost+daily_cost+meal_cost)
+                st.metric("정산 합계",f"{total_trip_cost:,}원")
+
+                if st.button("💾 복명 및 정산내용 저장", type="primary", use_container_width=True, disabled=not has_permission("trip_settle")):
+                    supabase.table("business_trips").update({
+                        "participants": participants,
+                        "report_content": report_content,
+                        "transport_cost": int(transport_cost),
+                        "toll_cost": int(toll_cost),
+                        "lodging_cost": int(lodging_cost),
+                        "other_cost": int(other_cost),
+                        "daily_cost": int(daily_cost),
+                        "meal_cost": int(meal_cost),
+                        "total_cost": total_trip_cost,
+                        "report_status": "완료",
+                        "settlement_status": "정산대기"
+                    }).eq("id", rid).execute()
+                    st.success("출장 복명 및 정산내용을 저장했습니다.")
+                    st.rerun()
+
+        st.divider()
+        with st.expander("📚 출장 관련 규정 바로보기", expanded=False):
+            st.markdown("""
+        **출장 복무규정**
+        - **제25조 출장명령**: 출장신청서 제출 및 출장명령 필요
+        - **제26조 출장 중 사정변경**: 목적지 변경·기간 연장 시 사전승인, 부득이한 경우 귀원 즉시 사후승인
+        - **제27조 출장보고**: 귀원 후 지체 없이 출장보고서 제출
+        - **제28조 출장여비**: 「여비관리 세칙」 적용
+
+        **여비관리 세칙 주요 기준**
+        - 여비는 출장 계획의 경로와 방법에 따라 계산
+        - 다른 기관에서 여비가 지급되면 해당 금액만큼 감액
+        - 센터 교통수단 또는 요금이 들지 않는 교통수단 이용 시 자동차운임 미지급
+        - 출장여행시간 **4시간 이상 20,000원 / 4시간 미만 10,000원**
+        - 보행 가능 거리나 **2시간 이내는 실교통비 지급 가능**
+        - 센터차량 배정 시 위 단시간 출장여비 기준에서 **10,000원 감액**
+        - 공무원 국내여비 지급표: 일비 **25,000원/일**, 식비 **25,000원/일**
+        - 숙박료: 실비, 상한 **서울 100,000원 / 광역시 80,000원 / 그 밖의 지역 70,000원**
+        - 자가차량 운임: 총거리(km)와 유류비 기준으로 산정하며 연비기준은 가솔린 12km/L, 디젤 10km/L, LPG 8km/L
+        - 도로통행료는 센터차량·자가차량 구분 없이 실비 지급
+
+        **교육·연수 결과보고**
+        - 위탁교육자는 **교육이수 후 5일 이내** 보고서 제출
+        - 교재·출석표·수료증 첨부
+        - 소속부서장을 경유하여 센터장에게 제출
+        - 정당한 사유 없이 기한 내 수료증·보고서를 제출하지 않으면 규정상 교육 미이수로 볼 수 있음
+            """)
+
+
+        st.divider()
+        st.markdown("### 📄 복명·보고 출력")
+        st.subheader("출장신청서 · 출장복명서 A4 출력")
+
+        if not df_trip2.empty:
+            print_ids = df_trip2["id"].tolist()
+            print_id = st.selectbox(
+                "출력할 출장 선택",
+                print_ids,
+                format_func=lambda x: f"#{x} | {df_trip2.loc[df_trip2['id']==x, 'emp_name'].iloc[0]} | {str(df_trip2.loc[df_trip2['id']==x, 'start_at'].iloc[0])[:10]}",
+                key="trip_print_id"
+            )
+            pr = df_trip2[df_trip2["id"] == print_id].iloc[0]
+
+            def _fmt_dt(v):
+                try:
+                    d = pd.to_datetime(v)
+                    return d.strftime("%Y년 %m월 %d일 %H:%M")
+                except:
+                    return str(v or "")
+
+            # 현재 센터에서 사용하던 출장신청서 형식 기반
+            trip_apply_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:white;}}
+            .toolbar {{margin-bottom:8px;}}
+            .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
+            .paper {{width:190mm;min-height:260mm;margin:auto;padding:8mm 8mm;background:#fff;}}
+            .form-table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12px;}}
+            .form-table td,.form-table th {{border:1px solid #111;padding:7px 6px;height:34px;vertical-align:middle;}}
+            .title {{font-size:20px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
+            .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
+            .center {{text-align:center;}} .left {{text-align:left;}}
+            .notice {{margin-top:18px;padding-top:14px;border-top:1px dashed #222;font-size:12px;}}
+            @page {{size:A4 portrait;margin:8mm;}}
+            @media print {{
+              .toolbar {{display:none!important;}}
+              .paper {{width:auto;min-height:auto;padding:0;}}
+              *,td,th {{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            }}
+            </style>
+            <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장신청서 인쇄</button></div>
+            <div class="paper">
+              <div style="font-size:11px;margin-bottom:4px;">[서식 제1호]</div>
+              <table class="form-table">
+                <tr><td colspan="7" class="title">출장신청서</td></tr>
+                <tr>
+                  <td colspan="3" rowspan="2"></td>
+                  <td rowspan="2" class="label" style="width:7%;">결<br>재</td>
+                  <td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td>
+                </tr>
+                <tr><td style="height:42px;"></td><td></td><td></td></tr>
+                <tr>
+                  <td class="label" style="width:16%;">성 명</td>
+                  <td class="center">{pr.get('emp_name','')}</td>
+                  <td class="label">직 위</td>
+                  <td colspan="4" class="center">{pr.get('position','')}</td>
+                </tr>
+                <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+                <tr><td class="label">출장시간</td><td colspan="6" class="center">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+                <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">부 서</td><td colspan="3">{pr.get('department','')}</td></tr>
+                <tr>
+                  <td class="label">이동사항</td>
+                  <td colspan="2" class="center">{pr.get('transport_type','')}</td>
+                  <td class="label">거리구분</td>
+                  <td colspan="3" class="center">{float(pr.get('distance_km',0) or 0):,.1f} km</td>
+                </tr>
+              <tr><td colspan="7" class="sign" style="text-align:center;line-height:1.8;padding:12px;">
+                  위와 같이 출장을 신청합니다.<br>
+                  {pd.to_datetime(pr.get('start_at')).strftime('%Y년 %m월 %d일') if pr.get('start_at') else ''}<br>
+                  신청자 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)
+                </td></tr>
+              </table>
+              <div class="notice">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
+            </div>
+            """
+
+            # 현재 센터에서 사용하던 출장복명서 형식 기반
+            report_text = str(pr.get("report_content","") or "").replace("\n","<br>")
+            # v28.6: 원 출장 ID에 연결된 사전/사후승인 변경이력
+            _trip_change_html=""
+            try:
+                _chg_client=supabase_admin if supabase_admin is not None else supabase
+                _chg_rows=_chg_client.table("business_trip_changes").select("*").eq("trip_id",int(pr.get("id"))).order("created_at").execute().data or []
+                if _chg_rows:
+                    _chg_items=[]
+                    for _ch in _chg_rows:
+                        _txt=f"{str(_ch.get('change_type','변경'))} · {str(_ch.get('approval_type','') or '')} {str(_ch.get('approval_status','') or '')}"
+                        if _ch.get("new_destination"): _txt+=f" · 변경행선지: {_ch.get('new_destination')}"
+                        if _ch.get("new_start_at") or _ch.get("new_end_at"):
+                            _ns=pd.to_datetime(_ch.get("new_start_at"),errors="coerce")
+                            _ne=pd.to_datetime(_ch.get("new_end_at"),errors="coerce")
+                            if pd.notna(_ns) and pd.notna(_ne): _txt+=f" · 변경시간: {_ns.strftime('%Y-%m-%d %H:%M')} ~ {_ne.strftime('%Y-%m-%d %H:%M')}"
+                        if _ch.get("change_reason"): _txt+=f" · 사유: {_ch.get('change_reason')}"
+                        _chg_items.append(f"<div style='margin:2px 0;'>• {_txt}</div>")
+                    _trip_change_html="<div style='margin-top:8px;padding:7px;border:1px solid #aaa;'><b>[출장 변경·승인 이력]</b>"+"".join(_chg_items)+"</div>"
+            except Exception:
+                _trip_change_html=""
+
+            # v28.5: 복명서의 실제 출력대상(pr) ID와 첨부파일을 직접 연결
+            _trip_attach_html = ""
+            _trip_extra_attach_html = ""
+            _trip_files = []
+            _photo_blocks = []
+            _extra_blocks = []
+            _trip_id_for_report = int(pr.get("id")) if pr.get("id") is not None else None
+            _attach_error = ""
+
+            try:
+                _files_client = supabase_admin if supabase_admin is not None else supabase
+                _files_res = _files_client.table("business_trip_files").select("*").eq("trip_id", _trip_id_for_report).order("created_at").execute()
+                _trip_files = _files_res.data or []
+
+                # v28.5: signed URL 대신 서버에서 파일을 읽어 data URI로 삽입.
+                # Streamlit iframe/인쇄창에서도 private Storage 이미지를 확실히 표시하기 위함.
+                import base64 as _trip_b64
+                for _f in _trip_files:
+                    _ft = str(_f.get("file_type","")).strip()
+                    _path = _f.get("storage_path")
+                    _name = _f.get("file_name") or "첨부파일"
+                    if not _path:
+                        continue
+
+                    _ext = str(_name).lower().rsplit(".",1)[-1] if "." in str(_name) else ""
+                    _is_image = _ext in ["jpg","jpeg","png","webp"]
+                    if _is_image:
+                        try:
+                            _raw = _files_client.storage.from_("business-trip-files").download(_path)
+                            _mime = "image/jpeg" if _ext in ["jpg","jpeg"] else ("image/png" if _ext=="png" else "image/webp")
+                            _data_uri = f"data:{_mime};base64,{_trip_b64.b64encode(_raw).decode('ascii')}"
+                        except Exception as _img_e:
+                            _data_uri = None
+                            _attach_error += f"{_name}: {_img_e}; "
+
+                        if _data_uri:
+                            _img_html = f'<img src="{_data_uri}" style="max-width:100%;max-height:205px;object-fit:contain;">'
+                            if _ft == "출장사진":
+                                _photo_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;">{_img_html}<div style="font-size:9px;margin-top:3px;">{_name}</div></div>')
+                            else:
+                                _extra_blocks.append(f'<div style="width:48%;display:inline-block;vertical-align:top;text-align:center;margin:1%;"><div style="font-weight:bold;font-size:10px;">{_ft}</div>{_img_html}<div style="font-size:9px;">{_name}</div></div>')
+                    else:
+                        _extra_blocks.append(f'<div style="padding:6px;border-bottom:1px solid #ddd;"><b>{_ft}</b> · {_name} (PDF/파일 첨부)</div>')
+            except Exception as _attach_e:
+                _attach_error = str(_attach_e)
+
+            _trip_attach_html = "".join(_photo_blocks) if _photo_blocks else '<div style="text-align:center;color:#999;padding:45px 0;">첨부된 출장사진이 없습니다.</div>'
+            if _extra_blocks:
+                _trip_extra_attach_html = '<div style="page-break-before:always;"><h3 style="text-align:center;">첨부 증빙자료</h3>' + "".join(_extra_blocks) + '</div>'
+
+            st.caption(f"복명서 첨부 연계: 출장 ID {_trip_id_for_report} / 첨부 {len(_trip_files)}개 / 출장사진 {len(_photo_blocks)}개")
+            if _attach_error:
+                st.warning(f"첨부파일 읽기 확인: {_attach_error[:300]}")
+
+            trip_report_html = f"""
+            <style>
+            * {{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}
+            body {{font-family:'Malgun Gothic',sans-serif;color:#000;margin:0;background:#fff;}}
+            .toolbar {{margin-bottom:8px;}} .pbtn {{width:100%;padding:9px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;font-weight:bold;}}
+            .paper {{width:190mm;min-height:270mm;margin:auto;padding:6mm;background:#fff;}}
+            table {{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;}}
+            td {{border:1px solid #111;padding:6px;vertical-align:middle;}}
+            .title {{font-size:19px;font-weight:700;letter-spacing:8px;text-align:center;text-decoration:underline;}}
+            .label {{font-weight:700;text-align:center;background:#f5f5f5!important;}}
+            .report {{height:92mm;vertical-align:top!important;line-height:1.55;}}
+            .photo {{height:58mm;text-align:center;color:#777;vertical-align:middle!important;background:#fafafa!important;}}
+            .sign {{text-align:center;line-height:1.8;padding:12px;}}
+            @page {{size:A4 portrait;margin:7mm;}}
+            @media print {{
+                    /* v23.3.1: 숨겨진 기존 화면이 인쇄 공간을 차지하지 않도록 제거 */
+                    [data-testid="stSidebar"], header, footer {{display:none !important;}}
+                    [data-testid="stMainBlockContainer"] {{padding:0 !important; margin:0 !important; max-width:none !important;}}
+            
+                    body {{margin:0 !important; padding:0 !important;}}
+                    .hr-card {{margin:0 !important;}}
+        #hr-card-print {{position:fixed !important; left:10mm !important; top:10mm !important; z-index:999999 !important;}}
+                    #hr-card-print ~ * {{display:none !important;}}.toolbar{{display:none!important}} .paper{{width:auto;min-height:auto;padding:0}} *,td{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}}}}
+            </style>
+            <div class="toolbar"><button class="pbtn" onclick="window.print()">🖨️ 출장복명서 인쇄</button></div>
+            <div class="paper">
+            <table>
+              <tr><td colspan="7" class="title">출장복명서</td></tr>
+              <tr><td colspan="3" rowspan="2"></td><td rowspan="2" class="label">결<br>재</td><td class="label">담당</td><td class="label">대리</td><td class="label">센터장</td></tr>
+              <tr><td style="height:36px"></td><td></td><td></td></tr>
+              <tr><td class="label">성 명</td><td>{pr.get('emp_name','')}</td><td class="label">직 위</td><td colspan="4">{pr.get('position','')}</td></tr>
+              <tr><td class="label">출장목적</td><td colspan="6">{pr.get('purpose','')}</td></tr>
+              <tr><td class="label">참 석 자</td><td colspan="6">{pr.get('participants','')}</td></tr>
+              <tr><td class="label">출장시간</td><td colspan="6">{_fmt_dt(pr.get('start_at'))} ~ {_fmt_dt(pr.get('end_at'))}</td></tr>
+              <tr><td class="label">출 장 지</td><td colspan="2">{pr.get('destination','')}</td><td class="label">이동사항</td><td colspan="3">{pr.get('transport_type','')} / {float(pr.get('distance_km',0) or 0):,.1f}km</td></tr>
+              <tr><td class="label">여 비</td><td colspan="2">₩ {int(pr.get('total_cost',0) or 0):,}</td><td class="label">정산상태</td><td colspan="3">{pr.get('settlement_status','')}</td></tr>
+              <tr><td class="label">출장 보고<br>내용</td><td colspan="6" class="report">{report_text}</td></tr>
+              <tr>
+                    <td class="label">변경 이력</td>
+                    <td colspan="6" style="vertical-align:top;">{_trip_change_html if _trip_change_html else "변경 이력 없음"}</td>
+                </tr>
+                <tr><td class="label">출장 사진</td><td colspan="6" class="photo">{_trip_attach_html}</td></tr>
+              <tr><td colspan="7" class="sign">금번 출장 결과를 위와 같이 복명합니다.<br><br>{datetime.now().strftime('%Y년 %m월 %d일')}<br><br>출장인 : {pr.get('emp_name','')} &nbsp;&nbsp;(인)</td></tr>
+            </table>
+            <div style="font-size:10px;margin-top:8px;">* 출장근거가 불충분하면 출장비는 지급하지 않습니다.</div>
+            </div>
+            {_trip_extra_attach_html}
+        """
+
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.components.v1.html(trip_apply_html, height=55, scrolling=False)
+            with pc2:
+                st.components.v1.html(trip_report_html, height=55, scrolling=False)
+
+        st.divider()
+        st.markdown("### 📎 증빙관리 업무")
+        st.subheader("출장 사진 · 영수증 · 수료증 첨부")
+        st.caption("출장별 증빙파일을 Supabase Storage의 business-trip-files 버킷에 저장합니다.")
+        if not df_trip2.empty:
+            file_trip_id = st.selectbox("증빙을 연결할 출장 ID", df_trip2["id"].tolist(), key="trip_file_id")
+            file_type = st.selectbox("증빙 종류", ["출장사진","교통영수증","주차/통행료 영수증","교육수료증","교육자료","기타"])
+            uploaded_trip_files = st.file_uploader(
+                "파일 선택",
+                type=["jpg","jpeg","png","pdf"],
+                accept_multiple_files=True,
+                key="trip_files"
+            )
+            if st.button("📤 출장 증빙 업로드", use_container_width=True, disabled=not has_permission("file_upload")):
+                if not uploaded_trip_files:
+                    st.warning("업로드할 파일을 선택해 주세요.")
+                else:
+                    # 버킷 목록 조회는 anon 권한에서 실제 버킷이 있어도 빈 목록이 반환될 수 있으므로
+                    # 사전 존재검사를 하지 않고 실제 업로드 결과로 판단합니다.
+                    ok, fail = 0, 0
+                    for uf in uploaded_trip_files:
+                        # Supabase Storage object key는 ASCII 기반으로 생성.
+                        # 한글 원본 파일명은 DB file_name에 그대로 보존합니다.
+                        original_name = str(uf.name)
+                        ext = Path(original_name).suffix.lower()
+                        if not re.fullmatch(r"\.[a-z0-9]{1,10}", ext):
+                            mime_ext = {
+                                "image/jpeg": ".jpg",
+                                "image/png": ".png",
+                                "application/pdf": ".pdf",
+                            }
+                            ext = mime_ext.get(str(uf.type).lower(), ".bin")
+
+                        object_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uuid.uuid4().hex[:10]}{ext}"
+                        storage_path = f"trip-{int(file_trip_id)}/{object_name}"
+
+                        try:
+                            # v28.3: admin/manager uploads through the configured server-side secret client.
+                            # This avoids browser/session JWT loss causing storage.objects RLS failures.
+                            _trip_storage_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                            _trip_storage_client.storage.from_(TRIP_STORAGE_BUCKET).upload(
+                                storage_path,
+                                uf.getvalue(),
+                                {"content-type": uf.type or "application/octet-stream", "upsert": "false"}
+                            )
+                            _trip_db_client = supabase_admin if (CURRENT_ROLE in ["admin","manager"] and supabase_admin is not None) else supabase
+                            _trip_db_client.table("business_trip_files").insert({
+                                "trip_id": int(file_trip_id),
+                                "file_type": file_type,
+                                "file_name": original_name,
+                                "storage_path": storage_path
+                            }).execute()
+                            ok += 1
+                        except Exception as e:
+                            fail += 1
+                            err = str(e)
+                            if "row-level security" in err.lower() or "unauthorized" in err.lower() or "403" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: Storage 업로드 권한이 없습니다. "
+                                    "Supabase의 storage.objects 정책을 적용해 주세요."
+                                )
+                            elif "Bucket not found" in err or "404" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: 앱이 연결된 Supabase 프로젝트에서 "
+                                    f"'{TRIP_STORAGE_BUCKET}' 버킷을 찾지 못했습니다. "
+                                    "현재 앱의 SUPABASE_URL과 버킷을 만든 프로젝트가 같은지 확인해 주세요."
+                                )
+                            elif "InvalidKey" in err or "Invalid key" in err:
+                                st.error(
+                                    f"'{uf.name}' 업로드 실패: Storage 객체 경로가 유효하지 않습니다. "
+                                    "v9에서는 원본 한글 파일명 대신 안전한 영문 객체키를 자동 생성합니다."
+                                )
+                            else:
+                                st.error(f"'{uf.name}' 업로드 실패: {err}")
+
+                    if ok:
+                        st.success(f"✅ {ok}개 출장 증빙파일을 저장했습니다.")
+                    if fail:
+                        st.warning(f"⚠️ {fail}개 파일 업로드에 실패했습니다.")
+            try:
+                f_res = supabase.table("business_trip_files").select("*").eq("trip_id", int(file_trip_id)).order("id", desc=True).execute()
+                df_files = pd.DataFrame(f_res.data) if f_res.data else pd.DataFrame()
+                if not df_files.empty:
+                    display_table_kr(df_files[[c for c in ["file_type","file_name","created_at"] if c in df_files.columns]], use_container_width=True, hide_index=True)
+            except Exception:
+                pass
+
+        st.divider()
+        st.markdown("### 📝 출장 변경 업무")
+        st.subheader("출장 변경 · 사전/사후승인 이력")
+        if not df_trip2.empty:
+            change_trip_id = st.selectbox("변경할 출장 ID", df_trip2["id"].tolist(), key="trip_change_id")
+            change_type = st.selectbox("변경 구분", ["목적지 변경","출장기간 변경","이동수단 변경","기타"])
+            change_reason = st.text_area("변경 사유 / 보고 내용", key="trip_change_reason")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                new_destination = st.text_input("변경 출장지(해당 시)", key="trip_new_dest")
+            with cc2:
+                approval_type = st.radio("승인 구분", ["사전승인","사후승인"], horizontal=True, key="trip_approval_type")
+            _ctr = df_trip2[df_trip2["id"] == change_trip_id].iloc[0]
+            _os = pd.to_datetime(_ctr.get("start_at"), errors="coerce")
+            _oe = pd.to_datetime(_ctr.get("end_at"), errors="coerce")
+            _change_time_enabled = st.checkbox("출장기간/시간 변경", value=(change_type=="출장기간 변경"), key="trip_change_time_enabled")
+            _new_start_at = _new_end_at = None
+            if _change_time_enabled:
+                st.caption(f"현재 출장시간: {_os.strftime('%Y-%m-%d %H:%M') if pd.notna(_os) else '-'} ~ {_oe.strftime('%Y-%m-%d %H:%M') if pd.notna(_oe) else '-'}")
+                tc1,tc2=st.columns(2)
+                with tc1:
+                    _nsd=st.date_input("변경 시작일",_os.date() if pd.notna(_os) else datetime.now().date(),key="trip_new_start_date")
+                    _nst=st.time_input("변경 시작시간",_os.time() if pd.notna(_os) else time(9,0),key="trip_new_start_time")
+                with tc2:
+                    _ned=st.date_input("변경 종료일",_oe.date() if pd.notna(_oe) else datetime.now().date(),key="trip_new_end_date")
+                    _net=st.time_input("변경 종료시간",_oe.time() if pd.notna(_oe) else time(18,0),key="trip_new_end_time")
+                _new_start_at=datetime.combine(_nsd,_nst)
+                _new_end_at=datetime.combine(_ned,_net)
+                if _new_end_at <= _new_start_at: st.error("변경 종료일시는 시작일시보다 늦어야 합니다.")
+            if st.button("📝 출장 변경 신청 기록", use_container_width=True):
+                if not change_reason:
+                    st.warning("변경 사유를 입력해 주세요.")
+                elif _change_time_enabled and (_new_start_at is None or _new_end_at is None or _new_end_at <= _new_start_at):
+                    st.warning("올바른 변경 시작·종료일시를 입력해 주세요.")
+                else:
+                    supabase.table("business_trip_changes").insert({
+                        "trip_id": int(change_trip_id),
+                        "change_type": change_type,
+                        "change_reason": change_reason,
+                        "new_destination": new_destination,
+                        "new_start_at": _new_start_at.isoformat() if _new_start_at else None,
+                        "new_end_at": _new_end_at.isoformat() if _new_end_at else None,
+                        "approval_type": approval_type,
+                        "approval_status": "신청"
+                    }).execute()
+                    st.success("출장 변경/승인 이력을 등록했습니다.")
+                    st.rerun()
+
+            try:
+                ch_res = supabase.table("business_trip_changes").select("*").eq("trip_id", int(change_trip_id)).order("id", desc=True).execute()
+                df_ch = pd.DataFrame(ch_res.data) if ch_res.data else pd.DataFrame()
+                if not df_ch.empty:
+                    display_table_kr(df_ch, use_container_width=True, hide_index=True)
+                    pending = df_ch[df_ch["approval_status"]=="신청"] if "approval_status" in df_ch.columns else pd.DataFrame()
+                    if not pending.empty:
+                        ch_id = st.selectbox("승인 처리할 변경 ID", pending["id"].tolist(), key="trip_change_approve_id")
+                        ca1,ca2 = st.columns(2)
+                        with ca1:
+                            if st.button("✅ 변경 승인", use_container_width=True, disabled=not has_permission("trip_approve")):
+                                _ch_target=pending[pending["id"]==ch_id].iloc[0]
+                                supabase.table("business_trip_changes").update({"approval_status":"승인","approved_at":datetime.now().isoformat()}).eq("id",ch_id).execute()
+                                _tu={}
+                                if pd.notna(_ch_target.get("new_destination")) and str(_ch_target.get("new_destination")).strip(): _tu["destination"]=str(_ch_target.get("new_destination")).strip()
+                                if pd.notna(_ch_target.get("new_start_at")) and _ch_target.get("new_start_at"): _tu["start_at"]=str(_ch_target.get("new_start_at"))
+                                if pd.notna(_ch_target.get("new_end_at")) and _ch_target.get("new_end_at"): _tu["end_at"]=str(_ch_target.get("new_end_at"))
+                                if _tu:
+                                    _tu["updated_at"]=datetime.now().isoformat()
+                                    supabase.table("business_trips").update(_tu).eq("id",int(_ch_target["trip_id"])).execute()
+                                write_audit_log("출장 변경 승인","business_trip_changes",ch_id)
+                                st.success("변경 승인 및 원 출장 현재정보 반영을 완료했습니다.")
+                                st.rerun()
+                        with ca2:
+                            if st.button("↩️ 변경 반려", use_container_width=True, disabled=not has_permission("trip_approve")):
+                                supabase.table("business_trip_changes").update({"approval_status":"반려","approved_at":datetime.now().isoformat()}).eq("id", ch_id).execute()
+                                st.rerun()
+            except Exception:
+                st.caption("출장 변경이력 테이블을 생성하면 이력이 표시됩니다.")
+
+        st.divider()
+        st.markdown("### 📊 월별현황 업무")
+        st.subheader("월별 출장관리대장 · Excel")
+        if not df_trip2.empty:
+            tmp = df_trip2.copy()
+            tmp["_start"] = pd.to_datetime(tmp["start_at"], errors="coerce")
+            years = sorted(tmp["_start"].dropna().dt.year.unique().tolist(), reverse=True)
+            if years:
+                gy, gm = st.columns(2)
+                with gy:
+                    ledger_year = st.selectbox("조회 연도", years, key="trip_ledger_year")
+                with gm:
+                    ledger_month = st.selectbox("조회 월", list(range(1,13)), index=datetime.now().month-1, key="trip_ledger_month")
+                ledger = tmp[(tmp["_start"].dt.year==ledger_year)&(tmp["_start"].dt.month==ledger_month)].copy()
+                ledger_cols = [c for c in ["id","start_at","end_at","emp_name","position","purpose","destination","transport_type","distance_km","total_cost","apply_status","report_status","settlement_status"] if c in ledger.columns]
+                display_table_kr(ledger[ledger_cols], use_container_width=True, hide_index=True)
+
+                lm1,lm2,lm3,lm4 = st.columns(4)
+                lm1.metric("출장 건수", f"{len(ledger)}건")
+                lm2.metric("복명 완료", f"{int((ledger['report_status']=='완료').sum()) if 'report_status' in ledger else 0}건")
+                lm3.metric("총 출장거리", f"{pd.to_numeric(ledger.get('distance_km',0),errors='coerce').fillna(0).sum():,.2f}km")
+                lm4.metric("총 출장비", f"{pd.to_numeric(ledger.get('total_cost',0),errors='coerce').fillna(0).sum():,.0f}원")
+
+                trip_xlsx = io.BytesIO()
+                wb = Workbook()
+                ws = wb.active
+                ws.title = f"{ledger_year}-{ledger_month:02d}_출장대장"
+                title_fill = PatternFill("solid", fgColor="D9EAF7")
+                header_fill = PatternFill("solid", fgColor="FFF2CC")
+                done_fill = PatternFill("solid", fgColor="E2F0D9")
+                thin = Side(style="thin", color="808080")
+                bd = Border(left=thin,right=thin,top=thin,bottom=thin)
+                ws.merge_cells(start_row=1,start_column=1,end_row=1,end_column=len(ledger_cols))
+                ws.cell(1,1,f"{ledger_year}년 {ledger_month}월 출장관리대장")
+                ws.cell(1,1).font = Font(name="맑은 고딕",size=16,bold=True)
+                ws.cell(1,1).fill = title_fill
+                ws.cell(1,1).alignment = Alignment(horizontal="center")
+                labels = {"id":"No","start_at":"출장시작","end_at":"출장종료","emp_name":"성명","position":"직위","purpose":"출장목적",
+                          "destination":"출장지","transport_type":"이동수단","distance_km":"거리(km)","total_cost":"출장비",
+                          "apply_status":"승인","report_status":"복명","settlement_status":"정산"}
+                for ci,cname in enumerate(ledger_cols,1):
+                    c=ws.cell(3,ci,labels.get(cname,cname)); c.fill=header_fill;c.font=Font(name="맑은 고딕",bold=True);c.border=bd;c.alignment=Alignment(horizontal="center")
+                for ri,(_,row) in enumerate(ledger.iterrows(),4):
+                    for ci,cname in enumerate(ledger_cols,1):
+                        val=row[cname]
+                        if cname in ["start_at","end_at"]:
+                            try: val=pd.to_datetime(val).strftime("%Y-%m-%d %H:%M")
+                            except: pass
+                        c=ws.cell(ri,ci,val);c.border=bd;c.font=Font(name="맑은 고딕",size=9)
+                        if str(row.get("report_status",""))=="완료": c.fill=done_fill
+                        c.alignment=Alignment(horizontal="center" if cname not in ["purpose","destination"] else "left")
+                        if cname=="total_cost": c.number_format='#,##0"원"'
+                        if cname=="distance_km": c.number_format='0.0"km"'
+                widths=[7,18,18,11,11,30,22,12,11,13,10,10,10]
+                for i,w in enumerate(widths[:len(ledger_cols)],1): ws.column_dimensions[get_column_letter(i)].width=w
+                ws.sheet_view.showGridLines=False
+                ws.page_setup.orientation="landscape";ws.page_setup.fitToWidth=1;ws.page_setup.fitToHeight=0
+                ws.sheet_properties.pageSetUpPr.fitToPage=True
+                wb.save(trip_xlsx)
+                st.download_button("📥 월별 출장관리대장 Excel 다운로드",trip_xlsx.getvalue(),file_name=f"{ledger_year}-{ledger_month:02d}_출장관리대장.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+
+
+
+
+
+# -------------------------------------------------------------------
+# TAB 11: 구버전 메뉴 호환 안내
+# -------------------------------------------------------------------
+if active_tab == 11:
+    st.header("🚗 출장 관리")
+    st.info("출장 관련 업무는 '출장 관리'에서 처리합니다.")
+
+# -------------------------------------------------------------------
+# TAB 12: 계정 · 권한 관리 (관리자 전용)
+# -------------------------------------------------------------------
+if active_tab == 12:
+    st.header("🔐 계정·권한 관리")
+    st.caption("관리자 전용 · 직원 계정 생성, 역할 변경, 비밀번호 초기화")
+
+    if CURRENT_ROLE != "admin":
+        st.error("관리자만 접근할 수 있습니다.")
+        st.stop()
+
+    if supabase_admin is None:
+        st.error("관리자 기능을 사용하려면 Streamlit Secrets에 SUPABASE_SECRET_KEY를 등록해야 합니다.")
+        st.code('SUPABASE_SECRET_KEY = "Supabase Secret/Service Role Key"', language="toml")
+        st.stop()
+
+    st.info("관리자 Secret Key는 계정 생성·비밀번호 변경 같은 Auth Admin 작업에만 사용하며 화면에는 노출하지 않습니다.")
+
+    # 직원 DB
+    try:
+        _emp_res = supabase.table("employees").select("*").order("emp_name").execute()
+        _emp_df = pd.DataFrame(_emp_res.data) if _emp_res.data else pd.DataFrame()
+    except Exception:
+        _emp_df = pd.DataFrame()
+
+    # Auth 사용자
+    try:
+        _users_res = supabase_admin.auth.admin.list_users(page=1, per_page=1000)
+        _users = getattr(_users_res, "users", _users_res)
+        if not isinstance(_users, list):
+            _users = []
+    except Exception as e:
+        _users = []
+        st.error(f"Auth 사용자 목록 조회 실패: {e}")
+
+    def _auth_field(u, name, default=""):
+        if isinstance(u, dict):
+            return u.get(name, default)
+        return getattr(u, name, default)
+
+    account_rows = []
+    for u in _users:
+        meta = _user_metadata(u)
+        account_rows.append({
+            "user_id": str(_auth_field(u, "id", "")),
+            "이메일": str(_auth_field(u, "email", "")),
+            "이름": str(meta.get("name", "")),
+            "사번": str(meta.get("emp_id", "")),
+            "권한": _role_label(str(meta.get("role", ""))) if meta.get("role") else "미설정",
+            "role_code": str(meta.get("role", "")),
+            "최근로그인": str(_auth_field(u, "last_sign_in_at", "") or ""),
+            "계정상태": "중지" if str(_auth_field(u, "banned_until", "") or "") else "사용",
+        })
+    _account_df = pd.DataFrame(account_rows)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("전체 계정", f"{len(_account_df)}명")
+    m2.metric("관리자", f"{int((_account_df['role_code']=='admin').sum()) if not _account_df.empty else 0}명")
+    m3.metric("일반 직원", f"{int((_account_df['role_code']=='employee').sum()) if not _account_df.empty else 0}명")
+
+    if not _emp_df.empty:
+        linked_ids = set(_account_df["사번"].astype(str)) if not _account_df.empty else set()
+        _emp_link = _emp_df.copy()
+        _emp_link["계정연결"] = _emp_link["emp_id"].astype(str).apply(lambda x: "연결됨" if x in linked_ids else "미연결")
+        with st.expander("🔗 직원 ↔ 로그인 계정 연결 현황"):
+            _cols = [c for c in ["emp_id","emp_name","dept","position","계정연결"] if c in _emp_link.columns]
+            display_table_kr(_emp_link[_cols], use_container_width=True, hide_index=True)
+
+    st.subheader("👤 직원 계정 현황")
+    if _account_df.empty:
+        st.info("등록된 로그인 계정이 없습니다.")
+    else:
+        display_table_kr(
+            _account_df[["이메일","이름","사번","권한","계정상태","최근로그인"]],
+            use_container_width=True, hide_index=True
+        )
+
+    st.divider()
+    create_tab, role_tab, pw_tab, status_tab = st.tabs(["➕ 계정 생성", "🛡️ 권한 변경", "🔑 비밀번호 초기화", "⏯️ 계정 사용·중지"])
+
+    with create_tab:
+        if _emp_df.empty:
+            st.warning("직원 DB가 없어 계정을 생성할 수 없습니다.")
+        else:
+            emp_map = {
+                f"{str(r.get('emp_name','')).strip()} ({str(r.get('emp_id','')).strip()})": r
+                for _, r in _emp_df.iterrows()
+                if str(r.get("emp_name","")).strip()
+            }
+            selected_emp_label = st.selectbox("계정을 만들 직원", list(emp_map.keys()), key="admin_create_emp")
+            selected_emp = emp_map[selected_emp_label]
+            new_email = st.text_input("로그인 이메일", key="admin_create_email")
+            new_pw = st.text_input("초기 비밀번호", type="password", key="admin_create_pw",
+                                   help="직원에게 전달할 임시 비밀번호입니다. 8자 이상을 권장합니다.")
+            new_role_label = st.selectbox("권한", ["직원", "담당자", "조회자", "관리자"], key="admin_create_role")
+            role_map = {"직원":"employee", "담당자":"manager", "조회자":"viewer", "관리자":"admin"}
+
+            if st.button("계정 생성", type="primary", use_container_width=True, key="admin_create_btn"):
+                selected_emp_id = str(selected_emp.get("emp_id","")).strip()
+                existing_emp_ids = set(_account_df["사번"].astype(str)) if not _account_df.empty else set()
+                if selected_emp_id in existing_emp_ids:
+                    st.warning("이 직원은 이미 로그인 계정과 연결되어 있습니다.")
+                elif not new_email.strip() or len(new_pw) < 8:
+                    st.warning("이메일을 입력하고 초기 비밀번호는 8자 이상으로 설정해 주세요.")
+                else:
+                    try:
+                        result = supabase_admin.auth.admin.create_user({
+                            "email": new_email.strip(),
+                            "password": new_pw,
+                            "email_confirm": True,
+                            "user_metadata": {
+                                "name": str(selected_emp.get("emp_name","")),
+                                "dept": str(selected_emp.get("dept","")),
+                                "position": str(selected_emp.get("position","")),
+                            },
+                            "app_metadata": {
+                                "emp_id": selected_emp_id,
+                                "role": role_map[new_role_label],
+                            }
+                        })
+                        created = _auth_user_obj(result)
+                        write_audit_log(
+                            "계정 생성", "auth.users",
+                            str(_user_value(created, "id", "")),
+                            f"{new_email.strip()} / {new_role_label}"
+                        )
+                        st.success(f"{selected_emp.get('emp_name','')} 직원의 계정을 생성했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 생성 실패: {e}")
+
+    with role_tab:
+        if _account_df.empty:
+            st.info("권한을 변경할 계정이 없습니다.")
+        else:
+            role_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_role_email")
+            row = _account_df[_account_df["이메일"] == role_email].iloc[0]
+            target_uid = row["user_id"]
+            role_label_map = {"employee":"직원","manager":"담당자","viewer":"조회자","admin":"관리자"}
+            labels = ["직원","담당자","조회자","관리자"]
+            current_label = role_label_map.get(row["role_code"], "조회자")
+            new_role2 = st.selectbox("변경할 권한", labels, index=labels.index(current_label), key="admin_role_new")
+            role_code_map = {"직원":"employee","담당자":"manager","조회자":"viewer","관리자":"admin"}
+
+            if st.button("권한 저장", type="primary", use_container_width=True, key="admin_role_save"):
+                try:
+                    # 최신 관리자 메타데이터의 사번 등은 유지하고 권한만 변경한다.
+                    target_user = _auth_user_obj(supabase_admin.auth.admin.get_user_by_id(target_uid))
+                    if target_user is None:
+                        raise RuntimeError("변경할 계정 정보를 확인할 수 없습니다.")
+                    meta = _app_metadata(target_user)
+                    meta["role"] = role_code_map[new_role2]
+                    if meta["role"] == "employee" and not str(meta.get("emp_id", "") or "").strip():
+                        raise ValueError("직원 권한을 설정하려면 관리자 정보에 사번이 먼저 등록되어야 합니다.")
+                    supabase_admin.auth.admin.update_user_by_id(target_uid, {"app_metadata": meta})
+                    write_audit_log("계정 권한 변경", "auth.users", target_uid, f"{role_email}: {new_role2}")
+                    st.success("권한을 변경했습니다. 해당 사용자는 다음 로그인부터 변경된 권한이 적용됩니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"권한 변경 실패: {e}")
+
+    with pw_tab:
+        if _account_df.empty:
+            st.info("비밀번호를 초기화할 계정이 없습니다.")
+        else:
+            pw_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_pw_email")
+            pw_row = _account_df[_account_df["이메일"] == pw_email].iloc[0]
+            pw_uid = pw_row["user_id"]
+            reset_mode = st.radio(
+                "초기화 방식",
+                ["관리자가 임시 비밀번호 설정", "비밀번호 재설정 이메일 발송"],
+                horizontal=True
+            )
+
+            if reset_mode == "관리자가 임시 비밀번호 설정":
+                temp_pw = st.text_input("새 임시 비밀번호", type="password", key="admin_temp_pw")
+                confirm_pw = st.text_input("새 임시 비밀번호 확인", type="password", key="admin_temp_pw2")
+                if st.button("비밀번호 초기화", type="primary", use_container_width=True, key="admin_pw_reset"):
+                    _pw_ok, _pw_msg = _validate_password(temp_pw)
+                    if not _pw_ok:
+                        st.warning(_pw_msg)
+                    elif temp_pw != confirm_pw:
+                        st.warning("비밀번호 확인이 일치하지 않습니다.")
+                    else:
+                        try:
+                            supabase_admin.auth.admin.update_user_by_id(pw_uid, {"password": temp_pw})
+                            write_audit_log("비밀번호 관리자 초기화", "auth.users", pw_uid, pw_email)
+                            st.success("임시 비밀번호로 초기화했습니다.")
+                        except Exception as e:
+                            st.error(f"비밀번호 초기화 실패: {e}")
+            else:
+                st.caption("직원의 로그인 이메일로 Supabase 비밀번호 재설정 메일을 발송합니다.")
+                if st.button("재설정 이메일 발송", type="primary", use_container_width=True, key="admin_pw_mail"):
+                    try:
+                        supabase.auth.reset_password_for_email(pw_email)
+                        write_audit_log("비밀번호 재설정 메일", "auth.users", pw_uid, pw_email)
+                        st.success("비밀번호 재설정 이메일을 발송했습니다.")
+                    except Exception as e:
+                        st.error(f"재설정 이메일 발송 실패: {e}")
+    with status_tab:
+        if _account_df.empty:
+            st.info("관리할 계정이 없습니다.")
+        else:
+            status_email = st.selectbox("계정 선택", _account_df["이메일"].tolist(), key="admin_status_email")
+            status_row = _account_df[_account_df["이메일"] == status_email].iloc[0]
+            status_uid = status_row["user_id"]
+            current_status = status_row["계정상태"]
+            st.write(f"현재 상태: **{current_status}**")
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                if st.button("⛔ 계정 중지", use_container_width=True, disabled=(current_status=="중지" or status_email==CURRENT_EMAIL)):
+                    try:
+                        supabase_admin.auth.admin.update_user_by_id(status_uid, {"ban_duration":"876000h"})
+                        write_audit_log("계정 중지", "auth.users", status_uid, status_email)
+                        st.success("계정 사용을 중지했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 중지 실패: {e}")
+            with sc2:
+                if st.button("▶️ 계정 사용", use_container_width=True, disabled=(current_status=="사용")):
+                    try:
+                        supabase_admin.auth.admin.update_user_by_id(status_uid, {"ban_duration":"none"})
+                        write_audit_log("계정 사용 재개", "auth.users", status_uid, status_email)
+                        st.success("계정을 다시 사용할 수 있습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 사용 재개 실패: {e}")
+            if status_email == CURRENT_EMAIL:
+                st.caption("현재 로그인 중인 관리자 본인 계정은 중지할 수 없도록 보호됩니다.")
+
+
+# -------------------------------------------------------------------
+
+# TAB 13: v20 관리자 통합 통계·보고서
+if active_tab == 13:
+    st.subheader("📊 관리자 통합 통계·보고서")
+    st.caption("월간·연간 현황, 데이터 점검, Excel 보고서를 큰 업무버튼으로 선택해 확인할 수 있습니다.")
+    if not can_manage_all_records():
+        st.warning("관리자 또는 담당자만 이용할 수 있습니다.")
+    else:
+        _now=datetime.now()
+        _years=list(range(_now.year-3,_now.year+2))
+        _c1,_c2=st.columns(2)
+        _year=_c1.selectbox("연도",_years,index=_years.index(_now.year),key="v20_year")
+        _month=_c2.selectbox("월",range(1,13),index=_now.month-1,format_func=lambda x:f"{x}월",key="v20_month")
+        _ym=f"{_year:04d}-{_month:02d}"
+
+        def _load20(table):
+            try: return pd.DataFrame(supabase.table(table).select("*").execute().data or [])
+            except Exception: return pd.DataFrame()
+
+        def _month20(df, ym, preferred):
+            if df.empty: return df
+            col=next((c for c in preferred if c in df.columns),None)
+            if not col: return df.iloc[0:0].copy()
+            return df[df[col].astype(str).str[:7]==ym].copy()
+
+        def _sum20(df, cols):
+            if df.empty:return 0.0
+            c=next((x for x in cols if x in df.columns),None)
+            return float(pd.to_numeric(df[c],errors="coerce").fillna(0).sum()) if c else 0.0
+
+        _pay_all=_load20("monthly_payroll_adjust")
+
+        # v32.2: 실제 급여/공제/사업주부담액이 전부 0원인 빈 저장행 제외
+        _pay_money_cols=[
+            "base_salary","ot_pay","family_allowance","holiday_bonus","non_taxable","other_allowance",
+            "national_pension","health_insurance","longterm_care","employment_insurance",
+            "income_tax","local_tax","other_deduction",
+            "employer_national_pension","employer_health_insurance","employer_longterm_care",
+            "employer_employment_insurance","employer_industrial_insurance","retirement_accrual"
+        ]
+        def _meaningful_pay_rows20(df):
+            if df is None or df.empty:
+                return df
+            cols=[c for c in _pay_money_cols if c in df.columns]
+            if not cols:
+                return df
+            total=pd.Series(0,index=df.index,dtype="float64")
+            for c in cols:
+                total=total+pd.to_numeric(df[c],errors="coerce").fillna(0).abs()
+            return df[total>0].copy()
+
+        _pay_all=_meaningful_pay_rows20(_pay_all)
+        _lv_all=_load20("leave_records")
+        _ot_all=_load20("overtime_records")
+        _tr_all=_load20("business_trips")
+        _emp_all=_load20("employees")
+
+        def _datasets20(ym):
+            return (
+                _month20(_pay_all,ym,["pay_month","created_at"]),
+                _month20(_lv_all,ym,["start_date","leave_date","created_at"]),
+                _month20(_ot_all,ym,["work_date","ot_date","created_at"]),
+                _month20(_tr_all,ym,["start_at","start_date","created_at"])
+            )
+
+        _pay,_lv,_ot,_tr=_datasets20(_ym)
+        _prev_dt=(pd.Timestamp(f"{_ym}-01")-pd.offsets.MonthBegin(1))
+        _pym=_prev_dt.strftime("%Y-%m")
+        _ppay,_plv,_pot,_ptr=_datasets20(_pym)
+
+        _pay_sum=_sum20(_pay,["gross_pay","total_pay","pay_total","total_salary","net_pay"])
+        _lv_sum=_sum20(_lv,["used_days","leave_days","days","day_count"])
+        _ot_sum=_sum20(_ot,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"])
+        _tr_sum=_sum20(_tr,["total_cost"])
+        _prev=[_sum20(_ppay,["gross_pay","total_pay","pay_total","total_salary","net_pay"]),
+               _sum20(_plv,["used_days","leave_days","days","day_count"]),
+               _sum20(_pot,["actual_duration_hours","actual_hours","work_hours","duration_hours","hours"]),
+               _sum20(_ptr,["total_cost"])]
+
+        _report_view=workflow_button_nav(
+            "관리자 통계·보고서 업무 선택",
+            ["📅 월간 현황","📈 연간 현황","🔎 데이터 점검","📥 Excel 통합보고서"],
+            key="v326_report_view",
+            caption="확인할 보고서 종류를 선택해 주세요. 선택한 화면만 표시됩니다.",
+            max_per_row=4
+        )
+
+        if _report_view=="📅 월간 현황":
+            st.markdown(f"#### {_year}년 {_month}월 통합 현황")
+            st.caption("※ 초과근무 월간 통계는 실제 근무일(1일~말일) 기준입니다. 급여 연계의 전월 25일~당월 24일 기준과는 다릅니다.")
+            a,b,c,d=st.columns(4)
+            a.metric("급여",f"{int(_pay_sum):,}원" if _pay_sum else f"{len(_pay)}건",
+                     delta=f"{int(_pay_sum-_prev[0]):+,}원 전월대비")
+            b.metric("연차",f"{_lv_sum:,.2f}일" if _lv_sum else f"{len(_lv)}건",
+                     delta=f"{_lv_sum-_prev[1]:+.2f}일 전월대비")
+            c.metric("초과근무",f"{_ot_sum:,.2f}시간" if _ot_sum else f"{len(_ot)}건",
+                     delta=f"{_ot_sum-_prev[2]:+.2f}시간 전월대비")
+            d.metric("출장비",f"{int(_tr_sum):,}원" if _tr_sum else f"{len(_tr)}건",
+                     delta=f"{int(_tr_sum-_prev[3]):+,}원 전월대비")
+            st.markdown("#### 월간 상세자료")
+            _month_detail_view=workflow_button_nav(
+                "월간 상세자료 선택",
+                ["💰 급여","🌴 연차","⏱️ 초과근무","🚗 출장"],
+                key="v326_month_detail",
+                caption="선택한 업무의 월간 상세자료만 표시합니다.",
+                max_per_row=4
+            )
+
+            if _month_detail_view=="💰 급여":
+                st.caption("※ 급여·공제·사업주부담액이 모두 0원인 빈 저장행은 월간 상세자료에서 제외합니다.")
+                display_table_kr(_pay,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="🌴 연차":
+                _lv_report_view=employee_filter_ui(_lv,"v201_report_leave_emp","연차 직원 검색")
+                display_table_kr(_lv_report_view,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="⏱️ 초과근무":
+                _ot_report_view=employee_filter_ui(_ot,"v201_report_ot_emp","초과근무 직원 검색")
+                display_table_kr(_ot_report_view,use_container_width=True,hide_index=True)
+
+            if _month_detail_view=="🚗 출장":
+                _tr_report_view=employee_filter_ui(_tr,"v201_report_trip_emp","출장 직원 검색")
+                display_table_kr(_tr_report_view,use_container_width=True,hide_index=True)
+
+            st.markdown("#### 🔎 연차·초과근무·출장 기간 검색")
+            st.caption("예: 시작월 3월 / 종료월 5월을 선택하면 해당 연도 3월 1일부터 5월 말일까지 조회합니다.")
+            _pc1,_pc2=st.columns(2)
             _sm=_pc1.selectbox("시작월",range(1,13),index=max(0,_month-1),format_func=lambda x:f"{x}월",key="v202_start_month")
             _em=_pc2.selectbox("종료월",range(1,13),index=max(0,_month-1),format_func=lambda x:f"{x}월",key="v202_end_month")
             if _sm > _em:
